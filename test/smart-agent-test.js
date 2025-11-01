@@ -479,16 +479,19 @@ function addMessageToQueue(conversationId, msg) {
   
   const queue = messageQueues.get(conversationId);
   
-  // 确保消息有有效的时间戳（用于过期过滤）
-  const messageTime = msg.time ? (typeof msg.time === 'number' ? msg.time : Date.now()) : Date.now();
+  // 记录消息加入队列的时间（用于过期过滤）
+  // 注意：这里使用当前时间而非msg.time，因为msg.time是用户发送的时间
+  // 我们应该基于消息进入队列的时间来判断是否过期，而不是用户发送的时间
+  const queuedAt = Date.now();
   
   queue.messages.push({
     text: msg.text,
     summary: msg.summary,
     sender_id: msg.sender_id,
     sender_name: msg.sender_name,
-    time: messageTime, // 使用规范化的时间戳
-    time_str: msg.time_str
+    time: msg.time, // 原始发送时间（用于显示）
+    time_str: msg.time_str,
+    queuedAt: queuedAt // 加入队列的时间（用于过期判断）
   });
   
   // 只保留最近的消息（配置的限制）
@@ -512,16 +515,16 @@ function getAndClearQueue(conversationId) {
   const queue = messageQueues.get(conversationId);
   const now = Date.now();
   
-  // 过滤掉过期的消息（超过配置的时效）
+  // 过滤掉过期的消息（基于消息加入队列的时间，而非用户发送时间）
   const validMessages = queue.messages.filter(msg => {
-    const messageAge = now - (msg.time || now);
+    const messageAge = now - (msg.queuedAt || now);
     return messageAge <= CONFIG.messageMaxAge;
   });
   
   // 统计过滤情况
   const expiredCount = queue.messages.length - validMessages.length;
   if (expiredCount > 0) {
-    console.log(`[队列过滤] ${conversationId} 过滤掉 ${expiredCount} 条过期消息（>${CONFIG.messageMaxAge / 1000}秒）`);
+    console.log(`[队列过滤] ${conversationId} 过滤掉 ${expiredCount} 条过期消息（在队列中超过${CONFIG.messageMaxAge / 1000}秒）`);
   }
   
   queue.messages = [];
