@@ -2,9 +2,22 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "need_tools": { "type": "boolean" },
-    "reason": { "type": "string", "pattern": ".*;.*" }
+    "need_tools": { 
+      "type": "boolean",
+      "description": "是否需要调用工具"
+    },
+    "summary": { 
+      "type": "string",
+      "description": "1-2句话简要总结用户需求和关键信息"
+    },
+    "operations": { 
+      "type": "array",
+      "description": "需要执行的操作列表（如果需要工具），每个操作应简短、动作化",
+      "items": {
+        "type": "string"
+      }
+    }
   },
-  "required": ["need_tools", "reason"],
+  "required": ["need_tools"],
   "additionalProperties": true
 }

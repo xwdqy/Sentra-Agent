@@ -26,11 +26,31 @@ function buildRerankUrl(baseURL) {
   return root + '/v1/rerank';                               // e.g. https://yuanplus.cloud -> +/v1/rerank
 }
 
-// 中文：从 judge.reason 中提取用于重排序的子查询
-// 仅使用英文分号 ';' 进行分割，不做任何其它归一化或动词过滤。
-function extractSubQueriesFromReason(jr, fallbackQuery, maxSubqueries = 5) {
-  const src = String(jr || '').trim();
+/**
+ * 从 judge 结果中提取用于重排序的子查询
+ * 支持两种格式：
+ * 1. 新格式：judge.operations 数组（优先使用）
+ * 2. 旧格式：judge.reason 字符串（使用分号分割）
+ * @param {string|Array} reasonOrOps - judge.reason 字符串或 judge.operations 数组
+ * @param {string} fallbackQuery - 兜底查询
+ * @param {number} maxSubqueries - 最大子查询数量
+ * @returns {Array<string>} 子查询数组
+ */
+function extractSubQueriesFromReason(reasonOrOps, fallbackQuery, maxSubqueries = 5) {
   const fq = String(fallbackQuery || '').trim();
+  
+  // 新格式：如果传入的是数组，直接使用
+  if (Array.isArray(reasonOrOps)) {
+    let parts = reasonOrOps.map(s => String(s || '').trim()).filter(Boolean);
+    if (Number.isFinite(maxSubqueries) && maxSubqueries > 0) {
+      parts = parts.slice(0, maxSubqueries);
+    }
+    if (!parts.length && fq) return [fq];
+    return parts;
+  }
+  
+  // 旧格式：字符串使用分号分割
+  const src = String(reasonOrOps || '').trim();
   let parts = src.split(';').map(s => s.trim()).filter(Boolean);
   if (Number.isFinite(maxSubqueries) && maxSubqueries > 0) {
     parts = parts.slice(0, maxSubqueries);
@@ -82,21 +102,32 @@ export async function rerankDocumentsSiliconFlow({ query, documents, baseURL, ap
 }
 
 /**
- * 对 manifest 执行“余弦粗排 + 在线精排（可选）”
- * - query: 使用 judgeReason（避免被 objective 误导）
- * - 文档：仅使用 meta.realWorldAction（可选兜底 description）
- * - 返回：{ manifest: rankedManifest, indices, scores }
+ * 重排序工具清单
+ * @param {Object} params
+ * @param {Array} params.manifest - 工具清单
+ * @param {string|Array} params.judgeReason - judge.reason字符串或judge.operations数组
+ * @param {Array} params.judgeOperations - judge.operations数组（优先使用）
+ * @param {string} params.objective - 目标描述
+ * @param {number} params.candidateK - 候选数量
+ * @param {number} params.topN - 返回Top N
+ * @returns {Promise<{manifest: Array, indices: Array, scores: Array}>}
  */
-export async function rerankManifest({ manifest, judgeReason, objective, candidateK, topN }) {
-  try {
-    const docs = (manifest || []).map(buildToolDoc);
-    const jr = String(judgeReason || '').trim();
-    const qo = String(objective || '').trim();
-    const query = jr || qo; // 当 judgeReason 为空时，回退到 objective
-    if (!docs.length || !query) {
-      return { manifest, indices: manifest.map((_, i) => i), scores: [] };
-    }
+export async function rerankManifest({ manifest, judgeReason, judgeOperations, objective, candidateK, topN }) {
+  if (!Array.isArray(manifest)) return { manifest: [], indices: [], scores: [] };
+  const L = manifest.length;
+  if (L === 0) return { manifest: [], indices: [], scores: [] };
 
+  // 优先使用 operations 数组，其次使用 judgeReason 字符串
+  const jr = judgeOperations || judgeReason;
+  const query = (Array.isArray(jr) && jr.length > 0) 
+    ? jr[0]  // 如果是数组，用第一个作为主查询
+    : String(judgeReason || '').trim() || String(objective || '').trim();
+  if (!query) return { manifest, indices: manifest.map((_, i) => i), scores: [] };
+
+  // 构建工具文档
+  const docs = manifest.map((t) => buildToolDoc(t));
+
+  try {
     // 1) 余弦粗排（快速）：取前 candidateK 个候选
     const embs = await embedTexts({ texts: [query, ...docs] });
     const qv = embs[0] || [];

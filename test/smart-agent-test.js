@@ -1,6 +1,8 @@
 import SentraMcpSDK from 'sentra-mcp';
 import SentraPromptsSDK from 'sentra-prompts';
 import { Agent } from "../agent.js";
+import { tokenCounter } from "../src/token-counter.js";
+import { randomUUID } from 'crypto';
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from 'url';
@@ -70,6 +72,9 @@ const CONFIG = {
   replyCooldown: parseInt(process.env.REPLY_COOLDOWN || '2000'),
   skipOnGenerationFail: process.env.SKIP_ON_GENERATION_FAIL === 'true',
   
+  // Token限制配置
+  maxResponseTokens: parseInt(process.env.MAX_RESPONSE_TOKENS || '260'), // 普通回复最大token数
+  
   // 消息合并CD配置
   messageMergeDelay: parseInt(process.env.MESSAGE_MERGE_DELAY || '5000'),
   enableMessageMerge: process.env.ENABLE_MESSAGE_MERGE !== 'false',
@@ -119,6 +124,7 @@ console.log('API Base URL:', CONFIG.apiBaseUrl);
 console.log('Model:', CONFIG.modelName);
 console.log('Temperature:', CONFIG.temperature);
 console.log('Max Tokens:', CONFIG.maxTokens === -1 ? '不限制' : CONFIG.maxTokens);
+console.log('Max Response Tokens (普通回复):', CONFIG.maxResponseTokens);
 console.log('段落分隔符:', CONFIG.paragraphSeparator);
 console.log('机器人名称:', CONFIG.botName);
 console.log('智能回复:', CONFIG.enableSmartReply ? '开启' : '关闭');
@@ -175,23 +181,23 @@ const system = await SentraPromptsSDK(text);
 // ==================== 对话历史管理系统（标准多轮格式） ====================
 
 /**
- * 对话历史管理（标准user/assistant对话对格式）
- * key: conversationId (U:userId 或 G:groupId)
- * value: { 
- *   conversations: [{ role: 'user'|'assistant', content: string }],
- *   pendingMessages: [{ summary: string, msgObj: Object }],  // 从上次回复后累积的待回复消息（存储完整对象）
- *   currentAssistantMessage: string,  // 当前正在构建的助手消息
- *   lastReplyTime: timestamp,
- *   replyDesire: 0-1
- * }
+ * 对话历史存储（标准多轮对话格式 + UUID标记）
+ * Map<conversationId, { 
+ *   conversations: [{ role, content, pairId }],  // 历史对话对（每对有相同的pairId）
+ *   pendingMessages: [{ summary, msgObj }],  // 当前累积的待回复消息
+ *   currentAssistantMessage: string,  // 当前正在构建的助手回复
+ *   currentPairId: string | null,  // 当前对话对的UUID
+ *   replyDesire: number,  // 回复欲望值（0-1）
+ *   lastReplyTime: number  // 上次回复时间戳（0表示从未回复）
+ * }>
  */
 const conversationHistories = new Map();
 
 /**
- * 添加待回复的消息到累积队列
+ * 添加待回复消息
  * @param {string} conversationId - 会话ID
- * @param {string} summary - 消息summary（已包含时间等信息）
- * @param {Object} msgObj - 完整的消息对象（包含sender_id等信息）
+ * @param {string} summary - 消息摘要
+ * @param {Object} msgObj - 原始消息对象
  */
 function addPendingMessage(conversationId, summary, msgObj) {
   if (!conversationHistories.has(conversationId)) {
@@ -199,8 +205,9 @@ function addPendingMessage(conversationId, summary, msgObj) {
       conversations: [],
       pendingMessages: [],
       currentAssistantMessage: '',
-      lastReplyTime: 0,
-      replyDesire: 0
+      currentPairId: null,
+      replyDesire: 0,
+      lastReplyTime: 0  // 初始化为0，表示从未回复过
     });
   }
   
@@ -230,6 +237,63 @@ function getPendingMessagesContent(conversationId) {
 }
 
 /**
+ * 格式化待回复消息，区分历史上下文和当前需要回复的消息
+ * @param {string} conversationId - 会话ID
+ * @param {string} targetSenderId - 当前需要回复的发送者ID
+ * @returns {{formatted: string, objective: string, hasContext: boolean, targetMsg: Object}}
+ */
+function formatPendingMessagesForAI(conversationId, targetSenderId) {
+  if (!conversationHistories.has(conversationId)) {
+    return { formatted: '', objective: '完成用户请求', hasContext: false, targetMsg: null };
+  }
+  
+  const history = conversationHistories.get(conversationId);
+  if (history.pendingMessages.length === 0) {
+    return { formatted: '', objective: '完成用户请求', hasContext: false, targetMsg: null };
+  }
+  
+  // 找到目标sender的最后一条消息
+  let targetMsgIndex = -1;
+  for (let i = history.pendingMessages.length - 1; i >= 0; i--) {
+    if (history.pendingMessages[i].msgObj.sender_id === targetSenderId) {
+      targetMsgIndex = i;
+      break;
+    }
+  }
+  
+  // 如果没找到目标消息，使用最后一条
+  if (targetMsgIndex === -1) {
+    targetMsgIndex = history.pendingMessages.length - 1;
+  }
+  
+  const targetMsg = history.pendingMessages[targetMsgIndex];
+  const contextMessages = history.pendingMessages.slice(0, targetMsgIndex);
+  
+  // 构建格式化内容
+  let formatted = '';
+  
+  // 如果有历史上下文消息，先添加它们
+  if (contextMessages.length > 0) {
+    formatted += '【近期对话上下文】\n';
+    formatted += contextMessages.map(pm => pm.summary).join('\n') + '\n\n';
+  }
+  
+  // 添加当前需要回复的消息
+  formatted += '【当前需要回复的消息】\n';
+  formatted += targetMsg.summary;
+  
+  // 提取简洁的objective（只用消息文本，不要时间戳等）
+  const objective = targetMsg.msgObj.text || targetMsg.msgObj.summary || '完成用户请求';
+  
+  return {
+    formatted,
+    objective,
+    hasContext: contextMessages.length > 0,
+    targetMsg: targetMsg.msgObj  // 返回目标消息对象，用于正确引用回复
+  };
+}
+
+/**
  * 查找指定sender的最后一条消息（用于引用回复）
  * @param {string} conversationId - 会话ID
  * @param {string} senderId - 发送者ID
@@ -256,18 +320,29 @@ function findLastMessageBySender(conversationId, senderId) {
 }
 
 /**
- * 开始构建助手回复
+ * 开始构建助手回复（生成UUID标记本次对话对）
  * @param {string} conversationId - 会话ID
+ * @returns {string} 本次对话对的UUID
  */
 function startAssistantMessage(conversationId) {
   if (!conversationHistories.has(conversationId)) {
-    return;
+    conversationHistories.set(conversationId, {
+      conversations: [],
+      pendingMessages: [],
+      currentAssistantMessage: '',
+      currentPairId: null,
+      replyDesire: 0,
+      lastReplyTime: 0
+    });
   }
   
   const history = conversationHistories.get(conversationId);
   history.currentAssistantMessage = '';
+  // 生成本次对话对的UUID
+  history.currentPairId = randomUUID();
   
-  console.log(`[对话历史] ${conversationId} 开始构建助手回复`);
+  console.log(`[对话对UUID] ${conversationId} 生成新对话对ID: ${history.currentPairId}`);
+  return history.currentPairId;
 }
 
 /**
@@ -289,7 +364,7 @@ function appendToAssistantMessage(conversationId, content) {
 }
 
 /**
- * 完成当前对话对，保存到历史
+ * 完成当前对话对，保存到历史（使用UUID标记）
  * @param {string} conversationId - 会话ID
  */
 function finishConversationPair(conversationId) {
@@ -302,12 +377,14 @@ function finishConversationPair(conversationId) {
   // 组合所有待回复消息作为user content
   const userContent = history.pendingMessages.map(pm => pm.summary).join('\n\n');
   
-  // 确保有用户消息和助手消息
-  if (userContent && history.currentAssistantMessage) {
-    // 添加完整的user/assistant对话对
+  // 确保有用户消息、助手消息和pairId
+  if (userContent && history.currentAssistantMessage && history.currentPairId) {
+    const pairId = history.currentPairId;
+    
+    // 添加完整的user/assistant对话对（都标记相同的pairId）
     history.conversations.push(
-      { role: 'user', content: userContent },
-      { role: 'assistant', content: history.currentAssistantMessage }
+      { role: 'user', content: userContent, pairId },
+      { role: 'assistant', content: history.currentAssistantMessage, pairId }
     );
     
     // 保持最多N组对话（2N条消息）
@@ -319,20 +396,71 @@ function finishConversationPair(conversationId) {
     
     const pairCount = history.conversations.length / 2;
     const messageCount = history.pendingMessages.length;
-    console.log(`[对话历史] ${conversationId} 完成对话对（user包含${messageCount}条消息），当前 ${pairCount}/${CONFIG.maxConversationPairs} 组`);
+    console.log(`[对话历史] ${conversationId} 完成对话对(${pairId.substring(0, 8)})（user包含${messageCount}条消息），当前 ${pairCount}/${CONFIG.maxConversationPairs} 组`);
     
-    // 清空待回复消息和当前助手消息
+    // 清空待回复消息、当前助手消息和pairId
     history.pendingMessages = [];
     history.currentAssistantMessage = '';
+    history.currentPairId = null;
   } else if (!userContent) {
     console.warn(`[对话历史] ${conversationId} 没有待回复消息，跳过保存`);
+  } else if (!history.currentPairId) {
+    console.warn(`[对话历史] ${conversationId} 没有pairId，跳过保存`);
   }
+}
+
+/**
+ * 撤销指定的对话对（通过pairId精确删除，适合高并发场景）
+ * 
+ * 使用场景：
+ * 1. Token超限时，如果对话对已经保存到conversationHistory，需要撤销
+ * 2. 发送失败需要回滚已保存的对话对
+ * 3. 高并发场景下，需要精确删除某个特定的对话对
+ * 
+ * @param {string} conversationId - 会话ID
+ * @param {string} pairId - 要删除的对话对UUID
+ * @returns {boolean} 是否删除成功
+ * 
+ * @example
+ * // 保存对话对后发现需要撤销
+ * const pairId = startAssistantMessage(conversationId);
+ * finishConversationPair(conversationId);
+ * // ... 某些检查失败，需要撤销
+ * cancelConversationPairById(conversationId, pairId);
+ */
+function cancelConversationPairById(conversationId, pairId) {
+  if (!conversationHistories.has(conversationId)) {
+    return false;
+  }
+  
+  const history = conversationHistories.get(conversationId);
+  
+  // 找到并删除所有带有此pairId的消息
+  const initialLength = history.conversations.length;
+  history.conversations = history.conversations.filter(msg => msg.pairId !== pairId);
+  const deletedCount = initialLength - history.conversations.length;
+  
+  if (deletedCount > 0) {
+    console.log(`[对话历史] ${conversationId} 精确删除对话对(${pairId.substring(0, 8)})，删除 ${deletedCount} 条消息`);
+    
+    // 如果删除的是当前正在构建的对话对，清空状态
+    if (history.currentPairId === pairId) {
+      history.currentAssistantMessage = '';
+      history.currentPairId = null;
+      console.log(`[对话历史] ${conversationId} 清空当前构建中的对话对`);
+    }
+    
+    return true;
+  }
+  
+  console.warn(`[对话历史] ${conversationId} 未找到pairId(${pairId.substring(0, 8)})，无法删除`);
+  return false;
 }
 
 /**
  * 获取完整的对话历史数组（用于API请求）
  * @param {string} conversationId - 会话ID
- * @returns {Array} 对话历史数组 [{ role, content }, ...]
+ * @returns {Array} 对话历史数组 [{ role, content }, ...]（不包含pairId）
  */
 function getConversationHistory(conversationId) {
   if (!conversationHistories.has(conversationId)) {
@@ -340,7 +468,8 @@ function getConversationHistory(conversationId) {
   }
   
   const history = conversationHistories.get(conversationId);
-  return [...history.conversations];  // 返回副本
+  // 返回副本，去除pairId字段（API不需要）
+  return history.conversations.map(({ role, content }) => ({ role, content }));
 }
 
 /**
@@ -354,6 +483,7 @@ function updateReplyDesire(conversationId, boost = CONFIG.replyDesireBoostPerMes
       conversations: [],
       pendingMessages: [],
       currentAssistantMessage: '',
+      currentPairId: null,
       lastReplyTime: 0,
       replyDesire: 0
     });
@@ -397,11 +527,13 @@ function resetReplyDesire(conversationId) {
  */
 function canReplyByInterval(conversationId) {
   if (!conversationHistories.has(conversationId)) {
-    return true;
+    return true;  // 从未创建过，可以回复
   }
   
   const history = conversationHistories.get(conversationId);
-  if (history.lastReplyTime === 0) {
+  // 检查lastReplyTime是否存在且有效（0、undefined、null都表示从未回复）
+  if (!history.lastReplyTime || history.lastReplyTime === 0) {
+    console.log(`[回复间隔] ${conversationId} 首次回复，无需等待`);
     return true;
   }
   
@@ -411,6 +543,8 @@ function canReplyByInterval(conversationId) {
   if (!canReply) {
     const remaining = CONFIG.minReplyInterval - timeSinceReply;
     console.log(`[回复间隔] ${conversationId} 距离上次回复 ${(timeSinceReply / 1000).toFixed(1)}秒，还需等待 ${(remaining / 1000).toFixed(1)}秒`);
+  } else {
+    console.log(`[回复间隔] ${conversationId} 距离上次回复 ${(timeSinceReply / 1000).toFixed(1)}秒，可以回复`);
   }
   
   return canReply;
@@ -581,6 +715,22 @@ function addToGlobalHistory(conversationId, msg, isBot = false) {
   }
   
   console.log(`[全局历史] ${conversationId} 记录消息，当前 ${history.length}/${CONFIG.globalHistoryLimit} 条`);
+}
+
+/**
+ * 删除最后N条全局历史记录
+ * @param {string} conversationId - 会话ID
+ * @param {number} count - 要删除的数量
+ */
+function removeLastGlobalHistory(conversationId, count = 1) {
+  if (!globalHistory.has(conversationId)) {
+    return;
+  }
+  
+  const history = globalHistory.get(conversationId);
+  const removed = history.splice(-count, count);
+  
+  console.log(`[全局历史] ${conversationId} 删除最后 ${removed.length} 条记录，剩余 ${history.length} 条`);
 }
 
 /**
@@ -845,11 +995,12 @@ function getAndClearQueue(conversationId) {
 
 /**
  * 智能判断是否需要回复（新系统：使用回复欲望机制）
- * @param {Object} msg - 当前消息对象
+ * @param {Object} msg - 最后一条消息对象（用于基本判断）
  * @param {string} conversationId - 会话ID
+ * @param {Array} mergedMessages - 合并后的所有消息数组
  * @returns {Promise<{needReply: boolean, reason: string, mandatory: boolean}>} 判断结果
  */
-async function shouldReply(msg, conversationId) {
+async function shouldReply(msg, conversationId, mergedMessages = [msg]) {
   // 如果禁用智能回复，总是回复
   if (!CONFIG.enableSmartReply) {
     return { needReply: true, reason: '智能回复已禁用', mandatory: false };
@@ -878,18 +1029,28 @@ async function shouldReply(msg, conversationId) {
   }
 
   // ===== 使用AI判断是否需要回复 =====
-  const judgePrompt = `你是群聊机器人"${CONFIG.botName}"。请判断以下消息是否需要你回复。
+  // 构建合并消息的完整上下文
+  let messagesContext = '';
+  if (mergedMessages.length > 1) {
+    console.log(`[智能判断] 综合考虑 ${mergedMessages.length} 条合并消息进行判断`);
+    messagesContext = '合并消息（按时间顺序）：\n' + 
+      mergedMessages.map((m, i) => 
+        `${i + 1}. [${m.time_str}] ${m.sender_name}: ${m.text || m.summary}`
+      ).join('\n');
+  } else {
+    messagesContext = `当前消息：\n发送者：${msg.sender_name}\n内容：${msg.text || msg.summary}`;
+  }
+  
+  const judgePrompt = `你是群聊机器人“${CONFIG.botName}”。请判断以下消息是否需要你回复。
 
 判断标准：
 1. 如果消息是向你提问、求助或需要你的参与，需要回复
 2. 如果消息是闲聊内容且与你高度相关，可以适当参与
 3. 如果消息是群友之间的对话，与你无关，不需要回复
-4. 如果消息内容简短且无意义（如单个表情、"。"等），不需要回复
-5. 结合最近对话判断是否需要回复
+4. 如果消息内容简短且无意义（如单个表情、“。”等），不需要回复
+5. 综合考虑所有合并消息的上下文，判断是否需要回复
 
-当前消息：
-发送者：${msg.sender_name}
-内容：${msg.text || msg.summary}`;
+${messagesContext}`;
 
   try {
     const judgeResponse = await agent.chat(
@@ -1509,11 +1670,11 @@ ws.on('message', async (data) => {
         try {
           console.log(`\n=== 处理合并后的消息（共${mergedMessages.length}条）===`);
           
-          // 使用最后一条合并消息进行智能判断
+          // 使用最后一条消息和所有合并消息进行智能判断
           const lastMsg = mergedMessages[mergedMessages.length - 1];
           const senderId = lastMsg.sender_id;
           
-          const replyDecision = await shouldReply(lastMsg, conversationId);
+          const replyDecision = await shouldReply(lastMsg, conversationId, mergedMessages);
           
           if (!replyDecision.needReply) {
             console.log(`[跳过回复] ${replyDecision.reason}`);
@@ -1571,21 +1732,24 @@ async function processReply(conversationId, mergedMessages, lastMsg, isGroupChat
       // 标记开始回复该发送者
       markReplyingToSender(conversationId, senderId);
       
-      // 开始构建助手回复
-      startAssistantMessage(conversationId);
+      // 开始构建助手回复（获取本次对话对的UUID）
+      const currentPairId = startAssistantMessage(conversationId);
       
       // 获取历史对话对（最多20组）
       const historyConversations = getConversationHistory(conversationId);
       const pairCount = historyConversations.length / 2;
       console.log(`[对话历史] 加载 ${pairCount} 组历史对话`);
       
-      // 获取从上次回复后累积的所有待回复消息
-      const pendingMessagesContent = getPendingMessagesContent(conversationId);
-      if (!pendingMessagesContent) {
+      // 格式化待回复消息：区分历史上下文和当前消息
+      const pendingFormatted = formatPendingMessagesForAI(conversationId, senderId);
+      if (!pendingFormatted.formatted) {
         console.warn('[对话构建] 没有待回复消息，跳过回复');
         unmarkReplyingToSender(conversationId, senderId);
         return;
       }
+      
+      console.log(`[消息格式化] ${pendingFormatted.hasContext ? '包含上下文' : '无上下文'}，objective: ${pendingFormatted.objective.substring(0, 50)}...`);
+      console.log(`[引用消息] 将引用消息ID: ${pendingFormatted.targetMsg?.message_id}, sender: ${pendingFormatted.targetMsg?.sender_id}`);
       
       // 构建system prompt
       const globalHistoryText = getGlobalHistoryText(conversationId);
@@ -1595,16 +1759,16 @@ async function processReply(conversationId, mergedMessages, lastMsg, isGroupChat
       const systemPrompt = system + globalHistoryText + toolSummaryText + 
         `\n\n【重要提示】你正在参与${chatType}对话，请结合历史对话记录理解上下文，保持回复连贯性，避免重复回答。`;
       
-      // 构建完整的对话上下文：system + 历史对话对 + 当前累积的用户消息
+      // 构建完整的对话上下文：system + 历史对话对 + 格式化后的待回复消息
       let conversations = [
         { role: 'system', content: systemPrompt },
         ...historyConversations,  // 历史对话对（最多20组）
-        { role: 'user', content: pendingMessagesContent }  // 当前累积的所有待回复消息
+        { role: 'user', content: pendingFormatted.formatted }  // 格式化后的待回复消息（区分上下文和当前消息）
       ];
       
       const history = conversationHistories.get(conversationId);
       const pendingCount = history.pendingMessages.length;
-      console.log(`[对话构建] system(1) + 历史对话(${historyConversations.length}) + 当前累积消息(${pendingCount}条) = 总共${conversations.length}条`);
+      console.log(`[对话构建] system(1) + 历史对话(${historyConversations.length}) + 待回复消息(${pendingCount}条) = 总共${conversations.length}条`);
           
           // 使用配置的阶段提示词叠加
           const overlays = {
@@ -1622,9 +1786,13 @@ async function processReply(conversationId, mergedMessages, lastMsg, isGroupChat
           // 标记是否有工具调用
           let hasToolCall = false;
           
+          // 使用提取的简洁objective（只包含核心消息文本）
+          const objective = pendingFormatted.objective;
+          console.log(`[Objective] ${objective.substring(0, 100)}${objective.length > 100 ? '...' : ''}`);
+          
           // 使用 Sentra SDK 流式处理
           for await (const ev of sdk.stream({
-            objective: '根据对话完成用户请求',
+            objective,
             conversation: conversations,
             overlays
           })) {
@@ -1634,7 +1802,8 @@ async function processReply(conversationId, mergedMessages, lastMsg, isGroupChat
             if (ev.type === 'judge') {
               if (!ev.need) {
                 console.log('[工具判断] 不需要工具调用，直接生成回复');
-                // 不需要工具，直接生成普通回复（conversations已包含完整历史）
+                // 不需要工具，直接生成普通回复
+                // conversations包含：system + 历史对话 + 格式化的待回复消息
                 const response = await agent.chat(conversations, CONFIG.modelName);
                 
                 // 检查AI生成是否失败
@@ -1647,9 +1816,38 @@ async function processReply(conversationId, mergedMessages, lastMsg, isGroupChat
                 console.log('\n=== AI 回复（普通） ===');
                 console.log(response);
                 
-                // 查找当前senderId的最后一条消息用于引用回复
-                const targetMsg = findLastMessageBySender(conversationId, senderId) || lastMsg;
-                await smartSend(targetMsg, response);
+                // Token超限检查：如果响应超过限制，跳过发送
+                const responseTokens = tokenCounter.countTokens(response, CONFIG.modelName);
+                console.log(`[Token检查] 响应token数: ${responseTokens}/${CONFIG.maxResponseTokens}`);
+                
+                if (responseTokens > CONFIG.maxResponseTokens) {
+                  console.warn(`[Token超限] 响应token数(${responseTokens})超过限制(${CONFIG.maxResponseTokens})，跳过发送并清理对话对(${currentPairId.substring(0, 8)})`);
+                  
+                  // 使用pairId精确清理本次对话对（高并发场景安全）
+                  // 注意：此时对话对还没有保存到conversationHistory，所以只需清理状态
+                  const history = conversationHistories.get(conversationId);
+                  if (history) {
+                    // 清空当前构建状态
+                    if (history.currentPairId === currentPairId) {
+                      history.currentAssistantMessage = '';
+                      history.currentPairId = null;
+                      history.pendingMessages = []; // 清空待回复消息
+                      console.log(`[Token超限] ${conversationId} 已清空对话对(${currentPairId.substring(0, 8)})构建状态`);
+                    }
+                  }
+                  
+                  // 重置回复欲望值
+                  resetReplyDesire(conversationId);
+                  
+                  // 清除发送者标记
+                  unmarkReplyingToSender(conversationId, senderId);
+                  
+                  return; // 跳过发送
+                }
+                
+                // Token正常，发送消息
+                // 使用已经确定的targetMsg（来自 formatPendingMessagesForAI）
+                await smartSend(pendingFormatted.targetMsg || lastMsg, response);
                 
                 // 设置助手消息内容（普通对话直接使用response）
                 appendToAssistantMessage(conversationId, response);
@@ -1699,9 +1897,8 @@ async function processReply(conversationId, mergedMessages, lastMsg, isGroupChat
               console.log('\n=== AI 回复（工具步骤） ===');
               console.log(response);
               
-              // 查找当前senderId的最后一条消息用于引用回复
-              const targetMsg = findLastMessageBySender(conversationId, senderId) || lastMsg;
-              await smartSend(targetMsg, response);
+              // 使用已经确定的targetMsg（来自 formatPendingMessagesForAI）
+              await smartSend(pendingFormatted.targetMsg || lastMsg, response);
               
               // 追加工具步骤结果到助手消息（逐步拼接）
               appendToAssistantMessage(conversationId, response);

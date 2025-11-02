@@ -147,16 +147,24 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
   const usePT = !!config.flags?.planUsePreThought;
   const preThought = usePT ? (await getPreThought(objective, manifest, conversation)) : '';
 
-  // 重排序：仅使用 judgeReason 作为查询，文档只用 meta.realWorldAction
+  // 重排序：优先使用 judge.operations，其次使用 judgeReason
   try {
+    const judgeOperations = context?.judge?.operations || context?.judgeOperations;
     const judgeReason = String(context?.judge?.reason || context?.judgeReason || '').trim();
-    if ((judgeReason || objective) && (config.rerank?.enable !== false)) {
-      const ranked = await rerankManifest({ manifest, judgeReason, objective, candidateK: config.rerank?.candidateK, topN: config.rerank?.topN });
+    if ((judgeOperations || judgeReason || objective) && (config.rerank?.enable !== false)) {
+      const ranked = await rerankManifest({ 
+        manifest, 
+        judgeOperations,  // 新格式：operations数组
+        judgeReason,      // 旧格式：reason字符串
+        objective, 
+        candidateK: config.rerank?.candidateK, 
+        topN: config.rerank?.topN 
+      });
       if (Array.isArray(ranked?.manifest) && ranked.manifest.length) {
         manifest = ranked.manifest;
         if (config.flags.enableVerboseSteps) {
           const tops = manifest.slice(0, Math.min(5, manifest.length)).map(x => x.aiName);
-          logger.info('规划前重排序Top工具', { label: 'RERANK', top: tops });
+          logger.info('规划前重排序Top工具', { label: 'RERANK', top: tops, useOperations: !!judgeOperations });
         }
       }
     }
@@ -903,8 +911,32 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
   const runId = uuidv4();
   await HistoryStore.append(runId, { type: 'start', objective, context: sanitizeContextForLog(context) });
 
-  // 预判是否需要调用工具
-  const manifest0 = buildPlanningManifest(mcpcore);
+  // 步骤1：构建工具清单
+  let manifest0 = buildPlanningManifest(mcpcore);
+  
+  // 步骤2：重排序 - 在judge之前就对工具进行重排序，优先展示相关工具
+  try {
+    if (objective && (config.rerank?.enable !== false)) {
+      const ranked = await rerankManifest({ 
+        manifest: manifest0, 
+        judgeReason: objective,  // 初次重排序使用objective
+        objective, 
+        candidateK: config.rerank?.candidateK, 
+        topN: config.rerank?.topN 
+      });
+      if (Array.isArray(ranked?.manifest) && ranked.manifest.length) {
+        manifest0 = ranked.manifest;
+        if (config.flags.enableVerboseSteps) {
+          const tops = manifest0.slice(0, Math.min(5, manifest0.length)).map(x => x.aiName);
+          logger.info('Judge前重排序Top工具', { label: 'RERANK', top: tops });
+        }
+      }
+    }
+  } catch (e) {
+    logger.warn?.('Judge前重排序失败（忽略并继续）', { label: 'RERANK', error: String(e) });
+  }
+  
+  // 步骤3：判断是否需要工具（使用重排序后的清单）
   const judge = await judgeToolNecessity(objective, manifest0, conversation, context);
   await HistoryStore.append(runId, { type: 'judge', need: judge.need, reason: judge.reason });
   if (!judge.need) {
@@ -973,8 +1005,29 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       emitRunEvent(runId, { type: 'start', objective, context: sanitizedCtx });
       await HistoryStore.append(runId, { type: 'start', objective, context: sanitizedCtx });
 
-      // Judge necessity before planning
-      const manifest0 = buildPlanningManifest(mcpcore);
+      // 步骤1：构建工具清单
+      let manifest0 = buildPlanningManifest(mcpcore);
+      
+      // 步骤2：重排序 - 在judge之前就对工具进行重排序，优先展示相关工具
+      try {
+        if (objective && (config.rerank?.enable !== false)) {
+          const ranked = await rerankManifest({ 
+            manifest: manifest0, 
+            judgeReason: objective,  // 初次重排序使用objective
+            objective, 
+            candidateK: config.rerank?.candidateK, 
+            topN: config.rerank?.topN 
+          });
+          if (Array.isArray(ranked?.manifest) && ranked.manifest.length) {
+            manifest0 = ranked.manifest;
+            emitRunEvent(runId, { type: 'rerank', topTools: manifest0.slice(0, 5).map(x => x.aiName) });
+          }
+        }
+      } catch (e) {
+        logger.warn?.('Judge前重排序失败（忽略并继续）', { label: 'RERANK', error: String(e) });
+      }
+      
+      // 步骤3：判断是否需要工具（使用重排序后的清单）
       const judge = await judgeToolNecessity(objective, manifest0, conversation, context);
       emitRunEvent(runId, { type: 'judge', need: judge.need, reason: judge.reason });
       await HistoryStore.append(runId, { type: 'judge', need: judge.need, reason: judge.reason });
