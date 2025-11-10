@@ -1,17 +1,2 @@
-# Ignore actual emoji configuration
 .env
-
-# Ignore all emoji images in emoji subdirectory
-emoji/*.png
-emoji/*.jpg
-emoji/*.jpeg
-emoji/*.gif
-emoji/*.webp
-emoji/*.svg
-emoji/*.bmp
-
-# Keep documentation files
-!.env.example
-!README.md
-!QUICKSTART.md
-!emoji/README.md
+emoji

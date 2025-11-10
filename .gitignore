@@ -119,4 +119,3 @@ userData/
 
 # Agent Presets (Ignore custom presets, keep default only)
 agent-presets/*.txt
-!agent-presets/default.txt

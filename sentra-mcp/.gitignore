@@ -4,3 +4,6 @@ node_modules/
 logs/
 dist/
 *.log
+
+# 忽略所有插件目录中的 .env 文件
+plugins/**/.env
