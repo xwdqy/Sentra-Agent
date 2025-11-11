@@ -223,24 +223,74 @@ export function jsonToXMLLines(data, indent = 1, depth = 0, maxDepth = 100, filt
 }
 
 /**
- * 提取XML标签内容
+ * 提取XML标签内容（增强版，支持多种格式变化）
+ * @param {string} text - 包含 XML 标签的文本
+ * @param {string} tagName - 标签名称
+ * @param {Object} options - 选项
+ * @param {boolean} options.trimResult - 是否 trim 结果（默认 true）
+ * @param {boolean} options.removeCodeBlock - 是否移除 ```xml 代码块标记（默认 true）
+ * @returns {string|null} 提取的内容，未找到返回 null
  */
-export function extractXMLTag(text, tagName) {
-  const regex = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'i');
-  const match = text.match(regex);
-  return match ? match[1].trim() : null;
+export function extractXMLTag(text, tagName, options = {}) {
+  const { trimResult = true, removeCodeBlock = true } = options;
+  
+  if (!text || !tagName) return null;
+  
+  // 预处理：移除可能的代码块标记
+  let processedText = text;
+  if (removeCodeBlock) {
+    // 移除 ```xml ... ``` 或 ``` ... ```
+    processedText = processedText.replace(/```(?:xml)?\s*([\s\S]*?)```/g, '$1');
+  }
+  
+  // 尝试匹配：<tag>content</tag> 或 <tag>\ncontent\n</tag>
+  const regex = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i');
+  const match = processedText.match(regex);
+  
+  if (!match) return null;
+  
+  let content = match[1];
+  
+  // 可选的 trim
+  if (trimResult) {
+    content = content.trim();
+  }
+  
+  return content;
 }
 
 /**
- * 提取所有重复的XML标签
+ * 提取所有重复的XML标签（增强版）
+ * @param {string} text - 包含 XML 标签的文本
+ * @param {string} tagName - 标签名称
+ * @param {Object} options - 选项
+ * @param {boolean} options.trimResult - 是否 trim 结果（默认 true）
+ * @param {boolean} options.removeCodeBlock - 是否移除代码块标记（默认 true）
+ * @returns {Array<string>} 提取的内容数组
  */
-export function extractAllXMLTags(text, tagName) {
-  const regex = new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, 'gi');
+export function extractAllXMLTags(text, tagName, options = {}) {
+  const { trimResult = true, removeCodeBlock = true } = options;
+  
+  if (!text || !tagName) return [];
+  
+  // 预处理
+  let processedText = text;
+  if (removeCodeBlock) {
+    processedText = processedText.replace(/```(?:xml)?\s*([\s\S]*?)```/g, '$1');
+  }
+  
+  const regex = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'gi');
   const matches = [];
   let match;
-  while ((match = regex.exec(text)) !== null) {
-    matches.push(match[1].trim());
+  
+  while ((match = regex.exec(processedText)) !== null) {
+    let content = match[1];
+    if (trimResult) {
+      content = content.trim();
+    }
+    matches.push(content);
   }
+  
   return matches;
 }
 

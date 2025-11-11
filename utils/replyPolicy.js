@@ -508,9 +508,12 @@ export async function shouldReply(msg) {
     return { 
       needReply: true, 
       reason: '概率判断', 
+      mandatory: false,  // 概率判断通过不是强制场景
       probability,
       conversationId,
-      taskId
+      taskId,
+      state,  // 添加 state，供干预判断使用
+      threshold: config.baseReplyThreshold  // 添加阈值
     };
   } else {
     logger.debug(`[${groupInfo}] 用户${senderId} 智能回复未通过: 概率${(probability * 100).toFixed(1)}% < 阈值${(config.baseReplyThreshold * 100).toFixed(1)}%`);
@@ -525,6 +528,66 @@ export async function shouldReply(msg) {
       taskId: null
     };
   }
+}
+
+/**
+ * 降低欲望值并重新计算概率（用于干预判断）
+ * @param {string} conversationId - 会话ID
+ * @param {Object} msg - 消息对象
+ * @param {number} reductionPercent - 降低的百分比（如 0.10 表示降低10%）
+ * @returns {{probability: number, needReply: boolean, totalDesire: number, state: Object}}
+ */
+export function reduceDesireAndRecalculate(conversationId, msg, reductionPercent = 0.10) {
+  const config = getConfig();
+  const state = getConversationState(conversationId);
+  const senderId = normalizeSenderId(msg.sender_id);
+  
+  // 1. 基础欲望值（改进的对数增长 + 时间衰减）
+  const baseDesire = calculateDesireByLog(state, config.desireGrowthRate, config);
+  
+  // 2. 提及加成（注意力机制）
+  const hasBotNameMention = checkBotNameMention(msg.text, config.botNames);
+  const mentionBonus = hasBotNameMention ? config.mentionBonus : 0;
+  
+  // 3. 连续忽略惩罚（改进的指数增长）
+  const ignorePenalty = calculateIgnorePenalty(state, config);
+  
+  // 4. 对话节奏调整因子
+  let paceAdjustment = 0;
+  if (state.avgMessageInterval > 0) {
+    if (state.avgMessageInterval < config.paceFastThreshold) {
+      paceAdjustment = config.paceFastAdjustment;
+    } else if (state.avgMessageInterval > config.paceSlowThreshold) {
+      paceAdjustment = config.paceSlowAdjustment;
+    }
+  }
+  
+  // 5. 综合欲望值（多因子融合）
+  let totalDesire = baseDesire + mentionBonus + ignorePenalty + paceAdjustment;
+  totalDesire = Math.max(0, Math.min(1, totalDesire));
+  
+  // 6. 降低欲望值（干预判断后的调整）
+  const originalDesire = totalDesire;
+  totalDesire = totalDesire * (1 - reductionPercent);
+  totalDesire = Math.max(0, Math.min(1, totalDesire));
+  
+  // 7. Sigmoid激活转换为概率（平滑过渡）
+  const newProbability = sigmoidActivation(totalDesire, config.sigmoidSteepness);
+  
+  // 8. 判断是否仍然通过阈值
+  const needReply = newProbability >= config.baseReplyThreshold;
+  
+  const groupInfo = msg.group_id ? `群${msg.group_id}` : '私聊';
+  logger.debug(`[${groupInfo}] 用户${senderId} 欲望降低: ${originalDesire.toFixed(3)} → ${totalDesire.toFixed(3)} (-${(reductionPercent * 100).toFixed(0)}%)`);
+  logger.debug(`[${groupInfo}] 用户${senderId} 概率重算: Sigmoid(${totalDesire.toFixed(3)}) = ${newProbability.toFixed(3)} (阈值=${config.baseReplyThreshold})`);
+  logger.info(`[${groupInfo}] 用户${senderId} 干预后判断: needReply=${needReply}, prob=${(newProbability * 100).toFixed(1)}%`);
+  
+  return {
+    probability: newProbability,
+    needReply,
+    totalDesire,
+    state
+  };
 }
 
 /**

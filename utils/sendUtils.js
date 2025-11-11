@@ -31,28 +31,58 @@ export async function smartSend(msg, response, sendAndWaitResult, allowReply = t
     logger.debug(`表情包: ${emoji.source}`);
   }
   
-  // 只从AI的resources中提取文件
+  // 只从AI的resources中提取文件（支持本地路径和 HTTP/HTTPS 链接）
   const protocolFiles = [];
   protocolResources.forEach(res => {
     logger.debug(`处理协议资源: ${res.type} ${res.source}`);
     if (res.source) {
-      if (!fs.existsSync(res.source)) {
+      const isHttpUrl = /^https?:\/\//i.test(res.source);
+      
+      // 本地文件：检查是否存在
+      if (!isHttpUrl && !fs.existsSync(res.source)) {
         logger.warn(`协议资源文件不存在: ${res.source}`);
         return;
       }
-      const ext = path.extname(res.source).toLowerCase();
+      
+      // 提取文件扩展名（支持 URL 中的扩展名）
+      let ext = '';
+      if (isHttpUrl) {
+        // 从 URL 中提取扩展名（去除查询参数）
+        const urlPath = res.source.split('?')[0];
+        ext = path.extname(urlPath).toLowerCase();
+      } else {
+        ext = path.extname(res.source).toLowerCase();
+      }
+      
+      // 根据扩展名判断文件类型
       let fileType = 'file';
       if (['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'].includes(ext)) fileType = 'image';
       else if (['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm'].includes(ext)) fileType = 'video';
       else if (['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'].includes(ext)) fileType = 'record';
       
+      // 提取文件名
+      let fileName = '';
+      if (isHttpUrl) {
+        // 从 URL 中提取文件名
+        const urlPath = res.source.split('?')[0];
+        fileName = path.basename(urlPath) || 'download' + ext;
+      } else {
+        fileName = path.basename(res.source);
+      }
+      
       protocolFiles.push({
         path: res.source,
-        fileName: path.basename(res.source),
+        fileName: fileName,
         fileType,
-        caption: res.caption
+        caption: res.caption,
+        isHttpUrl  // 标记是否为 HTTP 链接
       });
-      logger.debug(`添加文件: ${fileType} ${path.basename(res.source)}`);
+      
+      if (isHttpUrl) {
+        logger.debug(`添加 HTTP 资源: ${fileType} ${fileName} (${res.source})`);
+      } else {
+        logger.debug(`添加本地文件: ${fileType} ${fileName}`);
+      }
     }
   });
   

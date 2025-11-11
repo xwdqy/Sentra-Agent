@@ -24,6 +24,8 @@ const __dirname = path.dirname(__filename);
 
 const logger = createLogger('PersonaManager');
 
+// 移除 tools 定义，统一使用 XML 解析
+
 class UserPersonaManager {
   constructor(options = {}) {
     // 配置参数
@@ -260,13 +262,13 @@ class UserPersonaManager {
   }
 
   /**
-   * 使用 LLM 分析用户画像
+   * 使用 LLM 分析用户画像（统一使用 XML 解析）
    */
   async _analyzePersona(recentMessages, existingPersona, isFirstTime) {
     const prompt = this._buildAnalysisPrompt(recentMessages, existingPersona, isFirstTime);
     
     try {
-      const content = await this.agent.chat(
+      const response = await this.agent.chat(
         [
           {
             role: 'system',
@@ -280,15 +282,20 @@ class UserPersonaManager {
         {
           model: this.model,
           temperature: 1,
+          max_tokens: 2000
         }
       );
 
-      if (!content || typeof content !== 'string') {
-        throw new Error('LLM 返回内容为空或格式错误');
+      // 统一使用 XML 解析
+      const responseText = response.content || (typeof response === 'string' ? response : '');
+      
+      if (!responseText) {
+        throw new Error('LLM 返回内容为空');
       }
-
-      // 解析 Sentra XML 格式的画像
-      return this._parsePersonaResponse(content);
+      
+      logger.debug('使用 XML 解析模式');
+      return this._parsePersonaResponse(responseText);
+      
     } catch (error) {
       logger.error('LLM 分析失败', error);
       return null;
@@ -301,27 +308,69 @@ class UserPersonaManager {
   _getSystemPrompt(isFirstTime) {
     if (isFirstTime) {
       // 首次构建 - 关注大纲和框架
-      return `You are an expert user profiling analyst specialized in building comprehensive user personas from conversation patterns.
+      return `# User Persona Analysis System - Initial Profile Construction
 
-**CRITICAL PROTOCOL**: You MUST output using Sentra XML Protocol format. All content must be in Chinese (中文).
+You are an expert user profiling analyst specialized in building comprehensive user personas from conversation patterns.
 
-**Your Task**: Analyze the conversation history and construct an initial user persona profile.
+## Critical Protocols
 
-**Analysis Dimensions**:
-1. **Core Essence** (核心本质): The user's fundamental character in one sentence
-2. **Personality Traits** (性格特征): Observable behavioral and psychological patterns
-3. **Communication Style** (沟通风格): How they express themselves
-4. **Interest Areas** (兴趣领域): Topics they engage with
-5. **Behavioral Patterns** (行为模式): Recurring actions and tendencies
-6. **Emotional Profile** (情感画像): Emotional expression and sensitivity
-7. **Key Insights** (关键洞察): Specific observations with evidence
-8. **Reliability** (可信度): Assessment of analysis confidence
+**OUTPUT FORMAT**: You MUST use Sentra XML Protocol format
+**LANGUAGE**: All content MUST be in Chinese (中文)
+**EXECUTION**: Output XML directly in your response (NO explanations outside XML)
 
-**MANDATORY OUTPUT FORMAT** (Sentra XML Protocol):
+## Your Task
+
+Analyze the provided conversation history and construct an **initial user persona profile**. Focus on establishing a solid framework that can be refined over time.
+
+## Analysis Dimensions
+
+Study the user across these dimensions:
+
+1. **Core Essence** (核心本质)
+   - One-sentence fundamental character summary
+   - Must capture the user's defining essence
+
+2. **Personality Traits** (性格特征)
+   - Observable behavioral patterns
+   - Psychological characteristics
+   - 3-5 specific, evidence-based traits
+
+3. **Communication Style** (沟通风格)
+   - How they express themselves
+   - Word choice, tone, formality
+   - Interaction patterns (concise/verbose, direct/indirect)
+
+4. **Interest Areas** (兴趣领域)
+   - Topics they engage with
+   - Domains of knowledge
+   - Hobbies and passions
+
+5. **Behavioral Patterns** (行为模式)
+   - Recurring actions
+   - Response tendencies
+   - Activity patterns
+
+6. **Emotional Profile** (情感画像)
+   - Dominant emotions
+   - Sensitivity areas
+   - Expression tendencies
+
+7. **Key Insights** (关键洞察)
+   - Specific observations with evidence
+   - Notable characteristics
+   - Unique patterns
+
+8. **Confidence Assessment** (可信度评估)
+   - Data quality evaluation
+   - Analysis confidence level
+
+## Output Format - Sentra XML Protocol
+
+**MANDATORY Structure**:
 
 \`\`\`xml
 <sentra-persona>
-  <summary>一句话核心概括，捕捉此人的本质特征</summary>
+  <summary>一句话核心概括，捕捉此人的本质特征（15-30字）</summary>
   
   <traits>
     <personality>
@@ -331,7 +380,7 @@ class UserPersonaManager {
     </personality>
     
     <communication_style>
-      详细描述用户的沟通风格：用词习惯、语气特点、表达方式等
+      详细描述用户的沟通风格：用词习惯、语气特点、表达方式等（50-100字）
     </communication_style>
     
     <interests>
@@ -341,97 +390,146 @@ class UserPersonaManager {
     </interests>
     
     <behavioral_patterns>
-      <pattern type="互动模式">具体的行为模式描述1</pattern>
-      <pattern type="思维模式">具体的行为模式描述2</pattern>
-      <pattern type="习惯偏好">具体的行为模式描述3</pattern>
+      <pattern type="类型1">行为模式1的描述</pattern>
+      <pattern type="类型2">行为模式2的描述</pattern>
+      <pattern type="类型3">行为模式3的描述</pattern>
     </behavioral_patterns>
     
     <emotional_profile>
-      <dominant_emotions>主导情绪类型（如：积极、理性、好奇等）</dominant_emotions>
-      <sensitivity_areas>情感敏感点（对什么话题或情境有强烈反应）</sensitivity_areas>
-      <expression_tendency>情感表达倾向（直接/含蓄、稳定/波动）</expression_tendency>
+      <dominant_emotions>主导情绪描述</dominant_emotions>
+      <sensitivity_areas>情感敏感领域</sensitivity_areas>
+      <expression_tendency>情感表达倾向</expression_tendency>
     </emotional_profile>
   </traits>
   
   <insights>
-    <insight evidence="消息示例或行为证据">
-      洞察1：基于证据的具体观察和推断
+    <insight evidence="来自消息X的具体内容">
+      洞察内容1：观察到的特定行为或特征
     </insight>
-    <insight evidence="消息示例或行为证据">
-      洞察2：独特的发现或模式识别
+    <insight evidence="来自消息Y的具体内容">
+      洞察内容2：另一个重要发现
     </insight>
-    <insight evidence="消息示例或行为证据">
-      洞察3：深层的理解或预测
+    <insight evidence="来自消息Z的具体内容">
+      洞察内容3：独特的观察
     </insight>
   </insights>
   
   <metadata>
     <confidence>high|medium|low</confidence>
-    <data_quality>数据质量评估（消息数量、内容丰富度）</data_quality>
-    <update_priority>下次更新建议关注的维度</update_priority>
+    <data_quality>数据质量评估（样本数量、消息质量等）</data_quality>
+    <update_priority>下次重点关注的分析维度</update_priority>
   </metadata>
 </sentra-persona>
 \`\`\`
 
-**Analysis Guidelines**:
-- **Evidence-Based**: Every trait must be grounded in observable patterns from actual messages
-- **Specific over Generic**: Prefer "喜欢深入讨论技术细节" over "对技术感兴趣"
-- **Pattern Recognition**: Identify recurring themes, word choices, and interaction styles
-- **Avoid Speculation**: Only include what can be reasonably inferred from data
-- **Natural Language**: Use conversational Chinese, avoid overly formal or clinical tone
-- **Contextual Depth**: Consider not just WHAT they say, but HOW and WHEN they say it
-- **CRITICAL**: DO NOT analyze or mention social roles (e.g., 群主/group owner, 管理员/admin, member status). Focus ONLY on personal traits, communication style, interests, and behavioral patterns
+## Quality Standards
 
-**Quality Standards**:
+**Requirements**:
 - Summary: 15-30 characters, capturing essence
-- Each trait: Specific and observable
-- Insights: Must include evidence or examples
+- Each trait: Specific and observable, not vague
+- Insights: MUST include evidence or examples
 - Communication style: 50-100 characters with concrete details
 - Emotional profile: All three sub-fields required
+- NO explanations outside XML block
+- NO markdown formatting inside XML tags
+
+**DO NOT**:
+- Use generic descriptions ("nice person", "friendly")
+- Include analysis without evidence
+- Add commentary outside the XML structure
+- Use English in Chinese content fields
+- Analyze or mention social roles (群主/admin/member status)
+
+## Analysis Guidelines
+
+- **Evidence-Based**: Every trait must be grounded in observable patterns
+- **Specific over Generic**: "喜欢深入讨论技术细节" not "对技术感兴趣"
+- **Pattern Recognition**: Identify recurring themes, word choices, interaction styles
+- **Avoid Speculation**: Only what can be reasonably inferred from data
+- **Natural Language**: Conversational Chinese, avoid clinical tone
+- **Contextual Depth**: Consider WHAT, HOW, and WHEN they say things
+- **Focus**: Personal traits, communication, interests, behaviors ONLY
 
 **CRITICAL**: Your ENTIRE output must be valid XML wrapped in <sentra-persona> tags. Do not include explanations outside the XML block.`;
+
     } else {
       // 后续优化 - 关注细化和修正
-      return `You are an expert user profiling analyst. Your task is to REFINE and OPTIMIZE an existing persona based on new conversation data.
+      return `# User Persona Analysis System - Profile Refinement
 
-**CRITICAL PROTOCOL**: Output using Sentra XML Protocol format. All content in Chinese (中文).
+You are an expert user profiling analyst. Your task is to **REFINE and OPTIMIZE** an existing persona based on new conversation data while maintaining continuity.
 
-**Your Task**: Enhance the existing persona with new insights while maintaining continuity.
+## Critical Protocols
 
-**Refinement Strategy**:
-1. **Validate** - Confirm or adjust previous observations
-2. **Deepen** - Add nuance and detail to existing traits
-3. **Expand** - Identify new patterns and characteristics
-4. **Track Evolution** - Note changes in behavior or interests
-5. **Improve Precision** - Replace vague descriptions with specific evidence
+**OUTPUT FORMAT**: You MUST use Sentra XML Protocol format
+**LANGUAGE**: All content MUST be in Chinese (中文)
+**EXECUTION**: Output XML directly in your response (NO explanations outside XML)
 
-**MANDATORY OUTPUT FORMAT** (Sentra XML Protocol):
+## Your Task
+
+You will receive:
+1. **Existing Persona**: The current user profile (for reference)
+2. **New Messages**: Recent conversation data to analyze
+
+Your goal: **Enhance the existing persona** with new insights while preserving core characteristics.
+
+## Refinement Strategy
+
+Apply these strategies systematically:
+
+1. **Validate** (确认或调整)
+   - Confirm previous observations that still hold true
+   - Adjust traits that have evolved or changed
+   - Mark status: confirmed, refined, new
+
+2. **Deepen** (深化理解)
+   - Add nuance and detail to existing traits
+   - Replace vague descriptions with specific evidence
+   - Provide concrete examples from messages
+
+3. **Expand** (拓展视野)
+   - Identify new patterns not previously observed
+   - Discover emerging interests or behaviors
+   - Note additional dimensions of personality
+
+4. **Track Evolution** (追踪演变)
+   - Compare current behavior with historical patterns
+   - Note changes in interests, communication style, or emotions
+   - Identify trends (increasing/decreasing/stable)
+
+5. **Improve Precision** (提高精准度)
+   - Replace general statements with specific observations
+   - Use recent messages as primary evidence
+   - Quantify patterns when possible
+
+## Output Format - Sentra XML Protocol
+
+**MANDATORY Structure with Evolution Tracking**:
 
 \`\`\`xml
 <sentra-persona>
-  <summary>更新后的核心概括（可能比之前更精准）</summary>
+  <summary>更新后的核心概括（可能比之前更精准）（15-30字）</summary>
   
   <traits>
     <personality>
-      <trait status="confirmed|refined|new">性格特征1（标注状态）</trait>
-      <trait status="confirmed|refined|new">性格特征2</trait>
-      <trait status="confirmed|refined|new">性格特征3</trait>
+      <trait status="confirmed">性格特征1（已确认，仍然适用）</trait>
+      <trait status="refined">性格特征2（细化后的描述）</trait>
+      <trait status="new">性格特征3（新发现的特征）</trait>
     </personality>
     
     <communication_style>
-      更细致的沟通风格描述，包含新观察到的细节和变化
+      更细致的沟通风格描述，包含新观察到的细节和变化（50-100字）
     </communication_style>
     
     <interests>
-      <interest category="类别" status="持续|新增|减弱">兴趣描述</interest>
-      <interest category="类别" status="持续|新增|减弱">兴趣描述</interest>
-      <interest category="类别" status="持续|新增|减弱">兴趣描述</interest>
+      <interest category="类别1" status="持续">兴趣1的描述（持续关注）</interest>
+      <interest category="类别2" status="新增">兴趣2的描述（新发现）</interest>
+      <interest category="类别3" status="减弱">兴趣3的描述（关注度降低）</interest>
     </interests>
     
     <behavioral_patterns>
-      <pattern type="类型" trend="稳定|增强|减弱">行为模式描述</pattern>
-      <pattern type="类型" trend="稳定|增强|减弱">行为模式描述</pattern>
-      <pattern type="类型" trend="稳定|增强|减弱">行为模式描述</pattern>
+      <pattern type="类型1" trend="稳定">行为模式1（保持稳定）</pattern>
+      <pattern type="类型2" trend="增强">行为模式2（频率增加）</pattern>
+      <pattern type="类型3" trend="减弱">行为模式3（出现减少）</pattern>
     </behavioral_patterns>
     
     <emotional_profile>
@@ -442,54 +540,73 @@ class UserPersonaManager {
   </traits>
   
   <insights>
-    <insight evidence="最新消息证据" novelty="confirmed|deepened|new">
-      洞察内容（标注是确认、深化还是新发现）
+    <insight evidence="最新消息证据" novelty="confirmed">
+      洞察内容（确认之前的观察，提供新证据）
     </insight>
-    <insight evidence="最新消息证据" novelty="confirmed|deepened|new">
-      洞察内容
+    <insight evidence="最新消息证据" novelty="deepened">
+      洞察内容（深化理解，增加细节）
     </insight>
-    <insight evidence="最新消息证据" novelty="confirmed|deepened|new">
-      洞察内容
+    <insight evidence="最新消息证据" novelty="new">
+      洞察内容（全新发现，之前未观察到）
     </insight>
   </insights>
   
   <evolution>
-    <change type="behavioral|interest|communication|emotional">
+    <change type="behavioral">
       具体变化描述1：对比之前的观察，新数据显示的演变
     </change>
-    <change type="behavioral|interest|communication|emotional">
+    <change type="interest">
       具体变化描述2：成长、转变或新趋势
     </change>
     <continuity>
-      保持一致的核心特征：哪些方面依然稳定
+      保持一致的核心特征：哪些方面依然稳定，体现用户的本质
     </continuity>
   </evolution>
   
   <metadata>
     <confidence>high|medium|low</confidence>
-    <data_quality>数据质量提升情况</data_quality>
+    <data_quality>数据质量提升情况（如：样本增加、覆盖更多场景）</data_quality>
     <update_priority>下次重点关注的分析维度</update_priority>
   </metadata>
 </sentra-persona>
 \`\`\`
 
-**Refinement Guidelines**:
-- **Preserve Continuity**: Don't discard previous insights unless clearly contradicted
-- **Mark Status**: Use status/novelty/trend attributes to track changes
-- **Compare & Contrast**: Explicitly note what's new vs. what's confirmed
-- **Increase Specificity**: Replace general observations with precise details
-- **Track Trajectories**: Identify trends (increasing/decreasing/stable)
-- **Evidence Evolution**: Use recent messages as primary evidence, historical as reference
-- **Balanced Update**: Maintain ~70% continuity, ~30% new insights
+## Quality Standards
 
-**Quality Standards**:
-- Each trait/interest/pattern MUST have status/trend indicator
-- Evolution section MUST explicitly compare with previous version
-- Insights MUST indicate novelty (confirmed/deepened/new)
-- Summary can be refined but should preserve core essence
-- Add at least 2-3 new specific observations
+**Status/Novelty/Trend Attributes**:
+- Personality traits: status="confirmed|refined|new"
+- Interests: status="持续|新增|减弱"
+- Behavioral patterns: trend="稳定|增强|减弱"
+- Insights: novelty="confirmed|deepened|new"
+- Evolution: type="behavioral|interest|communication|emotional"
 
-**CRITICAL**: Output ONLY the <sentra-persona> XML block. No explanations outside XML.`;
+**Requirements**:
+- Summary: Can be refined but preserve core essence (15-30 chars)
+- Each trait/interest/pattern: MUST have status/trend indicator
+- Evolution section: MUST explicitly compare with previous version
+- Insights: MUST indicate novelty level
+- Continuity: Identify what remains stable (core identity)
+- Balanced update: ~70% continuity, ~30% new insights
+- NO explanations outside XML block
+- NO markdown formatting inside XML tags
+
+**DO NOT**:
+- Discard previous insights unless clearly contradicted
+- Use English in Chinese content fields
+- Ignore the existing persona structure
+- Add commentary outside XML
+- Analyze social roles (群主/admin/member)
+
+## Refinement Guidelines
+
+- **Preserve Continuity**: Build upon existing insights, don't start from scratch
+- **Mark Changes**: Use status/novelty/trend attributes to track evolution
+- **Compare & Contrast**: Explicitly note what's new vs. confirmed
+- **Evidence Evolution**: Use recent messages as primary, historical as reference
+- **Increase Specificity**: More precise than previous version
+- **Track Trajectories**: Identify trends over time
+
+**CRITICAL**: Your ENTIRE output must be valid XML wrapped in <sentra-persona> tags. Do not include explanations outside the XML block.`;
     }
   }
 

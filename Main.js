@@ -9,7 +9,8 @@ import { smartSend } from './utils/sendUtils.js';
 import { saveMessageCache, cleanupExpiredCache } from './utils/messageCache.js';
 import SentraEmo from './sentra-emo/sdk/index.js';
 import { buildSentraEmoSection } from './utils/emoXml.js';
-import { shouldReply, completeTask, resetConversationState, getActiveTaskCount } from './utils/replyPolicy.js';
+import { shouldReply, completeTask, resetConversationState, getActiveTaskCount, reduceDesireAndRecalculate } from './utils/replyPolicy.js';
+import { executeIntervention, shouldEnableIntervention, getInterventionConfig } from './utils/replyIntervention.js';
 import { randomUUID } from 'crypto';
 import GroupHistoryManager from './utils/groupHistoryManager.js';
 import { tokenCounter } from './src/token-counter.js';
@@ -759,13 +760,56 @@ ws.on('message', async (data) => {
       }
 
       const replyDecision = await shouldReply(msg);
-      const taskId = replyDecision.taskId;
+      let taskId = replyDecision.taskId;
       logger.info(`回复决策: ${replyDecision.reason} (mandatory=${replyDecision.mandatory}, probability=${(replyDecision.probability * 100).toFixed(1)}%, taskId=${taskId || 'null'})`);
       
       if (!replyDecision.needReply) {
         logger.debug('跳过回复: 根据智能策略，本次不回复，消息已累积');
         return;
       }
+      
+      // 干预判断：对非强制场景进行二次判断
+      if (shouldEnableIntervention() && !replyDecision.mandatory && replyDecision.conversationId && replyDecision.state) {
+        logger.debug('启动干预判断: 使用轻量模型进行二次判断');
+        
+        const interventionConfig = getInterventionConfig();
+        
+        const interventionResult = await executeIntervention(
+          agent, 
+          msg, 
+          replyDecision.probability, 
+          replyDecision.threshold || 0.65,
+          replyDecision.state
+        );
+        
+        if (!interventionResult.need) {
+          // 干预判断认为不需要回复，降低欲望值并重新计算
+          logger.info(`干预判断: 不需要回复 - ${interventionResult.reason} (confidence=${interventionResult.confidence})`);
+          
+          const recalcResult = reduceDesireAndRecalculate(
+            replyDecision.conversationId, 
+            msg, 
+            interventionConfig.desireReduction
+          );
+          
+          if (!recalcResult.needReply) {
+            // 降低欲望后仍不通过阈值，跳过回复
+            logger.info(`干预后跳过: 欲望降低${(interventionConfig.desireReduction * 100).toFixed(0)}%后概率${(recalcResult.probability * 100).toFixed(1)}%仍未通过`);
+            // 移除活跃任务（因为不会处理）
+            if (taskId) {
+              await completeTask(userid, taskId);
+            }
+            return;
+          } else {
+            // 降低欲望后仍然通过阈值，继续处理
+            logger.info(`干预后继续: 欲望降低${(interventionConfig.desireReduction * 100).toFixed(0)}%后概率${(recalcResult.probability * 100).toFixed(1)}%仍通过阈值`);
+          }
+        } else {
+          // 干预判断认为需要回复，继续处理
+          logger.debug(`干预判断: 确认需要回复 - ${interventionResult.reason} (confidence=${interventionResult.confidence})`);
+        }
+      }
+      
       const bundledMsg = await collectBundle(userid, msg);
       await handleOneMessage(bundledMsg, taskId);
       return;
