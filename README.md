@@ -67,7 +67,8 @@ Sentra Agent 是一个为生产环境设计的 AI Agent 框架。我们理解构
 
 - Node.js（18+）：
   - Windows：请从官网下载并安装：https://nodejs.org/en/download/
-  - macOS：`brew install node@18`（如需切换：`brew link --overwrite node@18`）
+  - macOS：`brew install node@18`
+    如需切换：`brew link --overwrite node@18`
   - Ubuntu/Debian：
     ```bash
     curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
@@ -156,12 +157,12 @@ npm run service:monit      # 实时监控
 ##### 1. 环境准备与运行桌面应用
 首先安装各个板块所需的依赖项，完成后运行桌面应用程序。
 
-![安装各个板块依赖](docs/images/webui_1.png)
+![安装各个板块依赖](https://filesystem.site/cdn/20251120/G1nU3RspB0r24XDvnlNxjUlMyS5NVx.png)
 
 ##### 2. 构建通讯服务 SDK
 构建 NC 适配器的实时流通讯服务 SDK，以便进行数据交互。
 
-![实时流通讯SDK构建](docs/images/webui_2.png)
+![实时流通讯SDK构建](https://filesystem.site/cdn/20251120/IydK2zN1qx6Cbbop7IgcuNPvIwkqvG.png)
 
 ##### 3. 修改配置 (可选)
 如需修改板块配置或 Mcp 插件配置，请按以下步骤操作：
@@ -169,14 +170,14 @@ npm run service:monit      # 实时监控
 2.  选择需要修改配置的应用程序。
 3.  修改完成后，点击 **保存**。
 
-![点击启动台](docs/images/webui_3.png)
-![选择需要修改的应用配置](docs/images/webui_4.png)
-![开始配置，保存](docs/images/webui_5.png)
+![点击启动台](https://filesystem.site/cdn/20251120/hDr0yN0ai6H3iFbFqHeB1E407mpweY.png)
+![选择需要修改的应用配置](https://filesystem.site/cdn/20251120/z3UTXWSyLJ7cUF29vnjR4ExFinGI4j.png)
+![开始配置，保存](https://filesystem.site/cdn/20251120/kVaDvIv8fd8eYQ1uvHalp1XHwdWz0b.png)
 
 ##### 4. 启动 Sentra
 确认配置无误后，点击启动按钮运行 Sentra。
 
-![点击启动](docs/images/webui_6.png)
+![点击启动](https://filesystem.site/cdn/20251120/IKDEUBiTXYtJ8FACdbAyqD47eo7oXr.png)
 
 ---
 
