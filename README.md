@@ -83,7 +83,8 @@ Sentra Agent 是一个为生产环境设计的 AI Agent 框架。我们理解构
   - 验证：`python --version` 或 `python3 --version`
 
 - Redis（6+）：
-  - Windows：优先使用 Memurai（Redis 兼容）：https://www.memurai.com/；或通过 Docker Desktop 运行官方镜像
+  - Windows：优先使用 Memurai（Redis 兼容）：https://www.memurai.com
+    或通过 Docker Desktop 运行官方镜像
   - macOS：`brew install redis && brew services start redis`
   - Ubuntu/Debian：`sudo apt install -y redis-server && sudo systemctl enable --now redis-server`
   - 验证：`redis-cli ping`（返回 PONG）
@@ -141,8 +142,6 @@ npm run service:logs       # 查看日志
 npm run service:monit      # 实时监控
 ...
 ```
-
-这是优化后的 Markdown 文档，将流程分为“首次启动”和“后续启动”两个部分，逻辑更加清晰，并补充了您要求的后续启动说明：
 
 ---
 
