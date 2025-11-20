@@ -26,6 +26,7 @@
     "chrono-node-zh": "^1.0.1",
     "commander": "^12.0.0",
     "dotenv": "^16.4.0",
+    "node-fetch": "^3.3.2",
     "image-size": "^2.0.2",
     "ioredis": "^5.8.0",
     "json5": "^2.2.3",
