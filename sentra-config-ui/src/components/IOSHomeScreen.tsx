@@ -7,13 +7,14 @@ interface IOSHomeScreenProps {
     onLaunch: (icon: DesktopIcon) => void;
     wallpaper: string;
     onLaunchpadOpen: () => void;
+    dockExtra: { id: string; icon: React.ReactNode; onClick: () => void }[];
 }
 
-export const IOSHomeScreen: React.FC<IOSHomeScreenProps> = ({ icons, onLaunch, wallpaper, onLaunchpadOpen }) => {
+export const IOSHomeScreen: React.FC<IOSHomeScreenProps> = ({ icons, onLaunch, wallpaper, onLaunchpadOpen, dockExtra }) => {
     // Use real icons for the grid (limit to 12 to prevent overflow)
     const gridIcons = icons.slice(0, 12);
 
-    // Create dock with Launchpad + first 3 common apps
+    // Dock: Launchpad + dynamic top-used apps from props
     const dockIcons = [
         {
             id: 'launchpad',
@@ -32,10 +33,7 @@ export const IOSHomeScreen: React.FC<IOSHomeScreenProps> = ({ icons, onLaunch, w
             </div>,
             onClick: onLaunchpadOpen
         },
-        ...icons.slice(0, 3).map(icon => ({
-            ...icon,
-            onClick: () => onLaunch(icon)
-        }))
+        ...dockExtra
     ];
 
     return (

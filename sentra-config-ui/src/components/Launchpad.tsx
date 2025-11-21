@@ -1,8 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+
 import { motion, AnimatePresence } from 'framer-motion';
 import { getIconForType, getDisplayName } from '../utils/icons';
 import styles from './Launchpad.module.css';
-import { IoChevronBack, IoChevronForward, IoChevronUp, IoChevronDown } from 'react-icons/io5';
+import { IoChevronBack, IoChevronForward } from 'react-icons/io5';
+
 import { useDevice } from '../hooks/useDevice';
 
 interface LaunchpadProps {
@@ -18,6 +20,10 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
 
   const isMobileView = isMobile || isTablet;
 
+  const pagesContainerRef = useRef<HTMLDivElement>(null);
+  const [pageCapacity, setPageCapacity] = useState<number>(20);
+  const prevPageRef = useRef<number>(0);
+
   const filteredItems = useMemo(() => {
     return items.filter(item => {
       const displayName = getDisplayName(item.name);
@@ -26,9 +32,16 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
     });
   }, [items, searchTerm]);
 
-  // Categorize items for pagination
+  // Helper: split list into pages
+  const chunkBy = (arr: typeof items, size: number) => {
+    const out: typeof items[] = [] as any;
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  };
+
+  // Pagination: 首页只放 优先项 + 主板块(Core)；其余页依次为剩余Core、Tools、QQ
   const pages = useMemo(() => {
-    if (searchTerm) return [filteredItems]; // Show all results in one page when searching
+    if (searchTerm) return [filteredItems];
 
     const coreApps: typeof items = [];
     const toolsApps: typeof items = [];
@@ -51,13 +64,62 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
       }
     });
 
-    const result = [];
-    if (coreApps.length > 0) result.push(coreApps);
-    if (toolsApps.length > 0) result.push(toolsApps);
-    if (qqApps.length > 0) result.push(qqApps);
+    const byName = (a: typeof items[number], b: typeof items[number]) =>
+      getDisplayName(a.name).localeCompare(getDisplayName(b.name), 'zh-Hans-CN');
+    coreApps.sort(byName); toolsApps.sort(byName); qqApps.sort(byName);
 
-    return result.length > 0 ? result : [[]];
-  }, [filteredItems, searchTerm]);
+    // Priority items: '.'(根目录配置) & 'utils/emoji-stickers'(表情包配置)
+    const isPriority = (it: typeof items[number]) => {
+      const n = it.name.toLowerCase();
+      return n === '.' || n.includes('utils/emoji-stickers');
+    };
+
+    const priority: typeof items = [] as any;
+    const removePriority = (arr: typeof items) => {
+      const rest: typeof items = [] as any;
+      arr.forEach(it => (isPriority(it) ? priority.push(it) : rest.push(it)));
+      return rest;
+    };
+
+    const c = removePriority(coreApps);
+    const t = removePriority(toolsApps);
+    const q = removePriority(qqApps);
+
+    const size = Math.max(4, pageCapacity);
+
+    // 首屏：优先项 + 主板块；不混入 Tools/QQ
+    const usedCore = Math.max(0, size - Math.min(priority.length, size));
+    const firstPage = [...priority.slice(0, size), ...c.slice(0, usedCore)].slice(0, size);
+    const remainingCore = c.slice(usedCore);
+
+    const restOrdered = [...remainingCore, ...t, ...q];
+    const restPages = chunkBy(restOrdered, size);
+
+    const out: typeof items[] = [] as any;
+    if (firstPage.length) out.push(firstPage);
+    restPages.forEach(p => out.push(p));
+    return out.length ? out : [[]];
+  }, [filteredItems, searchTerm, pageCapacity]);
+
+  useEffect(() => {
+    const calc = () => {
+      const container = pagesContainerRef.current;
+      if (!container) return;
+      const h = container.clientHeight;
+      const w = container.clientWidth;
+      // Reserve bottom space for pagination / safe-area on mobile
+      const reservedBottom = isMobileView ? 120 : 0;
+      const rowH = isMobileView ? 92 : 120;
+      let availH = Math.max(0, h - reservedBottom);
+      let rows = Math.max(3, Math.floor(availH / rowH));
+      if (isMobileView) rows = Math.min(rows, 4); // clamp for consistency
+      const cols = isMobileView ? 4 : Math.max(3, Math.floor(w / 130));
+      setPageCapacity(rows * cols);
+    };
+    calc();
+    window.addEventListener('resize', calc);
+    return () => window.removeEventListener('resize', calc);
+  }, [isMobileView]);
 
   const totalPages = pages.length;
   const activePage = Math.min(currentPage, totalPages - 1);
@@ -69,6 +131,11 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
       setCurrentPage(p => Math.min(totalPages - 1, p + 1));
     }
   };
+
+  // Drag handled by framer-motion; no manual touch handlers
+
+  const pageDir = currentPage >= prevPageRef.current ? 1 : -1;
+  useEffect(() => { prevPageRef.current = currentPage; }, [currentPage]);
 
   return (
     <AnimatePresence>
@@ -85,7 +152,8 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
             e.stopPropagation();
           }}
         >
-          <div className={styles.content} onClick={onClose}>
+          <div className={styles.content}>
+
             <div className={styles.searchBar} onClick={e => e.stopPropagation()}>
               <span className="material-icons" style={{ color: '#fff', opacity: 0.6 }}>search</span>
               <input
@@ -100,18 +168,38 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
               />
             </div>
 
-            <div className={styles.pagesContainer} onClick={onClose}>
+            <div
+              className={styles.pagesContainer}
+              ref={pagesContainerRef}
+            >
               <AnimatePresence mode='wait'>
                 <motion.div
                   key={activePage}
                   className={`${styles.grid} ${isMobileView ? styles.mobileGrid : ''}`}
-                  initial={{ opacity: 0, x: isMobileView ? 0 : 50, y: isMobileView ? 50 : 0 }}
+                  initial={{ opacity: 0, x: 100 * pageDir, y: 0 }}
                   animate={{ opacity: 1, x: 0, y: 0 }}
-                  exit={{ opacity: 0, x: isMobileView ? 0 : -50, y: isMobileView ? -50 : 0 }}
-                  transition={{ duration: 0.2 }}
-                  onClick={onClose}
+                  exit={{ opacity: 0, x: -100 * pageDir, y: 0 }}
+                  transition={{ type: 'spring', stiffness: 260, damping: 26, mass: 0.6 }}
+                  drag={isMobileView ? 'x' : false}
+                  dragConstraints={{ left: 0, right: 0 }}
+                  dragElastic={0.2}
+                  dragMomentum={false}
+                  dragDirectionLock
+                  onDragEnd={(_, info) => {
+                    const offsetX = info.offset.x;
+                    const velocityX = info.velocity.x;
+                    const swipePower = offsetX * velocityX; // 带方向的功率
+                    const OFFSET_THRESHOLD = 20;
+                    const VELOCITY_THRESHOLD = 150;
+                    const POWER_THRESHOLD = 600;
+                    if (offsetX < -OFFSET_THRESHOLD || velocityX < -VELOCITY_THRESHOLD || swipePower < -POWER_THRESHOLD) {
+                      handlePageChange('next');
+                    } else if (offsetX > OFFSET_THRESHOLD || velocityX > VELOCITY_THRESHOLD || swipePower > POWER_THRESHOLD) {
+                      handlePageChange('prev');
+                    }
+                  }}
                 >
-                  {pages[activePage]?.map((item, index) => (
+                  {pages[activePage]?.map((item) => (
                     <motion.div
                       key={`${item.type}-${item.name}`}
                       className={styles.appItem}
@@ -133,14 +221,14 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
               </AnimatePresence>
             </div>
 
-            {totalPages > 1 && (
+            {
               <div className={`${styles.pagination} ${isMobileView ? styles.mobilePagination : ''}`} onClick={e => e.stopPropagation()}>
                 <button
                   className={styles.navBtn}
                   onClick={() => handlePageChange('prev')}
                   disabled={activePage === 0}
                 >
-                  {isMobileView ? <IoChevronUp /> : <IoChevronBack />}
+                  <IoChevronBack />
                 </button>
 
                 <div className={styles.dots}>
@@ -153,15 +241,29 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
                   ))}
                 </div>
 
+                <div className={styles.pageNumbers}>
+                  {Array.from({ length: totalPages }, (_, i) => (
+                    <button
+                      key={`n-${i}`}
+                      className={`${styles.pageNumber} ${i === activePage ? styles.activePageNumber : ''}`}
+                      onClick={() => setCurrentPage(i)}
+                    >
+                      {i + 1}
+                    </button>
+                  ))}
+                </div>
+
+                <div className={styles.pageCount}>{activePage + 1} / {totalPages}</div>
+
                 <button
                   className={styles.navBtn}
                   onClick={() => handlePageChange('next')}
                   disabled={activePage === totalPages - 1}
                 >
-                  {isMobileView ? <IoChevronDown /> : <IoChevronForward />}
+                  <IoChevronForward />
                 </button>
               </div>
-            )}
+            }
           </div>
         </motion.div>
       )}

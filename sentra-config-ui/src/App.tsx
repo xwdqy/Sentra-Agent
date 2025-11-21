@@ -152,6 +152,23 @@ function App() {
   const [wallpaperInterval, setWallpaperInterval] = useState<number>(0); // 0 = off
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
+  const [usageCounts, setUsageCounts] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('sentra_usage_counts');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const recordUsage = (key: string) => {
+    setUsageCounts(prev => {
+      const next = { ...prev, [key]: (prev[key] || 0) + 1 };
+      try { localStorage.setItem('sentra_usage_counts', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
   // Theme state
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     return (localStorage.getItem('sentra_theme') as 'light' | 'dark') || 'dark';
@@ -456,6 +473,8 @@ function App() {
   };
 
   // Desktop icons
+  const withUsage = <F extends (...args: any[]) => any>(key: string, fn: F) => () => { recordUsage(key); return fn(); };
+
   const desktopIcons: DesktopIcon[] = [
     {
       id: 'bootstrap',
@@ -473,7 +492,7 @@ function App() {
         <FaTools size={24} color="white" />
       </div>,
       position: { x: 20, y: 80 },
-      onClick: handleRunBootstrap,
+      onClick: withUsage('desktop:bootstrap', handleRunBootstrap),
     },
     {
       id: 'start',
@@ -491,7 +510,7 @@ function App() {
         <IoRocket size={28} color="white" />
       </div>,
       position: { x: 20, y: 180 },
-      onClick: handleRunStart,
+      onClick: withUsage('desktop:start', handleRunStart),
     },
     {
       id: 'napcat-build',
@@ -509,7 +528,7 @@ function App() {
         <IoBuild size={26} color="white" />
       </div>,
       position: { x: 20, y: 280 },
-      onClick: handleRunNapcatBuild,
+      onClick: withUsage('desktop:napcat-build', handleRunNapcatBuild),
     },
     {
       id: 'napcat-start',
@@ -527,7 +546,7 @@ function App() {
         <IoChatbubbleEllipses size={28} color="white" />
       </div>,
       position: { x: 20, y: 380 },
-      onClick: handleRunNapcatStart,
+      onClick: withUsage('desktop:napcat-start', handleRunNapcatStart),
     },
   ];
 
@@ -886,6 +905,17 @@ function App() {
 
   // iOS / Mobile / Tablet View
   if (isMobile || isTablet) {
+    const topByUsage = [...allItems]
+      .map(item => ({ item, count: usageCounts[`${item.type}:${item.name}`] || 0 }))
+      .sort((a, b) => b.count - a.count);
+    const fallback = [...allItems].sort((a, b) => getDisplayName(a.name).localeCompare(getDisplayName(b.name), 'zh-Hans-CN'));
+    const pick = (arr: { item: FileItem, count?: number }[], n: number) => arr.slice(0, n).map(x => x.item);
+    const selected = (topByUsage[0]?.count ? pick(topByUsage, 3) : fallback.slice(0, 3));
+    const iosDockExtra = selected.map(it => ({
+      id: `${it.type}-${it.name}`,
+      icon: getIconForType(it.name, it.type),
+      onClick: () => { recordUsage(`${it.type}:${it.name}`); handleIOSOpenWindow(it); }
+    }));
     return (
       <>
         <IOSHomeScreen
@@ -893,6 +923,7 @@ function App() {
           onLaunch={(icon) => icon.onClick()}
           wallpaper="/wallpapers/ios-default.png"
           onLaunchpadOpen={() => setLaunchpadOpen(true)}
+          dockExtra={iosDockExtra}
         />
 
         {/* Render full screen windows on top */}
@@ -919,6 +950,7 @@ function App() {
             name: item.name,
             type: item.type,
             onClick: () => {
+              recordUsage(`${item.type}:${item.name}`);
               handleIOSOpenWindow(item);
               setLaunchpadOpen(false);
             }
@@ -1113,6 +1145,7 @@ function App() {
           name: item.name,
           type: item.type,
           onClick: () => {
+            recordUsage(`${item.type}:${item.name}`);
             openWindow(item);
             const key = `${item.type}-${item.name}`;
             if (!dockFavorites.includes(key)) {

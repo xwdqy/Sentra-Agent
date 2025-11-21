@@ -69,28 +69,20 @@
   height: 100%;
   justify-items: center;
   align-content: flex-start;
-  padding: 20px;
+  padding: 20px 20px 100px 20px; /* 底部留白给分页条 */
 }
 
-/* Mobile 3-column grid */
+/* Mobile full-width grid */
 .mobileGrid {
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px 10px;
-  max-width: 300px;
-  /* Match search bar width */
-  margin: 0 auto;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px 12px;
+  width: 100%;
+  margin: 0;
   align-content: start;
-  overflow-y: auto;
-  max-height: calc(100vh - 200px);
-  padding: 20px 0;
-  /* Remove horizontal padding to align with search bar */
-  scrollbar-width: none;
-  /* Firefox */
-}
-
-.mobileGrid::-webkit-scrollbar {
-  display: none;
-  /* Chrome/Safari */
+  overflow: hidden;
+  padding: 8px 8px calc(96px + env(safe-area-inset-bottom, 0px)) 8px; /* 底部留白给分页条与安全区 */
+  touch-action: pan-x;
+  user-select: none;
 }
 
 .appItem {
@@ -141,15 +133,22 @@
   margin-bottom: 40px;
 }
 
-/* Mobile vertical pagination */
+/* Mobile bottom-centered pagination */
 .mobilePagination {
-  flex-direction: column;
-  gap: 10px;
   position: fixed;
-  right: 20px;
-  top: 50%;
-  transform: translateY(-50%);
+  left: 0;
+  right: 0;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  justify-content: center;
+  gap: 12px;
   margin: 0;
+  display: flex;
+  align-items: center;
+}
+
+.mobilePagination .navBtn {
+  width: 44px;
+  height: 44px;
 }
 
 .navBtn {
@@ -182,7 +181,7 @@
 }
 
 .mobilePagination .dots {
-  flex-direction: column;
+  flex-direction: row;
 }
 
 .dot {
@@ -201,4 +200,57 @@
 .activeDot {
   background: white;
   transform: scale(1.2);
+}
+
+.pageCount {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  min-width: 48px;
+  text-align: center;
+}
+
+.pageNumbers {
+  display: flex;
+  gap: 6px;
+}
+
+.pageNumber {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.pageNumber:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.activePageNumber {
+  background: rgba(255, 255, 255, 0.9);
+  color: #000;
+  border-color: rgba(255, 255, 255, 0.9);
+}
+
+@media (max-width: 768px) {
+  .content {
+    padding: 20px 16px;
+  }
+
+  .searchBar {
+    width: 90vw;
+    max-width: 560px;
+    margin-bottom: 16px;
+  }
+
+  .pagesContainer {
+    max-width: none;
+  }
 }

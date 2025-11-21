@@ -14,12 +14,15 @@
     flex: 1;
     padding: 12px;
     overflow-y: auto;
+    overflow-x: hidden;
     font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
     font-size: 13px;
     line-height: 1.4;
     color: #fff;
     white-space: pre-wrap;
     word-break: break-all;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
 }
 
 .output {
