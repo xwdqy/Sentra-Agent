@@ -78,9 +78,12 @@ export class TimeParser {
     if (preferRange && meta.source === 'microsoft' && meta.primary) {
       const p = meta.primary;
       if (p.start && p.end && !/X/.test(p.start) && !/X/.test(p.end)) {
-        const startDt = this.parseISOWithZone(p.start, tz);
-        const endDt = this.parseISOWithZone(p.end, tz);
+        let startDt = this.parseISOWithZone(p.start, tz);
+        let endDt = this.parseISOWithZone(p.end, tz);
         if (startDt.isValid && endDt.isValid) {
+          if (endDt.toMillis() <= startDt.toMillis()) {
+            endDt = endDt.plus({ days: 1 });
+          }
           return this._windowPayload(startDt, endDt, timeDiff, 'range');
         }
       }

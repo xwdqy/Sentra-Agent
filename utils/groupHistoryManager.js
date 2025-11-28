@@ -1,8 +1,15 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { createLogger } from './logger.js';
+import { getRedis } from './redisClient.js';
 
 const logger = createLogger('GroupHistory');
+
+const GROUP_HISTORY_KEY_PREFIX = process.env.REDIS_GROUP_HISTORY_PREFIX || 'sentra:group:';
+const GROUP_HISTORY_TTL_SECONDS = parseInt(process.env.REDIS_GROUP_HISTORY_TTL_SECONDS || '0', 10) || 0;
+const DECISION_GROUP_RECENT_MESSAGES = parseInt(process.env.REPLY_DECISION_GROUP_RECENT_MESSAGES || '15', 10);
+const DECISION_SENDER_RECENT_MESSAGES = parseInt(process.env.REPLY_DECISION_SENDER_RECENT_MESSAGES || '5', 10);
+const DECISION_CONTEXT_MAX_CHARS = parseInt(process.env.REPLY_DECISION_CONTEXT_MAX_CHARS || '120', 10);
 
 /**
  * Per-Group
@@ -57,6 +64,144 @@ class GroupTaskQueue extends EventEmitter {
 }
 
 /**
+ * 将内存中的群历史结构序列化为可写入 Redis 的纯 JSON 对象
+ */
+function serializeHistory(history) {
+  const senderLastMessageTimeObj = {};
+  if (history.senderLastMessageTime && history.senderLastMessageTime instanceof Map) {
+    for (const [senderId, ts] of history.senderLastMessageTime.entries()) {
+      senderLastMessageTimeObj[String(senderId)] = ts;
+    }
+  }
+
+  const activePairsObj = {};
+  if (history.activePairs && history.activePairs instanceof Map) {
+    for (const [pairId, ctx] of history.activePairs.entries()) {
+      if (!ctx || typeof ctx !== 'object') continue;
+
+      const assistant = typeof ctx.assistant === 'string' ? ctx.assistant : '';
+      const userContent = typeof ctx.userContent === 'string' ? ctx.userContent : null;
+      const createdAt = typeof ctx.createdAt === 'number' ? ctx.createdAt : 0;
+      const lastUpdatedAt = typeof ctx.lastUpdatedAt === 'number'
+        ? ctx.lastUpdatedAt
+        : createdAt;
+      const status = typeof ctx.status === 'string' ? ctx.status : 'building';
+
+      activePairsObj[String(pairId)] = {
+        assistant,
+        userContent,
+        createdAt,
+        lastUpdatedAt,
+        status
+      };
+    }
+  }
+
+  return {
+    conversations: Array.isArray(history.conversations) ? history.conversations : [],
+    pendingMessages: Array.isArray(history.pendingMessages) ? history.pendingMessages : [],
+    processingMessages: Array.isArray(history.processingMessages) ? history.processingMessages : [],
+    activePairs: activePairsObj,
+    senderLastMessageTime: senderLastMessageTimeObj
+  };
+}
+
+/**
+ * 将 Redis 中读取的 JSON 对象反序列化为内存结构（包含 Map）
+ */
+function deserializeHistory(data) {
+  if (!data || typeof data !== 'object') {
+    return null;
+  }
+
+  const senderLastMessageTime = new Map();
+  if (data.senderLastMessageTime && typeof data.senderLastMessageTime === 'object') {
+    for (const [senderId, ts] of Object.entries(data.senderLastMessageTime)) {
+      senderLastMessageTime.set(String(senderId), ts);
+    }
+  }
+
+  const activePairs = new Map();
+  if (data.activePairs && typeof data.activePairs === 'object') {
+    for (const [pairId, ctx] of Object.entries(data.activePairs)) {
+      if (!ctx || typeof ctx !== 'object') continue;
+
+      const createdAt = typeof ctx.createdAt === 'number' ? ctx.createdAt : 0;
+      const lastUpdatedAt = typeof ctx.lastUpdatedAt === 'number'
+        ? ctx.lastUpdatedAt
+        : createdAt;
+      const assistant = typeof ctx.assistant === 'string' ? ctx.assistant : '';
+      const userContent = typeof ctx.userContent === 'string' ? ctx.userContent : null;
+      let status = typeof ctx.status === 'string' ? ctx.status : 'building';
+      if (status !== 'building' && status !== 'finished' && status !== 'cancelled') {
+        status = 'building';
+      }
+
+      activePairs.set(String(pairId), {
+        assistant,
+        userContent,
+        createdAt,
+        lastUpdatedAt,
+        status
+      });
+    }
+  }
+
+  return {
+    conversations: Array.isArray(data.conversations) ? data.conversations : [],
+    pendingMessages: Array.isArray(data.pendingMessages) ? data.pendingMessages : [],
+    processingMessages: Array.isArray(data.processingMessages) ? data.processingMessages : [],
+    activePairs,
+    senderLastMessageTime
+  };
+}
+
+async function loadHistoryFromRedis(groupId) {
+  const redis = getRedis();
+  if (!redis) return null;
+
+  const key = `${GROUP_HISTORY_KEY_PREFIX}${groupId}`;
+  try {
+    const raw = await redis.get(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return deserializeHistory(parsed);
+  } catch (e) {
+    logger.warn('加载 Redis 群历史失败，回退本地缓存', { err: String(e), groupId });
+    return null;
+  }
+}
+
+async function saveHistoryToRedis(groupId, history) {
+  const redis = getRedis();
+  if (!redis) return;
+
+  const key = `${GROUP_HISTORY_KEY_PREFIX}${groupId}`;
+  try {
+    const payload = JSON.stringify(serializeHistory(history));
+    if (Number.isFinite(GROUP_HISTORY_TTL_SECONDS) && GROUP_HISTORY_TTL_SECONDS > 0) {
+      await redis.set(key, payload, 'EX', GROUP_HISTORY_TTL_SECONDS);
+    } else {
+      await redis.set(key, payload);
+    }
+  } catch (e) {
+    logger.warn('保存 Redis 群历史失败（忽略并继续使用本地缓存）', { err: String(e), groupId });
+  }
+}
+
+async function deleteHistoryFromRedis(groupId) {
+  const redis = getRedis();
+  if (!redis) return;
+
+  const key = `${GROUP_HISTORY_KEY_PREFIX}${groupId}`;
+  try {
+    await redis.del(key);
+  } catch (e) {
+    logger.warn('删除 Redis 群历史失败（忽略）', { err: String(e), groupId });
+  }
+}
+
+/**
  * 群聊历史记录管理器
  * 
  * 核心特性：
@@ -68,8 +213,8 @@ class GroupTaskQueue extends EventEmitter {
  * 数据结构：
  * - conversations: [{ role: 'user'|'assistant', content: string, pairId: string }]
  * - pendingMessages: [{ summary: string, msgObj: Object }]
- * - currentAssistantMessage: string
- * - currentPairId: string | null
+ * - processingMessages: [{ summary: string, msgObj: Object }]
+ * - activePairs: Map<pairId, { assistant, userContent, createdAt, lastUpdatedAt, status }>
  */
 class GroupHistoryManager {
   constructor(options = {}) {
@@ -77,7 +222,7 @@ class GroupHistoryManager {
     this.maxConversationPairs = options.maxConversationPairs || 20;
     
     // 每个群的历史数据
-    // Map<groupId, { conversations, pendingMessages, currentAssistantMessage, currentPairId }>
+    // Map<groupId, { conversations, pendingMessages, processingMessages, activePairs, senderLastMessageTime }>
     this.histories = new Map();
     
     // 每个群的任务队列（确保串行执行）
@@ -111,18 +256,28 @@ class GroupHistoryManager {
    * @param {string} groupId - 群ID
    * @returns {Object} 群组历史对象
    */
-  _getOrInitHistory(groupId) {
-    if (!this.histories.has(groupId)) {
-      this.histories.set(groupId, {
-        conversations: [],              // 完整的对话历史（user/assistant对）
-        pendingMessages: [],             // 待处理的消息列表（还未开始处理）
-        processingMessages: [],          // 正在处理的消息列表（已开始处理，但未完成）
-        currentAssistantMessage: '',     // 当前正在构建的助手消息
-        currentPairId: null,             // 当前对话对的UUID
-        senderLastMessageTime: new Map() // 记录每个sender的最后消息时间（用于超时清理）
-      });
+  async _getOrInitHistory(groupId) {
+    if (this.histories.has(groupId)) {
+      return this.histories.get(groupId);
     }
-    return this.histories.get(groupId);
+
+    // 优先尝试从 Redis 加载历史
+    const loaded = await loadHistoryFromRedis(groupId);
+    if (loaded) {
+      this.histories.set(groupId, loaded);
+      return loaded;
+    }
+
+    // Redis 中也没有，则创建新的空历史
+    const initial = {
+      conversations: [],              // 完整的对话历史（user/assistant对）
+      pendingMessages: [],             // 待处理的消息列表（还未开始处理）
+      processingMessages: [],          // 正在处理的消息列表（已开始处理，但未完成）
+      senderLastMessageTime: new Map(), // 记录每个sender的最后消息时间（用于超时清理）
+      activePairs: new Map()           // 按 pairId 管理的活动对话上下文
+    };
+    this.histories.set(groupId, initial);
+    return initial;
   }
 
   /**
@@ -134,7 +289,7 @@ class GroupHistoryManager {
    */
   async addPendingMessage(groupId, summary, msgObj) {
     return this._executeForGroup(groupId, async () => {
-      const history = this._getOrInitHistory(groupId);
+      const history = await this._getOrInitHistory(groupId);
       const senderId = String(msgObj.sender_id);
       const now = Date.now();
       
@@ -151,6 +306,8 @@ class GroupHistoryManager {
       history.pendingMessages.push({ summary, msgObj, timestamp: now });
       
       logger.debug(`待回复ADD: ${groupId} sender ${msgObj.sender_id}, msg ${msgObj.message_id}, 当前${history.pendingMessages.length}条待回复`);
+
+      await saveHistoryToRedis(groupId, history);
     });
   }
 
@@ -262,6 +419,14 @@ class GroupHistoryManager {
     // Sentra XML 协议：不转义特殊字符，保持原样
     // 参考 Memory[5bc2a202]: Sentra XML 协议不转义 <、>、& 等
     return String(str || '');
+  }
+
+  _truncateForDecisionContext(text, maxChars) {
+    const str = String(text || '');
+    if (!maxChars || maxChars <= 0 || str.length <= maxChars) {
+      return str;
+    }
+    return str.slice(0, maxChars) + '...';
   }
 
   /**
@@ -415,7 +580,7 @@ class GroupHistoryManager {
    */
   async startProcessingMessages(groupId, senderId) {
     return this._executeForGroup(groupId, async () => {
-      const history = this._getOrInitHistory(groupId);
+      const history = await this._getOrInitHistory(groupId);
       
       // 筛选该sender的所有待处理消息
       const senderPending = history.pendingMessages.filter(pm => 
@@ -432,6 +597,8 @@ class GroupHistoryManager {
       
       logger.debug(`开始处理: ${groupId} sender ${senderId} 移动${senderPending.length}条消息 pending(${history.pendingMessages.length}) -> processing(${history.processingMessages.length})`);
       
+      await saveHistoryToRedis(groupId, history);
+
       return senderPending.map(pm => pm.msgObj);
     });
   }
@@ -476,6 +643,93 @@ class GroupHistoryManager {
     return senderMessages;
   }
 
+  getRecentMessagesForDecision(groupId, senderId, options = {}) {
+    const history = this.histories.get(groupId);
+    if (!history) {
+      return {
+        group_recent_messages: [],
+        sender_recent_messages: []
+      };
+    }
+
+    let groupLimit = typeof options.groupLimit === 'number' && options.groupLimit > 0
+      ? options.groupLimit
+      : DECISION_GROUP_RECENT_MESSAGES;
+    let senderLimit = typeof options.senderLimit === 'number' && options.senderLimit > 0
+      ? options.senderLimit
+      : DECISION_SENDER_RECENT_MESSAGES;
+    let maxChars = typeof options.maxChars === 'number' && options.maxChars > 0
+      ? options.maxChars
+      : DECISION_CONTEXT_MAX_CHARS;
+
+    if (!Number.isFinite(groupLimit) || groupLimit <= 0) {
+      groupLimit = 0;
+    }
+    if (!Number.isFinite(senderLimit) || senderLimit <= 0) {
+      senderLimit = 0;
+    }
+    if (!Number.isFinite(maxChars) || maxChars <= 0) {
+      maxChars = 0;
+    }
+
+    const allMessages = [
+      ...(history.pendingMessages || []),
+      ...(history.processingMessages || [])
+    ];
+
+    if (allMessages.length === 0) {
+      return {
+        group_recent_messages: [],
+        sender_recent_messages: []
+      };
+    }
+
+    const sorted = allMessages.slice().sort((a, b) => {
+      const ta = typeof a.timestamp === 'number' ? a.timestamp : 0;
+      const tb = typeof b.timestamp === 'number' ? b.timestamp : 0;
+      return ta - tb;
+    });
+
+    const result = {
+      group_recent_messages: [],
+      sender_recent_messages: []
+    };
+
+    if (groupLimit > 0) {
+      const groupSlice = sorted.slice(-groupLimit);
+      result.group_recent_messages = groupSlice.map((pm) => {
+        const msg = pm.msgObj || {};
+        const rawText = msg.text || pm.summary || '';
+        return {
+          sender_id: String(msg.sender_id || ''),
+          sender_name: msg.sender_name || 'Unknown',
+          text: this._truncateForDecisionContext(rawText, maxChars),
+          time: msg.time_str || ''
+        };
+      });
+    }
+
+    if (senderLimit > 0 && senderId != null) {
+      const senderStr = String(senderId);
+      const senderMessages = sorted.filter((pm) => String(pm.msgObj?.sender_id) === senderStr);
+      if (senderMessages.length > 0) {
+        const senderSlice = senderMessages.slice(-senderLimit);
+        result.sender_recent_messages = senderSlice.map((pm) => {
+          const msg = pm.msgObj || {};
+          const rawText = msg.text || pm.summary || '';
+          return {
+            sender_id: String(msg.sender_id || ''),
+            sender_name: msg.sender_name || 'Unknown',
+            text: this._truncateForDecisionContext(rawText, maxChars),
+            time: msg.time_str || ''
+          };
+        });
+      }
+    }
+
+    return result;
+  }
+
   /**
    * 开始构建助手回复（生成UUID标记本次对话对）（线程安全）
    * @param {string} groupId - 群ID
@@ -483,12 +737,25 @@ class GroupHistoryManager {
    */
   async startAssistantMessage(groupId) {
     return this._executeForGroup(groupId, async () => {
-      const history = this._getOrInitHistory(groupId);
-      history.currentAssistantMessage = '';
-      history.currentPairId = randomUUID();
+      const history = await this._getOrInitHistory(groupId);
+      if (!history.activePairs || !(history.activePairs instanceof Map)) {
+        history.activePairs = new Map();
+      }
 
-      logger.debug(`生成对话对UUID: ${groupId} ID ${history.currentPairId}`);
-      return history.currentPairId;
+      const pairId = randomUUID();
+      const now = Date.now();
+
+      history.activePairs.set(pairId, {
+        assistant: '',
+        userContent: null,
+        createdAt: now,
+        lastUpdatedAt: now,
+        status: 'building'
+      });
+
+      logger.debug(`生成对话对UUID: ${groupId} ID ${pairId}`);
+      await saveHistoryToRedis(groupId, history);
+      return pairId;
     });
   }
 
@@ -498,14 +765,39 @@ class GroupHistoryManager {
    * @param {string} content - 要追加的内容
    * @returns {Promise<void>}
    */
-  async appendToAssistantMessage(groupId, content) {
+  async appendToAssistantMessage(groupId, content, pairId = null) {
     return this._executeForGroup(groupId, async () => {
-      const history = this._getOrInitHistory(groupId);
-      if (history.currentAssistantMessage) {
-        history.currentAssistantMessage += '\n' + content;
-      } else {
-        history.currentAssistantMessage = content;
+      const history = await this._getOrInitHistory(groupId);
+      if (!history.activePairs || !(history.activePairs instanceof Map)) {
+        history.activePairs = new Map();
       }
+
+      if (!pairId) {
+        logger.warn(`追加跳过: ${groupId} 未传入pairId (调用方状态异常)`);
+        return;
+      }
+
+      const ctx = history.activePairs.get(pairId);
+      const shortId = String(pairId).substring(0, 8);
+
+      if (!ctx) {
+        logger.debug(`追加跳过: ${groupId} pairId ${shortId} 不在活动列表中 (可能已完成/取消)`);
+        return;
+      }
+
+      if (ctx.status !== 'building') {
+        logger.debug(`追加跳过: ${groupId} pairId ${shortId} 状态为${ctx.status}`);
+        return;
+      }
+
+      if (ctx.assistant) {
+        ctx.assistant += '\n' + content;
+      } else {
+        ctx.assistant = content;
+      }
+      ctx.lastUpdatedAt = Date.now();
+
+      await saveHistoryToRedis(groupId, history);
     });
   }
 
@@ -517,10 +809,32 @@ class GroupHistoryManager {
    */
   async cancelCurrentAssistantMessage(groupId) {
     return this._executeForGroup(groupId, async () => {
-      const history = this._getOrInitHistory(groupId);
-      logger.debug(`取消消息: ${groupId} 放弃${history.currentAssistantMessage?.length || 0}字符`);
-      history.currentAssistantMessage = '';
-      history.currentPairId = null;
+      const history = await this._getOrInitHistory(groupId);
+      if (!history.activePairs || !(history.activePairs instanceof Map)) {
+        history.activePairs = new Map();
+      }
+
+      let totalChars = 0;
+      let cancelledCount = 0;
+
+      for (const [pairId, ctx] of history.activePairs.entries()) {
+        if (!ctx || ctx.status !== 'building') {
+          continue;
+        }
+
+        const len = typeof ctx.assistant === 'string' ? ctx.assistant.length : 0;
+        totalChars += len;
+        cancelledCount++;
+
+        ctx.assistant = '';
+        ctx.userContent = null;
+        ctx.status = 'cancelled';
+        history.activePairs.delete(pairId);
+      }
+
+      logger.debug(`取消消息: ${groupId} 取消${cancelledCount}个活动对话对, 共放弃${totalChars}字符`);
+
+      await saveHistoryToRedis(groupId, history);
     });
   }
 
@@ -530,9 +844,35 @@ class GroupHistoryManager {
    * @param {string} userContent - 用户消息内容（完整的 XML 格式，可选）
    * @returns {Promise<boolean>} 是否保存成功
    */
-  async finishConversationPair(groupId, userContent = null) {
+  async finishConversationPair(groupId, pairId, userContent = null) {
     return this._executeForGroup(groupId, async () => {
-      const history = this._getOrInitHistory(groupId);
+      const history = await this._getOrInitHistory(groupId);
+      if (!history.activePairs || !(history.activePairs instanceof Map)) {
+        history.activePairs = new Map();
+      }
+
+      if (!pairId) {
+        logger.warn(`保存跳过: ${groupId} 未传入pairId (调用方状态异常)`);
+        return false;
+      }
+
+      const ctx = history.activePairs.get(pairId);
+      const shortId = String(pairId).substring(0, 8);
+
+      if (!ctx) {
+        logger.debug(`保存跳过: ${groupId} pairId ${shortId} 不在活动列表中 (可能已被取消/完成或重启后丢失)`);
+        return false;
+      }
+
+      if (ctx.status === 'cancelled') {
+        logger.debug(`保存跳过: ${groupId} pairId ${shortId} 已取消`);
+        return false;
+      }
+
+      if (ctx.status === 'finished') {
+        logger.debug(`保存跳过: ${groupId} pairId ${shortId} 已完成`);
+        return false;
+      }
 
       // 如果没有传入 userContent，使用旧的逻辑（简单拼接，已废弃）
       if (!userContent) {
@@ -540,56 +880,51 @@ class GroupHistoryManager {
         userContent = history.processingMessages.map(pm => pm.summary).join('\n\n');
       }
 
-      // 严格检查状态一致性
-      const pairId = history.currentPairId;
-      const assistantMsg = history.currentAssistantMessage;
-      
-      // 状态检查：必须同时满足所有条件
-      if (!pairId) {
-        logger.warn(`保存跳过: ${groupId} 没有pairId (状态未初始化或已取消)`);
-        return false;
-      }
-      
+      const assistantMsg = ctx.assistant;
+
       if (!userContent || userContent.trim().length === 0) {
-        logger.warn(`保存跳过: ${groupId} pairId ${pairId.substring(0, 8)} userContent为空`);
-        // 清理不完整的状态
-        history.currentPairId = null;
-        history.currentAssistantMessage = '';
+        logger.warn(`保存跳过: ${groupId} pairId ${shortId} userContent为空`);
+        ctx.status = 'cancelled';
+        ctx.assistant = '';
+        ctx.userContent = null;
+        history.activePairs.delete(pairId);
         return false;
       }
-      
+
       if (!assistantMsg || assistantMsg.trim().length === 0) {
-        logger.warn(`保存跳过: ${groupId} pairId ${pairId.substring(0, 8)} assistantMsg为空`);
-        // 清理不完整的状态
-        history.currentPairId = null;
-        history.currentAssistantMessage = '';
+        logger.warn(`保存跳过: ${groupId} pairId ${shortId} assistantMsg为空`);
+        ctx.status = 'cancelled';
+        ctx.assistant = '';
+        ctx.userContent = null;
+        history.activePairs.delete(pairId);
         return false;
       }
 
-      // 所有检查通过，保存对话对
+      // 所有检查通过，按对话开始时间保存对话对，保证顺序
+      const nowTs = typeof ctx.createdAt === 'number' && ctx.createdAt > 0
+        ? ctx.createdAt
+        : Date.now();
       history.conversations.push(
-        { role: 'user', content: userContent, pairId },
-        { role: 'assistant', content: assistantMsg, pairId }
+        { role: 'user', content: userContent, pairId, timestamp: nowTs },
+        { role: 'assistant', content: assistantMsg, pairId, timestamp: nowTs }
       );
-
-      // 保持最多N组对话（2N条消息）
-      const maxMessages = this.maxConversationPairs * 2;
-      while (history.conversations.length > maxMessages) {
-        history.conversations.shift();
-        history.conversations.shift(); // 删除一对
-      }
 
       const pairCount = history.conversations.length / 2;
       const processingCount = history.processingMessages.length;
       const pendingCount = history.pendingMessages.length;
-      
-      logger.info(`保存成功: ${groupId} pairId ${pairId.substring(0, 8)} 包含${processingCount}条processing, ${pairCount}/${this.maxConversationPairs}组历史, ${pendingCount}条pending`);
 
-      // 清空正在处理的消息、当前助手消息和pairId
+      logger.info(
+        `保存成功: ${groupId} pairId ${shortId} 包含${processingCount}条processing, 当前历史${pairCount}组 (上下文限制=${this.maxConversationPairs}), ${pendingCount}条pending`
+      );
+
+      // 清空正在处理的消息，并将该对话对标记为完成后移出活动列表
       // 注意：只清空 processingMessages，保留 pendingMessages（这些是任务完成后才到达的新消息）
       history.processingMessages = [];
-      history.currentAssistantMessage = '';
-      history.currentPairId = null;
+      ctx.status = 'finished';
+      ctx.userContent = userContent;
+      history.activePairs.delete(pairId);
+      
+      await saveHistoryToRedis(groupId, history);
 
       return true;
     });
@@ -603,30 +938,47 @@ class GroupHistoryManager {
    */
   async cancelConversationPairById(groupId, pairId) {
     return this._executeForGroup(groupId, async () => {
-      const history = this.histories.get(groupId);
+      let history = this.histories.get(groupId);
+      if (!history) {
+        history = await this._getOrInitHistory(groupId);
+      }
       if (!history) {
         return false;
       }
 
-      // 找到并删除所有带有此pairId的消息
+      if (!history.activePairs || !(history.activePairs instanceof Map)) {
+        history.activePairs = new Map();
+      }
+
+      const shortId = String(pairId || '').substring(0, 8);
+      let touched = false;
+
+      const ctx = history.activePairs.get(pairId);
+      if (ctx) {
+        ctx.status = 'cancelled';
+        ctx.assistant = '';
+        ctx.userContent = null;
+        history.activePairs.delete(pairId);
+        logger.debug(`撤销: ${groupId} 清空活动对话对 pairId ${shortId}`);
+        touched = true;
+      }
+
+      // 找到并删除所有带有此pairId的历史消息
       const initialLength = history.conversations.length;
       history.conversations = history.conversations.filter(msg => msg.pairId !== pairId);
       const deletedCount = initialLength - history.conversations.length;
 
       if (deletedCount > 0) {
-        logger.debug(`撤销对话对: ${groupId} pairId ${pairId.substring(0, 8)} 删除${deletedCount}条`);
+        logger.debug(`撤销对话对: ${groupId} pairId ${shortId} 删除${deletedCount}条`);
+        touched = true;
+      }
 
-        // 如果删除的是当前正在构建的对话对，清空状态
-        if (history.currentPairId === pairId) {
-          history.currentAssistantMessage = '';
-          history.currentPairId = null;
-          logger.debug(`撤销: ${groupId} 清空当前构建中的对话对`);
-        }
-
+      if (touched) {
+        await saveHistoryToRedis(groupId, history);
         return true;
       }
 
-      logger.warn(`撤销失败: ${groupId} 未找到pairId ${pairId.substring(0, 8)}`);
+      logger.warn(`撤销失败: ${groupId} 未找到pairId ${shortId}`);
       return false;
     });
   }
@@ -644,6 +996,162 @@ class GroupHistoryManager {
 
     // 返回副本，去除pairId字段（API不需要）
     return history.conversations.map(({ role, content }) => ({ role, content }));
+  }
+
+  /**
+   * 为上下文构建对话历史，支持按时间窗口筛选
+   * - 提供 timeStart 时：只返回该时间段内命中的对话对（真实数量），按时间升序
+   * - 未提供 timeStart 时：返回最近若干对话对（默认 maxConversationPairs）
+   * @param {string} groupId - 群ID
+   * @param {Object} options
+   * @param {number} [options.timeStart] - 起始时间戳（毫秒）
+   * @param {number} [options.timeEnd] - 结束时间戳（毫秒，<=0 表示不限上界）
+   * @param {number} [options.recentPairs] - 最近保留的对话对数量（默认 maxConversationPairs）
+   * @returns {Array} 对话历史数组 [{ role, content }, ...]
+   */
+  getConversationHistoryForContext(groupId, options = {}) {
+    const history = this.histories.get(groupId);
+    if (!history || !Array.isArray(history.conversations) || history.conversations.length === 0) {
+      return [];
+    }
+
+    const { timeStart, timeEnd = 0, recentPairs } = options;
+
+    // 将扁平数组按 pairId 聚合为对话对
+    const pairMap = new Map();
+    const raw = history.conversations;
+
+    for (let idx = 0; idx < raw.length; idx++) {
+      const msg = raw[idx];
+      const pid = msg.pairId || `__noid_${idx}`;
+      let pair = pairMap.get(pid);
+      if (!pair) {
+        pair = {
+          pairId: pid,
+          user: null,
+          assistant: null,
+          timestamp: typeof msg.timestamp === 'number' ? msg.timestamp : 0,
+          order: idx
+        };
+        pairMap.set(pid, pair);
+      }
+
+      if (msg.role === 'user') {
+        pair.user = msg;
+      } else if (msg.role === 'assistant') {
+        pair.assistant = msg;
+      }
+
+      if (!pair.timestamp && typeof msg.timestamp === 'number') {
+        pair.timestamp = msg.timestamp;
+      }
+    }
+
+    let pairs = Array.from(pairMap.values());
+
+    const totalPairs = pairs.length;
+    let minTs = null;
+    let maxTs = null;
+    if (totalPairs > 0) {
+      for (const p of pairs) {
+        const ts = typeof p.timestamp === 'number' ? p.timestamp : 0;
+        if (!ts) continue;
+        if (minTs === null || ts < minTs) minTs = ts;
+        if (maxTs === null || ts > maxTs) maxTs = ts;
+      }
+    }
+
+    const sortPairs = (arr) => arr.sort((a, b) => {
+      const ta = typeof a.timestamp === 'number' ? a.timestamp : 0;
+      const tb = typeof b.timestamp === 'number' ? b.timestamp : 0;
+      if (ta !== tb) return ta - tb;
+      return a.order - b.order;
+    });
+
+    // 1) 如果提供时间窗口：优先选取窗口内对话对，再按需要补充最近对话
+    let targetPairs = [];
+    if (typeof timeStart === 'number' && !Number.isNaN(timeStart)) {
+      const windowPairs = pairs.filter(p => {
+        const ts = typeof p.timestamp === 'number' ? p.timestamp : 0;
+        if (!ts) return false;
+        if (ts < timeStart) return false;
+        if (typeof timeEnd === 'number' && timeEnd > 0 && ts >= timeEnd) return false;
+        return true;
+      });
+      sortPairs(windowPairs);
+
+      const startStr = new Date(timeStart).toISOString();
+      const endStr = (typeof timeEnd === 'number' && timeEnd > 0)
+        ? new Date(timeEnd).toISOString()
+        : '∞';
+
+      if (windowPairs.length > 0) {
+        const hitMinTs = typeof windowPairs[0].timestamp === 'number' ? windowPairs[0].timestamp : 0;
+        const hitMaxTs = typeof windowPairs[windowPairs.length - 1].timestamp === 'number'
+          ? windowPairs[windowPairs.length - 1].timestamp
+          : 0;
+        const hitMinStr = hitMinTs ? new Date(hitMinTs).toISOString() : 'none';
+        const hitMaxStr = hitMaxTs ? new Date(hitMaxTs).toISOString() : 'none';
+        logger.info(`时间窗口命中对话对: ${groupId} window [${startStr} - ${endStr}], 命中${windowPairs.length}组, 总数${totalPairs}, 命中区间[${hitMinStr} - ${hitMaxStr}]`);
+      } else {
+        const globalMinStr = minTs ? new Date(minTs).toISOString() : 'none';
+        const globalMaxStr = maxTs ? new Date(maxTs).toISOString() : 'none';
+        logger.info(`时间窗口内未命中对话对: ${groupId} window [${startStr} - ${endStr}], 现有对话对=${totalPairs}, 全局区间[${globalMinStr} - ${globalMaxStr}]`);
+      }
+
+      // 在窗口命中的基础上，按时间顺序补充最近的对话对，直到达到 recentPairs/maxConversationPairs 上限
+      let recentLimit = typeof recentPairs === 'number' && recentPairs > 0
+        ? recentPairs
+        : this.maxConversationPairs;
+      if (!recentLimit || recentLimit <= 0) {
+        recentLimit = pairs.length;
+      }
+
+      const resultPairs = [...windowPairs];
+
+      if (resultPairs.length < recentLimit) {
+        const needed = recentLimit - resultPairs.length;
+        const windowSet = new Set(windowPairs.map(p => p.pairId));
+        const nonWindowPairs = pairs.filter(p => !windowSet.has(p.pairId));
+        sortPairs(nonWindowPairs);
+
+        if (nonWindowPairs.length > 0 && needed > 0) {
+          const extra = nonWindowPairs.slice(Math.max(0, nonWindowPairs.length - needed));
+          resultPairs.push(...extra);
+          sortPairs(resultPairs);
+        }
+      }
+
+      targetPairs = resultPairs;
+    } else {
+      // 2) 未提供时间窗口：按原逻辑返回最近若干对话对
+      let recentLimit = typeof recentPairs === 'number' && recentPairs > 0
+        ? recentPairs
+        : this.maxConversationPairs;
+      if (!recentLimit || recentLimit <= 0) {
+        recentLimit = pairs.length;
+      }
+
+      sortPairs(pairs);
+      if (pairs.length > recentLimit) {
+        targetPairs = pairs.slice(pairs.length - recentLimit);
+      } else {
+        targetPairs = pairs;
+      }
+    }
+
+    // 展平为 [{ role, content }, ...]
+    const conversationsForContext = [];
+    for (const p of targetPairs) {
+      if (p.user) {
+        conversationsForContext.push({ role: p.user.role, content: p.user.content });
+      }
+      if (p.assistant) {
+        conversationsForContext.push({ role: p.assistant.role, content: p.assistant.content });
+      }
+    }
+
+    return conversationsForContext;
   }
 
   /**
@@ -667,6 +1175,89 @@ class GroupHistoryManager {
   }
 
   /**
+   * 获取对话对的片段
+   * @param {string} groupId - 群ID
+   * @param {number} start - 开始索引（基于按时间排序后的对话对）
+   * @param {number} end - 结束索引（不包含，类似 Array.slice）
+   * @returns {{ conversations: Array<{role: string, content: string}>, timeStart: number|null, timeEnd: number|null }}
+   */
+  getConversationPairSlice(groupId, start, end) {
+    const history = this.histories.get(groupId);
+    if (!history || !Array.isArray(history.conversations) || history.conversations.length === 0) {
+      return { conversations: [], timeStart: null, timeEnd: null };
+    }
+
+    // 将扁平数组按 pairId 聚合为对话对
+    const pairMap = new Map();
+    const raw = history.conversations;
+
+    for (let idx = 0; idx < raw.length; idx++) {
+      const msg = raw[idx];
+      const pid = msg.pairId || `__noid_${idx}`;
+      let pair = pairMap.get(pid);
+      if (!pair) {
+        pair = {
+          pairId: pid,
+          user: null,
+          assistant: null,
+          timestamp: typeof msg.timestamp === 'number' ? msg.timestamp : 0,
+          order: idx
+        };
+        pairMap.set(pid, pair);
+      }
+
+      if (msg.role === 'user') {
+        pair.user = msg;
+      } else if (msg.role === 'assistant') {
+        pair.assistant = msg;
+      }
+
+      if (!pair.timestamp && typeof msg.timestamp === 'number') {
+        pair.timestamp = msg.timestamp;
+      }
+    }
+
+    let pairs = Array.from(pairMap.values());
+    const sortPairs = (arr) => arr.sort((a, b) => {
+      const ta = typeof a.timestamp === 'number' ? a.timestamp : 0;
+      const tb = typeof b.timestamp === 'number' ? b.timestamp : 0;
+      if (ta !== tb) return ta - tb;
+      return a.order - b.order;
+    });
+    sortPairs(pairs);
+
+    const totalPairs = pairs.length;
+    const s = Math.max(0, Number.isFinite(start) ? start : 0);
+    const e = Number.isFinite(end) && end > 0 ? Math.min(end, totalPairs) : totalPairs;
+    if (s >= e) {
+      return { conversations: [], timeStart: null, timeEnd: null };
+    }
+
+    const slicedPairs = pairs.slice(s, e);
+
+    let timeStart = null;
+    let timeEnd = null;
+    for (const p of slicedPairs) {
+      const ts = typeof p.timestamp === 'number' ? p.timestamp : 0;
+      if (!ts) continue;
+      if (timeStart === null || ts < timeStart) timeStart = ts;
+      if (timeEnd === null || ts > timeEnd) timeEnd = ts;
+    }
+
+    const conversationsForContext = [];
+    for (const p of slicedPairs) {
+      if (p.user) {
+        conversationsForContext.push({ role: p.user.role, content: p.user.content });
+      }
+      if (p.assistant) {
+        conversationsForContext.push({ role: p.assistant.role, content: p.assistant.content });
+      }
+    }
+
+    return { conversations: conversationsForContext, timeStart, timeEnd };
+  }
+
+  /**
    * 清空指定群的所有数据（线程安全）
    * @param {string} groupId - 群ID
    * @returns {Promise<void>}
@@ -675,6 +1266,8 @@ class GroupHistoryManager {
     return this._executeForGroup(groupId, async () => {
       this.histories.delete(groupId);
       logger.info(`清空群历史: ${groupId}`);
+
+      await deleteHistoryFromRedis(groupId);
     });
   }
 
@@ -697,10 +1290,20 @@ class GroupHistoryManager {
     };
 
     for (const [groupId, history] of this.histories) {
+      let isReplying = false;
+      if (history.activePairs && history.activePairs instanceof Map) {
+        for (const ctx of history.activePairs.values()) {
+          if (ctx && ctx.status === 'building') {
+            isReplying = true;
+            break;
+          }
+        }
+      }
+
       stats.groups[groupId] = {
         conversationPairs: history.conversations.length / 2,
         pendingMessages: history.pendingMessages.length,
-        isReplying: !!history.currentPairId
+        isReplying
       };
     }
 

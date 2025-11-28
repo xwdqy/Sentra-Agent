@@ -30,6 +30,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadToolDef } from './tools/loader.js';
+import { isRunCancelled, clearRunCancelled } from '../bus/runCancel.js';
 
 function now() { return Date.now(); }
 
@@ -707,6 +708,46 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     const draftArgs = step.draftArgs || {};
     const stepStart = now();
     
+    // 若运行已被上游标记为取消，则跳过实际工具调用，避免继续浪费资源
+    if (isRunCancelled(runId)) {
+      const elapsed = now() - stepStart;
+      const depOn = depsArr[i] || [];
+      const depBy = revDepsArr[i] || [];
+      const gid = groupOf[i];
+      const res = {
+        success: false,
+        code: 'RUN_CANCELLED',
+        data: null,
+        message: '运行已被取消，跳过此步骤'
+      };
+      const ev = {
+        type: 'tool_result',
+        plannedStepIndex: i,
+        executionIndex: nextExecutionIndex++,
+        aiName,
+        reason: formatReason(step.reason),
+        nextStep: step.nextStep || '',
+        args: draftArgs,
+        result: res,
+        elapsedMs: elapsed,
+        dependsOn: depOn,
+        dependedBy: depBy,
+        dependsNote: buildDependsNote(i),
+        groupId: (gid ?? null),
+        groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
+        toolMeta: {},
+      };
+      emitToolResultGrouped(ev, i);
+      await HistoryStore.append(runId, ev);
+      if (config.flags.enableVerboseSteps) {
+        logger.info?.('步骤在运行取消后被跳过', { label: 'STEP', stepIndex: i, aiName });
+      }
+      if (retrySteps) {
+        stepStatus.set(i, { success: false, reason: res.message });
+      }
+      return { usedEntry: { aiName, elapsedMs: elapsed, success: false, code: res.code }, succeeded: 0 };
+    }
+    
     // 重试模式下，检查依赖步骤是否失败
     if (retrySteps) {
       const deps = Array.isArray(step.dependsOn) ? step.dependsOn : [];
@@ -1075,6 +1116,12 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   const track = (i, p) => p.finally(() => { inFlight.delete(i); });
 
   while (finished.size < total) {
+    if (isRunCancelled(runId)) {
+      if (config.flags.enableVerboseSteps) {
+        logger.info?.('执行计划检测到取消信号，提前结束调度', { label: 'RUN', runId });
+      }
+      break;
+    }
     // 尝试补满并发槽位
     for (let i = startIndex; i < total && inFlight.size < maxConc; i++) {
       if (isReady(i)) {
@@ -1373,6 +1420,20 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
 
       // Execute concurrently (existing executor emits args/tool_result events)
       let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context });
+
+      // 若运行在执行阶段被取消，则跳过后续评估/补救/总结，仅发出取消型 done/summary 事件
+      if (isRunCancelled(runId)) {
+        if (config.flags.enableVerboseSteps) {
+          logger.info('Run cancelled after executePlan, skip evaluation/reflection/summary', { label: 'RUN', runId });
+        }
+        const summary = '本次运行已被上游取消（用户改主意），仅保留已完成的工具结果，不再继续评估与总结。';
+        try { await HistoryStore.setSummary(runId, summary); } catch {}
+        emitRunEvent(runId, { type: 'done', exec, cancelled: true });
+        await HistoryStore.append(runId, { type: 'done', exec, cancelled: true });
+        emitRunEvent(runId, { type: 'summary', summary, cancelled: true });
+        await HistoryStore.append(runId, { type: 'summary', summary, cancelled: true });
+        return;
+      }
 
       // Evaluate
       let evalObj = await evaluateRun(objective, plan, exec, runId, context); // evaluation event emitted inside
@@ -1709,10 +1770,12 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       emitRunEvent(runId, { type: 'done', error: String(e) });
       await HistoryStore.append(runId, { type: 'done', error: String(e) });
     } finally {
-      // allow consumer to decide when to break (on 'summary'); no explicit close here
+      try { await sub.return?.(); } catch {}
+      try { RunEvents.close(runId); } catch {}
+      try { clearRunCancelled(runId); } catch {}
     }
   })();
-
+  
   try {
     for await (const ev of sub) {
       yield ev;
@@ -1721,6 +1784,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
   } finally {
     try { await sub.return?.(); } catch {}
     try { RunEvents.close(runId); } catch {}
+    try { clearRunCancelled(runId); } catch {}
   }
 }
 

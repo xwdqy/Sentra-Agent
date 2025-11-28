@@ -1,31 +1,24 @@
 /**
- * 智能回复策略模块 v2.0
+ * 智能回复策略模块（精简版）
  * 功能：
- * - 基于最佳实践的动态回复概率计算
- * - Per-sender并发控制和队列机制
- * - 非线性欲望值算法（对数增长 + Sigmoid激活）
- * - UUID跟踪和超时淘汰
+ * - Per-sender 并发控制和队列机制
+ * - UUID 跟踪和超时淘汰
+ * - 是否进入一次对话任务由本模块决定，具体“回不回话”交给主模型和 Sentra 协议（<sentra-response>）
  */
 
 import { randomUUID } from 'crypto';
 import { createLogger } from './logger.js';
+import { planGroupReplyDecision } from './replyIntervention.js';
+import { assessReplyWorth } from '../components/ReplyGate.js';
 
 const logger = createLogger('ReplyPolicy');
 
-// 会话状态存储
-const conversationStates = new Map();
-
-// 用户任务队列管理
 const senderQueues = new Map();
-
-// 活跃任务跟踪（per-sender）
 const activeTasks = new Map();
-
-// 全局注意力状态（用于群隔离，同一时间只专注一个群）
-const globalAttentionState = {
-  currentGroupId: null,
-  attentionActiveUntil: 0
-};
+const groupAttention = new Map();
+const senderReplyStats = new Map(); // senderId -> { timestamps: number[] }
+const groupReplyStats = new Map();  // groupKey -> { timestamps: number[] }
+const cancelledTasks = new Set();   // 记录被标记为取消的任务ID（taskId）
 
 /**
  * 任务状态
@@ -45,25 +38,220 @@ function normalizeSenderId(senderId) {
   return String(senderId ?? '');
 }
 
-/**
- * 获取或创建会话状态
- */
-function getConversationState(conversationId) {
-  if (!conversationStates.has(conversationId)) {
-    conversationStates.set(conversationId, {
-      lastReplyTime: 0,
-      replyDesire: 0.0, // 回复欲望值 [0-1]
-      messageCount: 0,
-      lastMentionTime: 0,
-      consecutiveIgnored: 0, // 连续忽略次数
-      messageTimestamps: [], // 消息时间戳数组（用于时间衰减）
-      lastMessageTime: 0, // 最后一条消息时间
-      avgMessageInterval: 0, // 平均消息间隔（用于对话节奏）
-      lastAttentionTime: 0,
-      attentionActiveUntil: 0
-    });
+function getGroupKey(groupId) {
+  return `G:${groupId ?? ''}`;
+}
+
+function getOrInitSenderStats(senderId) {
+  const key = normalizeSenderId(senderId);
+  if (!senderReplyStats.has(key)) {
+    senderReplyStats.set(key, { timestamps: [] });
   }
-  return conversationStates.get(conversationId);
+  return senderReplyStats.get(key);
+}
+
+function getOrInitGroupStats(groupId) {
+  const key = getGroupKey(groupId);
+  if (!groupReplyStats.has(key)) {
+    groupReplyStats.set(key, { timestamps: [] });
+  }
+  return groupReplyStats.get(key);
+}
+
+function pruneTimestamps(timestamps, now, windowMs) {
+  if (!Array.isArray(timestamps) || !windowMs || windowMs <= 0) {
+    return { list: [], count: 0, last: null };
+  }
+  const list = [];
+  let last = null;
+  for (const t of timestamps) {
+    if (now - t <= windowMs) {
+      list.push(t);
+      last = t;
+    }
+  }
+  return { list, count: list.length, last };
+}
+
+function shouldPassAttentionWindow(msg, senderId, config, options = {}) {
+  if (!config.attentionEnabled) return true;
+  if (!msg || !msg.group_id) return true;
+  const maxSenders = config.attentionMaxSenders;
+  const windowMs = config.attentionWindowMs;
+  if (!maxSenders || maxSenders <= 0) return true;
+  if (!windowMs || windowMs <= 0) return true;
+
+  const groupKey = getGroupKey(msg.group_id);
+  const now = Date.now();
+  let map = groupAttention.get(groupKey);
+  if (!map) {
+    map = new Map();
+    groupAttention.set(groupKey, map);
+  }
+
+  for (const [sid, ts] of map.entries()) {
+    if (now - ts > windowMs) {
+      map.delete(sid);
+    }
+  }
+
+  if (map.size < maxSenders) {
+    return true;
+  }
+
+  if (map.has(senderId)) {
+    return true;
+  }
+
+  if (options.isExplicitMention) {
+    return true;
+  }
+
+  return false;
+}
+
+function markAttentionWindow(msg, senderId, config) {
+  if (!config.attentionEnabled) return;
+  if (!msg || !msg.group_id) return;
+  const maxSenders = config.attentionMaxSenders;
+  const windowMs = config.attentionWindowMs;
+  if (!maxSenders || maxSenders <= 0) return;
+  if (!windowMs || windowMs <= 0) return;
+
+  const groupKey = getGroupKey(msg.group_id);
+  let map = groupAttention.get(groupKey);
+  if (!map) {
+    map = new Map();
+    groupAttention.set(groupKey, map);
+  }
+  map.set(senderId, Date.now());
+}
+
+function evaluateGroupFatigue(msg, config, options = {}) {
+  const result = { pass: true, reason: '', count: 0, fatigue: 0, lastAgeSec: null };
+  if (!config.groupFatigueEnabled) return result;
+  if (!msg || msg.type !== 'group' || !msg.group_id) return result;
+
+  const windowMs = config.groupReplyWindowMs;
+  const baseLimit = config.groupReplyBaseLimit;
+  const minInterval = config.groupReplyMinIntervalMs;
+  let factor = Number.isFinite(config.groupReplyBackoffFactor) ? config.groupReplyBackoffFactor : 2;
+  let maxMult = Number.isFinite(config.groupReplyMaxBackoffMultiplier) ? config.groupReplyMaxBackoffMultiplier : 8;
+  if (!windowMs || windowMs <= 0 || !baseLimit || baseLimit <= 0 || !minInterval || minInterval <= 0) {
+    return result;
+  }
+  if (!Number.isFinite(factor) || factor <= 1) factor = 2;
+  if (!Number.isFinite(maxMult) || maxMult <= 1) maxMult = 8;
+
+  const now = Date.now();
+  const stats = getOrInitGroupStats(msg.group_id);
+  const pruned = pruneTimestamps(stats.timestamps, now, windowMs);
+  stats.timestamps = pruned.list;
+  result.count = pruned.count;
+  result.lastAgeSec = pruned.last ? (now - pruned.last) / 1000 : null;
+
+  if (pruned.count === 0 || !pruned.last) {
+    result.fatigue = 0;
+    return result;
+  }
+
+  const ratio = pruned.count / baseLimit;
+  const clipped = Math.min(Math.max(ratio, 0), 2);
+  result.fatigue = clipped / 2; // 映射到 0-1
+
+  if (ratio <= 1) {
+    return result;
+  }
+
+  const overload = Math.max(0, Math.floor(pruned.count - baseLimit));
+  const mult = Math.min(Math.pow(factor, overload), maxMult);
+  const requiredInterval = minInterval * mult;
+  const elapsed = now - pruned.last;
+
+  const isImportant = !!options.isExplicitMention || !!options.mentionedByName;
+  if (!isImportant && elapsed < requiredInterval) {
+    result.pass = false;
+    result.reason = '群疲劳：短期内机器人在该群回复过多，进入退避窗口';
+    return result;
+  }
+
+  return result;
+}
+
+function evaluateSenderFatigue(msg, senderId, config, options = {}) {
+  const result = { pass: true, reason: '', count: 0, fatigue: 0, lastAgeSec: null };
+  if (!config.userFatigueEnabled) return result;
+  if (!msg || msg.type !== 'group') return result;
+
+  const windowMs = config.userReplyWindowMs;
+  const baseLimit = config.userReplyBaseLimit;
+  const minInterval = config.userReplyMinIntervalMs;
+  let factor = Number.isFinite(config.userReplyBackoffFactor) ? config.userReplyBackoffFactor : 2;
+  let maxMult = Number.isFinite(config.userReplyMaxBackoffMultiplier) ? config.userReplyMaxBackoffMultiplier : 8;
+  if (!windowMs || windowMs <= 0 || !baseLimit || baseLimit <= 0 || !minInterval || minInterval <= 0) {
+    return result;
+  }
+  if (!Number.isFinite(factor) || factor <= 1) factor = 2;
+  if (!Number.isFinite(maxMult) || maxMult <= 1) maxMult = 8;
+
+  const now = Date.now();
+  const stats = getOrInitSenderStats(senderId);
+  const pruned = pruneTimestamps(stats.timestamps, now, windowMs);
+  stats.timestamps = pruned.list;
+  result.count = pruned.count;
+  result.lastAgeSec = pruned.last ? (now - pruned.last) / 1000 : null;
+
+  if (pruned.count === 0 || !pruned.last) {
+    result.fatigue = 0;
+    return result;
+  }
+
+  const ratio = pruned.count / baseLimit;
+  const clipped = Math.min(Math.max(ratio, 0), 2);
+  result.fatigue = clipped / 2; // 映射到 0-1
+
+  if (ratio <= 1) {
+    return result;
+  }
+
+  const overload = Math.max(0, Math.floor(pruned.count - baseLimit));
+  const mult = Math.min(Math.pow(factor, overload), maxMult);
+  const requiredInterval = minInterval * mult;
+  const elapsed = now - pruned.last;
+
+  const isImportant = !!options.isExplicitMention || !!options.mentionedByName;
+  if (!isImportant && elapsed < requiredInterval) {
+    result.pass = false;
+    result.reason = '用户疲劳：短期内机器人对该用户回复过多，进入退避窗口';
+    return result;
+  }
+
+  return result;
+}
+
+function recordReplyForFatigue(msg, senderId, config) {
+  if (!msg || msg.type !== 'group') return;
+  const now = Date.now();
+
+  if (config.userFatigueEnabled) {
+    const windowMs = config.userReplyWindowMs;
+    if (windowMs && windowMs > 0) {
+      const stats = getOrInitSenderStats(senderId);
+      const pruned = pruneTimestamps(stats.timestamps, now, windowMs);
+      pruned.list.push(now);
+      stats.timestamps = pruned.list;
+    }
+  }
+
+  if (config.groupFatigueEnabled && msg.group_id) {
+    const windowMs = config.groupReplyWindowMs;
+    if (windowMs && windowMs > 0) {
+      const stats = getOrInitGroupStats(msg.group_id);
+      const pruned = pruneTimestamps(stats.timestamps, now, windowMs);
+      pruned.list.push(now);
+      stats.timestamps = pruned.list;
+    }
+  }
 }
 
 /**
@@ -86,6 +274,38 @@ export function getActiveTaskCount(senderId) {
     activeTasks.set(key, new Set());
   }
   return activeTasks.get(key).size;
+}
+
+function getActiveTaskSet(senderId) {
+  const key = normalizeSenderId(senderId);
+  if (!activeTasks.has(key)) {
+    activeTasks.set(key, new Set());
+  }
+  return activeTasks.get(key);
+}
+
+export function markTasksCancelledForSender(senderId) {
+  const set = getActiveTaskSet(senderId);
+  if (!set || set.size === 0) {
+    return;
+  }
+  for (const taskId of set) {
+    if (taskId) {
+      cancelledTasks.add(taskId);
+    }
+  }
+  const shortIds = Array.from(set).map((id) => (id ? String(id).substring(0, 8) : 'null'));
+  logger.info(`标记取消任务: sender=${normalizeSenderId(senderId)}, tasks=[${shortIds.join(',')}]`);
+}
+
+export function isTaskCancelled(taskId) {
+  if (!taskId) return false;
+  return cancelledTasks.has(taskId);
+}
+
+export function clearCancelledTask(taskId) {
+  if (!taskId) return;
+  cancelledTasks.delete(taskId);
 }
 
 /**
@@ -125,255 +345,41 @@ function parseBotNames() {
  */
 function getConfig() {
   const botNames = parseBotNames();
+  const attentionWindowMsEnv = parseInt(process.env.ATTENTION_WINDOW_MS || '120000', 10);
+  const attentionMaxSendersEnv = parseInt(process.env.ATTENTION_MAX_SENDERS || '3', 10);
+  const attentionWindowMs = Number.isFinite(attentionWindowMsEnv) ? attentionWindowMsEnv : 120000;
+  const attentionMaxSenders = Number.isFinite(attentionMaxSendersEnv) ? attentionMaxSendersEnv : 3;
+  const followupWindowSecEnv = parseInt(process.env.REPLY_DECISION_FOLLOWUP_WINDOW_SEC || '180', 10);
+  const replyFollowupWindowSec = Number.isFinite(followupWindowSecEnv) && followupWindowSecEnv > 0
+    ? followupWindowSecEnv
+    : 0;
   return {
-    // bot名称列表（支持多个昵称）
+    // bot 名称列表（支持多个昵称，仅用于简单“是否被提及”的判断）
     botNames,
-    // 最小回复间隔（秒）
-    minReplyInterval: parseInt(process.env.MIN_REPLY_INTERVAL) || 5,
-    // 欲望值增长速率（改进的对数曲线斜率）
-    desireGrowthRate: parseFloat(process.env.DESIRE_GROWTH_RATE) || 0.4,
-    // 提及bot名称时的额外欲望值（降低，避免过于激进）
-    mentionBonus: parseFloat(process.env.MENTION_BONUS) || 0.25,
-    // 基础回复概率阈值
-    baseReplyThreshold: parseFloat(process.env.BASE_REPLY_THRESHOLD) || 0.65,
-    // 时间衰减半衰期（秒）：消息的"新鲜度"衰减速度
-    timeDecayHalfLife: parseFloat(process.env.TIME_DECAY_HALFLIFE) || 300, // 5分钟
-    // 上下文感知窗口（消息数）
-    contextWindow: parseInt(process.env.CONTEXT_WINDOW) || 10,
-    // 对话节奏配置
-    paceFastThreshold: parseFloat(process.env.PACE_FAST_THRESHOLD) || 15,
-    paceFastAdjustment: parseFloat(process.env.PACE_FAST_ADJUSTMENT) || -0.1,
-    paceSlowThreshold: parseFloat(process.env.PACE_SLOW_THRESHOLD) || 180,
-    paceSlowAdjustment: parseFloat(process.env.PACE_SLOW_ADJUSTMENT) || 0.08,
-    // 启用智能回复（false则总是回复）
-    enableSmartReply: process.env.ENABLE_SMART_REPLY !== 'false',
-    // Per-sender最大并发数
+    // Per-sender 最大并发数
     maxConcurrentPerSender: parseInt(process.env.MAX_CONCURRENT_PER_SENDER || '1'),
     // 队列任务最大等待时间（毫秒）
     queueTimeout: parseInt(process.env.QUEUE_TIMEOUT) || 30000,
-    // Sigmoid激活函数的陡峭度
-    sigmoidSteepness: parseFloat(process.env.SIGMOID_STEEPNESS) || 8.0,
-    // 显式 @ 是否必须回复（true=显式 @ 一律回复，不走轻量模型；false=显式 @ 由轻量模型拍板）
+    // 显式 @ 是否必须回复（true=显式 @ 一律回复；false=交给模型和人设决定）
     mentionMustReply: process.env.MENTION_MUST_REPLY === 'true',
-    attentionKeywords: botNames,
-    attentionWindowSeconds: parseInt(process.env.ATTENTION_WINDOW_SECONDS || '60') || 60,
-    attentionStrictMode: process.env.ATTENTION_STRICT_MODE !== 'false',
-    // 对话跟进窗口配置
-    conversationFollowupWindowSeconds: parseInt(process.env.CONVERSATION_FOLLOWUP_WINDOW_SECONDS || process.env.ATTENTION_WINDOW_SECONDS || '60') || 60,
-    conversationFollowupMinInterval: parseInt(process.env.CONVERSATION_FOLLOWUP_MIN_INTERVAL || '0') || 0,
-    // 全局群注意力隔离配置（默认跟随对话跟进窗口时长，避免同群刚聊完就被误判为未聚焦）
-    globalAttentionEnabled: (process.env.GLOBAL_ATTENTION_ENABLED || 'true') !== 'false',
-    globalAttentionWindowSeconds: parseInt(
-      process.env.GLOBAL_ATTENTION_WINDOW_SECONDS
-      || process.env.CONVERSATION_FOLLOWUP_WINDOW_SECONDS
-      || process.env.ATTENTION_WINDOW_SECONDS
-      || '60'
-    ) || 60
+    replyFollowupWindowSec,
+    attentionEnabled: (process.env.ATTENTION_WINDOW_ENABLED || 'true') === 'true',
+    attentionWindowMs,
+    attentionMaxSenders,
+    // 群/用户疲劳控制（短期窗口 + 指数退避）
+    userFatigueEnabled: (process.env.USER_FATIGUE_ENABLED || 'true') === 'true',
+    userReplyWindowMs: parseInt(process.env.USER_REPLY_WINDOW_MS || '300000', 10),
+    userReplyBaseLimit: parseInt(process.env.USER_REPLY_BASE_LIMIT || '5', 10),
+    userReplyMinIntervalMs: parseInt(process.env.USER_REPLY_MIN_INTERVAL_MS || '10000', 10),
+    userReplyBackoffFactor: parseFloat(process.env.USER_REPLY_BACKOFF_FACTOR || '2'),
+    userReplyMaxBackoffMultiplier: parseFloat(process.env.USER_REPLY_MAX_BACKOFF_MULTIPLIER || '8'),
+    groupFatigueEnabled: (process.env.GROUP_FATIGUE_ENABLED || 'true') === 'true',
+    groupReplyWindowMs: parseInt(process.env.GROUP_REPLY_WINDOW_MS || '300000', 10),
+    groupReplyBaseLimit: parseInt(process.env.GROUP_REPLY_BASE_LIMIT || '30', 10),
+    groupReplyMinIntervalMs: parseInt(process.env.GROUP_REPLY_MIN_INTERVAL_MS || '2000', 10),
+    groupReplyBackoffFactor: parseFloat(process.env.GROUP_REPLY_BACKOFF_FACTOR || '2'),
+    groupReplyMaxBackoffMultiplier: parseFloat(process.env.GROUP_REPLY_MAX_BACKOFF_MULTIPLIER || '8')
   };
-}
-
-/**
- * 检查消息是否提及bot名称
- */
-function checkBotNameMention(text, botNames) {
-  if (!text || !Array.isArray(botNames) || botNames.length === 0) {
-    return false;
-  }
-  const lowerText = text.toLowerCase();
-  return botNames.some(name => lowerText.includes(name.toLowerCase()));
-}
-
-function checkKeywordMention(text, keywords) {
-  if (!text || !Array.isArray(keywords) || keywords.length === 0) {
-    return false;
-  }
-  const lowerText = text.toLowerCase();
-  return keywords.some(kw => lowerText.includes(kw.toLowerCase()));
-}
-
-// 全局注意力 gating：决定当前群是否允许进入智能回复计算
-function isGlobalAttentionAllowed(groupId, now, config, isAttentionTrigger) {
-  if (!config.globalAttentionEnabled || !groupId) {
-    return true;
-  }
-
-  const windowSeconds = config.globalAttentionWindowSeconds || config.attentionWindowSeconds;
-  const hasActive = globalAttentionState.currentGroupId && now < globalAttentionState.attentionActiveUntil;
-
-  if (!hasActive) {
-    // 当前没有聚焦群：只有触发消息可以抢占注意力
-    if (isAttentionTrigger) {
-      globalAttentionState.currentGroupId = groupId;
-      globalAttentionState.attentionActiveUntil = now + windowSeconds;
-      logger.debug(`[GlobalAttention] 聚焦群 ${groupId}, 窗口 ${windowSeconds}s`);
-      return true;
-    }
-    return false;
-  }
-
-  if (globalAttentionState.currentGroupId === groupId) {
-    // 已经在当前群：任意新消息都会顺延全局注意力窗口
-    globalAttentionState.attentionActiveUntil = now + windowSeconds;
-    return true;
-  }
-
-  // 已有其他群占用注意力且仍在窗口内：本群被隔离
-  return false;
-}
-
-/**
- * 改进的对数增长欲望值算法（基于研究最佳实践）
- * 结合时间衰减和上下文感知
- * 模型：desire = [log(1 + k*w) / log(1 + k*N)] * temporalWeight
- * - w: 加权消息数（考虑时间衰减）
- * - k: 增长速率
- * - N: 饱和参数（动态调整）
- * - temporalWeight: 时间衰减权重
- */
-function calculateDesireByLog(state, growthRate, config) {
-  if (state.messageCount <= 0) return 0;
-  
-  const now = Date.now() / 1000;
-  const k = growthRate;
-  
-  // 1. 计算时间衰减权重（指数衰减）
-  let weightedCount = 0;
-  const halfLife = config.timeDecayHalfLife;
-  
-  for (let i = 0; i < state.messageTimestamps.length; i++) {
-    const age = now - state.messageTimestamps[i];
-    // 指数衰减：weight = e^(-λ * age), λ = ln(2) / halfLife
-    const decayRate = Math.log(2) / halfLife;
-    const weight = Math.exp(-decayRate * age);
-    weightedCount += weight;
-  }
-  
-  // 回退到简单计数（如果没有时间戳）
-  if (weightedCount === 0) {
-    weightedCount = state.messageCount;
-  }
-  
-  // 2. 动态调整饱和参数（基于对话节奏）
-  // 快速对话时提高饱和点，避免过于激进
-  let N = 15; // 基础饱和点
-  if (state.avgMessageInterval > 0 && state.avgMessageInterval < 30) {
-    // 快速对话（<30秒间隔）：提高饱和点
-    N = 25;
-  } else if (state.avgMessageInterval > 120) {
-    // 慢速对话（>2分钟间隔）：降低饱和点
-    N = 10;
-  }
-  
-  // 3. 改进的对数增长曲线
-  const desire = Math.log(1 + k * weightedCount) / Math.log(1 + k * N);
-  
-  // 4. 添加时间新鲜度因子（最近的消息权重更高）
-  const timeSinceLastMsg = now - state.lastMessageTime;
-  let freshnessBoost = 0;
-  if (timeSinceLastMsg < 60) {
-    // 最近1分钟内的消息：额外增加0-0.15的欲望值
-    freshnessBoost = 0.15 * (1 - timeSinceLastMsg / 60);
-  }
-  
-  return Math.min(1.0, Math.max(0, desire + freshnessBoost));
-}
-
-/**
- * Sigmoid激活函数
- * 将欲望值映射为回复概率，产生"突然爆发"效应
- * sigmoid(x) = 1 / (1 + e^(-steepness * (x - 0.5)))
- */
-function sigmoidActivation(desire, steepness) {
-  const shifted = desire - 0.5; // 中心点在0.5
-  const probability = 1 / (1 + Math.exp(-steepness * shifted));
-  return probability;
-}
-
-/**
- * 改进的连续忽略惩罚机制（基于强化学习思路）
- * 使用平滑的指数增长 + 上限控制
- */
-function calculateIgnorePenalty(state, config) {
-  const consecutiveIgnored = state.consecutiveIgnored;
-  if (consecutiveIgnored <= 1) return 0;
-  
-  // 平滑指数增长：避免突然爆发
-  // penalty = base * (1 - e^(-α * (n-1)))
-  const base = 0.35; // 最大惩罚值
-  const alpha = 0.4; // 增长速率
-  const penalty = base * (1 - Math.exp(-alpha * (consecutiveIgnored - 1)));
-  
-  // 如果用户持续发送消息（对话节奏快），额外增加惩罚
-  let paceBonus = 0;
-  if (state.avgMessageInterval > 0 && state.avgMessageInterval < 20) {
-    paceBonus = 0.1; // 快速发送时额外+0.1
-  }
-  
-  return Math.min(0.45, penalty + paceBonus);
-}
-
-/**
- * 检查是否满足回复间隔要求
- */
-function canReplyByInterval(conversationId, minInterval) {
-  const state = getConversationState(conversationId);
-  const now = Date.now() / 1000;
-  const elapsed = now - state.lastReplyTime;
-  return elapsed >= minInterval;
-}
-
-/**
- * 更新会话状态（消息累积 + 时间追踪）
- */
-function incrementMessageCount(conversationId) {
-  const state = getConversationState(conversationId);
-  const now = Date.now() / 1000;
-  
-  state.messageCount += 1;
-  state.consecutiveIgnored += 1;
-  
-  // 添加时间戳
-  state.messageTimestamps.push(now);
-  
-  // 只保留最近的消息时间戳（上下文窗口）
-  const config = getConfig();
-  if (state.messageTimestamps.length > config.contextWindow) {
-    state.messageTimestamps.shift();
-  }
-  
-  // 更新平均消息间隔（用于对话节奏感知）
-  if (state.lastMessageTime > 0) {
-    const interval = now - state.lastMessageTime;
-    if (state.avgMessageInterval === 0) {
-      state.avgMessageInterval = interval;
-    } else {
-      // 指数移动平均（EMA）
-      const alpha = 0.3; // 平滑因子
-      state.avgMessageInterval = alpha * interval + (1 - alpha) * state.avgMessageInterval;
-    }
-  } else {
-    // 首次消息：初始化为一个合理的默认值（避免一直是0）
-    state.avgMessageInterval = 60; // 默认60秒间隔
-  }
-  
-  state.lastMessageTime = now;
-}
-
-/**
- * 重置会话状态（回复后）
- * 应该在实际回复发送成功后调用，而不是在判断需要回复时调用
- */
-export function resetConversationState(conversationId) {
-  const state = getConversationState(conversationId);
-  const now = Date.now() / 1000;
-  
-  state.lastReplyTime = now;
-  state.messageCount = 0;
-  state.consecutiveIgnored = 0;
-  state.messageTimestamps = []; // 清空时间戳
-  // 保留 avgMessageInterval 和 lastMessageTime（用于后续对话节奏判断）
-  
-  logger.debug(`欲望值重置: conversationId=${conversationId}`);
 }
 
 /**
@@ -418,43 +424,31 @@ export async function completeTask(senderId, taskId) {
  * @param {Object} msg - 消息对象
  * @returns {Promise<{needReply: boolean, reason: string, mandatory: boolean, probability: number, taskId: string|null}>}
  */
-export async function shouldReply(msg) {
+export async function shouldReply(msg, options = {}) {
   const config = getConfig();
   const senderId = normalizeSenderId(msg.sender_id);
-  
-  // 如果禁用智能回复，总是回复
-  if (!config.enableSmartReply) {
-    return { 
-      needReply: true, 
-      reason: '智能回复已禁用', 
-      mandatory: false,
-      probability: 1.0,
-      taskId: randomUUID()
-    };
-  }
-  
+  const decisionContext = options.decisionContext || null;
+  // 私聊：保持必回策略
   if (msg.type === 'private') {
     const taskId = randomUUID();
     addActiveTask(senderId, taskId);
     logger.info(`私聊消息，必须回复 (task=${taskId})`);
-    return { 
-      needReply: true, 
-      reason: '私聊消息', 
+    return {
+      needReply: true,
+      reason: '私聊消息',
       mandatory: true,
       probability: 1.0,
       taskId
     };
   }
-  
-  
+
+  // 群聊：并发和队列控制 + 轻量 LLM 决策是否回复
   const activeCount = getActiveTaskCount(senderId);
-  // 优化：群聊按 group_id + sender_id 维度追踪，每个用户在群里有独立的欲望值
-  const conversationId = msg.group_id 
-    ? `group_${msg.group_id}_sender_${senderId}` 
+  const conversationId = msg.group_id
+    ? `group_${msg.group_id}_sender_${senderId}`
     : `private_${senderId}`;
-  
+
   if (activeCount >= config.maxConcurrentPerSender) {
-    // 加入队列
     const task = new Task(msg, conversationId);
     const queue = getSenderQueue(senderId);
     queue.push(task);
@@ -467,322 +461,216 @@ export async function shouldReply(msg) {
       taskId: null
     };
   }
-  
-  // 获取会话状态并立即更新时间戳（确保时间追踪准确）
-  const state = getConversationState(conversationId);
-  const now = Date.now() / 1000;
-  
-  // 更新消息时间戳和平均间隔（在任何判断之前）
-  state.messageTimestamps.push(now);
-  if (state.messageTimestamps.length > config.contextWindow) {
-    state.messageTimestamps.shift();
-  }
-  if (state.lastMessageTime > 0) {
-    const interval = now - state.lastMessageTime;
-    if (state.avgMessageInterval === 0 || state.avgMessageInterval === 60) {
-      // 第一次计算实际间隔时，直接使用真实间隔
-      state.avgMessageInterval = interval;
-    } else {
-      // 指数移动平均（EMA）
-      const alpha = 0.3;
-      state.avgMessageInterval = alpha * interval + (1 - alpha) * state.avgMessageInterval;
-    }
-  } else {
-    // 首次消息：初始化为一个合理的默认值（避免一直是0）
-    state.avgMessageInterval = 60; // 默认60秒间隔
-  }
-  state.lastMessageTime = now;
-  
+
   const isGroup = msg.type === 'group';
-  const isExplicitMention = Array.isArray(msg.at_users) && msg.at_users.some(at => at === msg.self_id);
+  const selfId = msg.self_id;
+  const isExplicitMention = Array.isArray(msg.at_users) && msg.at_users.some(at => String(at) === String(selfId));
+  const groupInfo = msg.group_id ? `群${msg.group_id}` : '私聊';
 
-  // 计算是否处于对话跟进窗口（基于最近一次成功回复时间）
-  const timeSinceLastReply = state.lastReplyTime > 0 ? (now - state.lastReplyTime) : Number.POSITIVE_INFINITY;
-  const inFollowupWindow =
-    isGroup &&
-    config.conversationFollowupWindowSeconds > 0 &&
-    state.lastReplyTime > 0 &&
-    timeSinceLastReply <= config.conversationFollowupWindowSeconds;
+  // 基于 BOT_NAMES 的名称提及检测（仅作为信号，不做硬编码规则）
+  let mentionedByName = false;
+  const mentionedNames = [];
+  if (isGroup && Array.isArray(config.botNames) && config.botNames.length > 0) {
+    const textForMatch = ((msg.text || msg.summary || '') + '').toLowerCase();
+    if (textForMatch) {
+      for (const name of config.botNames) {
+        const n = (name || '').toLowerCase();
+        if (!n) continue;
+        if (textForMatch.includes(n)) {
+          mentionedByName = true;
+          mentionedNames.push(name);
+        }
+      }
+    }
+  }
 
-  if (isGroup && config.attentionStrictMode) {
-    const hasAttentionKeyword = Array.isArray(config.attentionKeywords) &&
-      config.attentionKeywords.length > 0 &&
-      checkKeywordMention(msg.text, config.attentionKeywords);
+  if (isGroup) {
+    const pass = shouldPassAttentionWindow(msg, senderId, config, {
+      isExplicitMention: isExplicitMention || mentionedByName
+    });
+    if (!pass) {
+      const reason = '注意力窗口已满，跳过本轮群聊消息';
+      logger.info(`[${groupInfo}] 用户${senderId} 决策为不回复: ${reason}`);
+      return {
+        needReply: false,
+        reason,
+        mandatory: false,
+        probability: 0.0,
+        conversationId,
+        taskId: null
+      };
+    }
+  }
+  let senderFatigueInfo = { count: 0, fatigue: 0, lastAgeSec: null };
+  let groupFatigueInfo = { count: 0, fatigue: 0, lastAgeSec: null };
 
-    const isAttentionTrigger = isExplicitMention || hasAttentionKeyword;
+  if (isGroup) {
+    const gf = evaluateGroupFatigue(msg, config, {
+      isExplicitMention,
+      mentionedByName
+    });
+    groupFatigueInfo = { count: gf.count, fatigue: gf.fatigue, lastAgeSec: gf.lastAgeSec };
 
-    const allowedByGlobalAttention = isGlobalAttentionAllowed(
-      msg.group_id,
-      now,
-      config,
-      // 对话跟进窗口内也视为“需要继续关注”的强信号
-      isAttentionTrigger || inFollowupWindow
+    const uf = evaluateSenderFatigue(msg, senderId, config, {
+      isExplicitMention,
+      mentionedByName
+    });
+    senderFatigueInfo = { count: uf.count, fatigue: uf.fatigue, lastAgeSec: uf.lastAgeSec };
+    logger.debug(
+      `[${groupInfo}] 疲劳统计: groupCount=${groupFatigueInfo.count}, groupFatigue=${groupFatigueInfo.fatigue.toFixed(2)}, senderCount=${senderFatigueInfo.count}, senderFatigue=${senderFatigueInfo.fatigue.toFixed(2)}, senderLastReplyAgeSec=${senderFatigueInfo.lastAgeSec ?? 'null'}`
     );
+  }
 
-    if (!allowedByGlobalAttention) {
-      const groupInfo = msg.group_id ? `群${msg.group_id}` : '私聊';
-      logger.debug(`[${groupInfo}] 用户${senderId}: 全局注意力未聚焦该群，跳过智能回复计算`);
-      return {
-        needReply: false,
-        reason: '全局注意力未聚焦该群',
-        mandatory: false,
-        probability: 0.0,
-        taskId: null
-      };
+  let isFollowupAfterBotReply = false;
+  if (
+    typeof senderFatigueInfo.lastAgeSec === 'number' &&
+    senderFatigueInfo.lastAgeSec >= 0 &&
+    Number.isFinite(config.replyFollowupWindowSec) &&
+    config.replyFollowupWindowSec > 0
+  ) {
+    isFollowupAfterBotReply = senderFatigueInfo.lastAgeSec <= config.replyFollowupWindowSec;
+  }
+
+  const policyConfig = {
+    mentionMustReply: !!config.mentionMustReply,
+    followupWindowSec: Number.isFinite(config.replyFollowupWindowSec)
+      ? config.replyFollowupWindowSec
+      : 0,
+    attention: {
+      enabled: !!config.attentionEnabled,
+      windowMs: config.attentionWindowMs,
+      maxSenders: config.attentionMaxSenders
+    },
+    userFatigue: {
+      enabled: !!config.userFatigueEnabled,
+      windowMs: config.userReplyWindowMs,
+      baseLimit: config.userReplyBaseLimit,
+      minIntervalMs: config.userReplyMinIntervalMs,
+      backoffFactor: config.userReplyBackoffFactor,
+      maxBackoffMultiplier: config.userReplyMaxBackoffMultiplier
+    },
+    groupFatigue: {
+      enabled: !!config.groupFatigueEnabled,
+      windowMs: config.groupReplyWindowMs,
+      baseLimit: config.groupReplyBaseLimit,
+      minIntervalMs: config.groupReplyMinIntervalMs,
+      backoffFactor: config.groupReplyBackoffFactor,
+      maxBackoffMultiplier: config.groupReplyMaxBackoffMultiplier
     }
+  };
 
-    // 只要处于注意力窗口内，或新触发了注意力，或仍在对话跟进窗口内，就顺延本群注意力窗口
-    if (
-      isAttentionTrigger
-      || inFollowupWindow
-      || (state.attentionActiveUntil > 0 && now < state.attentionActiveUntil)
-    ) {
-      state.lastAttentionTime = now;
-      state.attentionActiveUntil = now + config.attentionWindowSeconds;
-    }
+  let probability = 1.0;
+  let reason = isGroup ? '群聊消息' : '消息';
+  let mandatory = false;
+  let shouldReplyFlag = true;
 
-    const inAttentionWindow = state.attentionActiveUntil > 0 && now < state.attentionActiveUntil;
+  // 群聊 + 非显式 @ 的消息先通过 ReplyGate 进行价值预判：
+  //  - decision = 'ignore'  => 直接不回
+  //  - decision = 'llm'     => 继续交给 XML 决策 LLM
+  if (isGroup && !isExplicitMention) {
+    try {
+      const gateResult = assessReplyWorth(
+        msg,
+        {
+          mentionedByAt: isExplicitMention,
+          mentionedByName,
+          senderReplyCountWindow: senderFatigueInfo.count,
+          groupReplyCountWindow: groupFatigueInfo.count,
+          senderFatigue: senderFatigueInfo.fatigue,
+          groupFatigue: groupFatigueInfo.fatigue,
+          isFollowupAfterBotReply
+        },
+        {
+          decisionContext
+        }
+      );
 
-    // 如果既不在群注意力窗口内，也不在对话跟进窗口内，才视为“未处于注意力窗口”
-    if (!inAttentionWindow && !inFollowupWindow) {
-      const groupInfo = msg.group_id ? `群${msg.group_id}` : '私聊';
-      logger.debug(`[${groupInfo}] 用户${senderId}: 未处于注意力窗口，跳过智能回复计算`);
-      return {
-        needReply: false,
-        reason: '未处于注意力窗口',
-        mandatory: false,
-        probability: 0.0,
-        taskId: null
-      };
+      if (gateResult && gateResult.decision === 'ignore') {
+        const gateReason = `ReplyGate: ${gateResult.reason || 'low_interest_score'}`;
+        logger.info(`[${groupInfo}] 用户${senderId} 预判为不回复: ${gateReason}`);
+        return {
+          needReply: false,
+          reason: gateReason,
+          mandatory: false,
+          probability: gateResult.normalizedScore ?? 0,
+          conversationId,
+          taskId: null
+        };
+      }
+      // 其余情况（包括 gateResult.decision === 'llm' 或 gateResult 为空）
+      // 继续走后面的 planGroupReplyDecision XML 决策
+    } catch (e) {
+      logger.debug(`ReplyGate 预判失败，回退为正常 LLM 决策: ${groupInfo} sender ${senderId}`, {
+        err: String(e)
+      });
     }
   }
 
-  let effectiveMinInterval = config.minReplyInterval;
-  if (inFollowupWindow) {
-    const followInterval = config.conversationFollowupMinInterval;
-    if (!Number.isFinite(followInterval) || followInterval <= 0) {
-      // 窗口内不做最小间隔限制
-      effectiveMinInterval = 0;
-    } else {
-      effectiveMinInterval = Math.min(effectiveMinInterval, followInterval);
+  if (isGroup) {
+    const intervention = await planGroupReplyDecision(msg, {
+      signals: {
+        mentionedByAt: isExplicitMention,
+        mentionedByName,
+        mentionedNames,
+        senderReplyCountWindow: senderFatigueInfo.count,
+        groupReplyCountWindow: groupFatigueInfo.count,
+        senderFatigue: senderFatigueInfo.fatigue,
+        groupFatigue: groupFatigueInfo.fatigue,
+        senderLastReplyAgeSec: senderFatigueInfo.lastAgeSec,
+        groupLastReplyAgeSec: groupFatigueInfo.lastAgeSec,
+        isFollowupAfterBotReply,
+        activeTaskCount: activeCount
+      },
+      context: decisionContext || undefined,
+      policy: policyConfig
+    });
+
+    if (intervention && typeof intervention.shouldReply === 'boolean') {
+      shouldReplyFlag = intervention.shouldReply;
+      if (typeof intervention.confidence === 'number') {
+        probability = intervention.confidence;
+      }
+      reason = `ReplyIntervention: ${intervention.reason || (shouldReplyFlag ? '需要回复' : '无需回复')}`;
+    }
+
+    // 配置强制：显式 @ 且 mentionMustReply=true 时，覆盖为必须回复
+    if (isExplicitMention && config.mentionMustReply) {
+      if (!shouldReplyFlag) {
+        logger.info('ReplyIntervention 判定无需回复，但配置要求对显式@必须回复，强制覆盖为需要回复');
+      }
+      shouldReplyFlag = true;
+      mandatory = true;
+      reason = '显式@（配置必须回复）';
+      probability = 1.0;
     }
   }
 
-  // 检查回复间隔
-  if (!canReplyByInterval(conversationId, effectiveMinInterval)) {
-    const groupInfo = msg.group_id ? `群${msg.group_id}` : '私聊';
-    logger.debug(`[${groupInfo}] 用户${senderId}: 回复间隔不足，累积消息计数`);
-    // 只累积消息计数和忽略次数
-    state.messageCount += 1;
-    state.consecutiveIgnored += 1;
-    return { 
-      needReply: false, 
-      reason: '回复间隔不足', 
+  if (!shouldReplyFlag) {
+    logger.info(`[${groupInfo}] 用户${senderId} 决策为不回复: ${reason}`);
+    return {
+      needReply: false,
+      reason,
       mandatory: false,
-      probability: 0.0,
+      probability,
+      conversationId,
       taskId: null
     };
   }
-  
-  // 1. 基础欲望值（改进的对数增长 + 时间衰减）
-  const baseDesire = calculateDesireByLog(state, config.desireGrowthRate, config);
-  
-  // 2. 提及加成（注意力机制）
-  // 显式@ 或 文本包含昵称 均视为“提及”以获得加成，但不再强制回复
-  const hasBotNameMention = isExplicitMention || checkBotNameMention(msg.text, config.botNames);
-  const mentionBonus = hasBotNameMention ? config.mentionBonus : 0;
-  
-  // 3. 连续忽略惩罚（改进的指数增长）
-  const ignorePenalty = calculateIgnorePenalty(state, config);
-  
-  // 4. 对话节奏调整因子
-  let paceAdjustment = 0;
-  if (state.avgMessageInterval > 0) {
-    if (state.avgMessageInterval < config.paceFastThreshold) {
-      // 非常快速的对话：降低欲望值，避免过于频繁回复
-      paceAdjustment = config.paceFastAdjustment;
-    } else if (state.avgMessageInterval > config.paceSlowThreshold) {
-      // 非常慢速的对话：提高欲望值，避免冷场
-      paceAdjustment = config.paceSlowAdjustment;
-    }
-  }
-  
-  // 5. 综合欲望值（多因子融合）
-  let totalDesire = baseDesire + mentionBonus + ignorePenalty + paceAdjustment;
-  totalDesire = Math.max(0, Math.min(1, totalDesire));
-  // 6. Sigmoid激活转换为概率（平滑过渡）
-  const probability = sigmoidActivation(totalDesire, config.sigmoidSteepness);
-  
-  // 详细日志输出
-  const groupInfo = msg.group_id ? `群${msg.group_id}` : '私聊';
-  logger.debug(`[${groupInfo}] 用户${senderId} 欲望值: msgCount=${state.messageCount}, ignored=${state.consecutiveIgnored}, pace=${state.avgMessageInterval.toFixed(1)}s`);
-  logger.debug(`[${groupInfo}] 用户${senderId} 详情: 基础=${baseDesire.toFixed(3)}(log+decay), 提及=${mentionBonus.toFixed(3)}, 惩罚=${ignorePenalty.toFixed(3)}, 节奏=${paceAdjustment.toFixed(3)}, 总计=${totalDesire.toFixed(3)}`);
-  logger.debug(`[${groupInfo}] 用户${senderId} 概率: Sigmoid(${totalDesire.toFixed(3)}) = ${probability.toFixed(3)} (阈值=${config.baseReplyThreshold})`);
-  logger.debug(`[${groupInfo}] 用户${senderId} 时间: 最后消息 ${(Date.now()/1000 - state.lastMessageTime).toFixed(1)}s前, 时间戳数 ${state.messageTimestamps.length}`);
-  
-  const enableInterventionEnv = process.env.ENABLE_REPLY_INTERVENTION === 'true';
-  const hasInterventionModel = !!process.env.REPLY_INTERVENTION_MODEL;
-  const isExplicitGroupMention = isGroup && isExplicitMention;
-  const mentionMustReply = !!config.mentionMustReply;
-  const canUseLightModelForMention = isExplicitGroupMention && enableInterventionEnv && hasInterventionModel;
-  const inFollowupConversationMode = inFollowupWindow && isGroup && enableInterventionEnv && hasInterventionModel;
-  
-  if (isExplicitGroupMention && mentionMustReply) {
-    const taskId = randomUUID();
-    addActiveTask(senderId, taskId);
-    logger.info(`[${groupInfo}] 用户${senderId} 智能回复通过: 显式@（配置为必须回复）, task=${taskId}`);
-    return {
-      needReply: true,
-      reason: '显式@（配置必须回复）',
-      mandatory: true,
-      probability: 1.0,
-      conversationId,
-      taskId,
-      state,
-      threshold: config.baseReplyThreshold
-    };
-  }
-  
-  // 对话跟进窗口：交给轻量模型决定是否需要继续回复（不再被基础阈值直接拦截）
-  if (inFollowupConversationMode) {
-    const taskId = randomUUID();
-    addActiveTask(senderId, taskId);
-    logger.info(`[${groupInfo}] 用户${senderId} 对话跟进窗口内，交给轻量模型判断, prob=${(probability * 100).toFixed(1)}%`);
-    return {
-      needReply: true,
-      reason: '对话跟进窗口',
-      mandatory: false,
-      probability,
-      conversationId,
-      taskId,
-      state,
-      threshold: config.baseReplyThreshold
-    };
-  }
-  
-  if (isExplicitGroupMention && canUseLightModelForMention && !mentionMustReply) {
-    const taskId = randomUUID();
-    addActiveTask(senderId, taskId);
-    logger.info(`[${groupInfo}] 用户${senderId} 智能回复通过: 显式@（交给轻量模型判断）, task=${taskId}`);
-    return {
-      needReply: true,
-      reason: '显式@（轻量模型判断）',
-      mandatory: false,
-      probability,
-      conversationId,
-      taskId,
-      state,
-      threshold: config.baseReplyThreshold
-    };
-  }
-  
-  // 判断是否回复
-  const needReply = probability >= config.baseReplyThreshold;
-  
-  if (needReply) {
-    const taskId = randomUUID();
-    addActiveTask(senderId, taskId);
-    logger.info(`[${groupInfo}] 用户${senderId} 智能回复通过: 概率${(probability * 100).toFixed(1)}% >= 阈值${(config.baseReplyThreshold * 100).toFixed(1)}%, task=${taskId}`);
-    // 注意：不在这里重置状态，而是在实际回复发送成功后再重置
-    // 避免在处理期间用户继续发消息导致重复触发
-    return { 
-      needReply: true, 
-      reason: '概率判断', 
-      mandatory: false,  // 概率判断通过不是强制场景
-      probability,
-      conversationId,
-      taskId,
-      state,  // 添加 state，供干预判断使用
-      threshold: config.baseReplyThreshold  // 添加阈值
-    };
-  } else {
-    logger.debug(`[${groupInfo}] 用户${senderId} 智能回复未通过: 概率${(probability * 100).toFixed(1)}% < 阈值${(config.baseReplyThreshold * 100).toFixed(1)}%`);
-    // 累积消息计数和忽略次数（时间戳已在开始时更新）
-    state.messageCount += 1;
-    state.consecutiveIgnored += 1;
-    return { 
-      needReply: false, 
-      reason: '概率判断未通过', 
-      mandatory: false,
-      probability,
-      taskId: null
-    };
-  }
-}
 
-/**
- * 降低欲望值并重新计算概率（用于干预判断）
- * @param {string} conversationId - 会话ID
- * @param {Object} msg - 消息对象
- * @param {number} [reductionPercent=0.10] - 欲望值降低百分比
- * @returns {{probability: number, needReply: boolean, totalDesire: number, state: Object}}
- */
-export function reduceDesireAndRecalculate(conversationId, msg, reductionPercent = 0.10) {
-  const config = getConfig();
-  const state = getConversationState(conversationId);
-  const senderId = normalizeSenderId(msg.sender_id);
-  
-  // 1. 基础欲望值（改进的对数增长 + 时间衰减）
-  const baseDesire = calculateDesireByLog(state, config.desireGrowthRate, config);
-  
-  // 2. 提及加成（注意力机制）
-  const hasBotNameMention = checkBotNameMention(msg.text, config.botNames);
-  const mentionBonus = hasBotNameMention ? config.mentionBonus : 0;
-  
-  // 3. 连续忽略惩罚（改进的指数增长）
-  const ignorePenalty = calculateIgnorePenalty(state, config);
-  
-  // 4. 对话节奏调整因子
-  let paceAdjustment = 0;
-  if (state.avgMessageInterval > 0) {
-    if (state.avgMessageInterval < config.paceFastThreshold) {
-      paceAdjustment = config.paceFastAdjustment;
-    } else if (state.avgMessageInterval > config.paceSlowThreshold) {
-      paceAdjustment = config.paceSlowAdjustment;
-    }
+  const taskId = randomUUID();
+  addActiveTask(senderId, taskId);
+  if (isGroup) {
+    markAttentionWindow(msg, senderId, config);
+    recordReplyForFatigue(msg, senderId, config);
   }
-  
-  // 5. 综合欲望值（多因子融合）
-  let totalDesire = baseDesire + mentionBonus + ignorePenalty + paceAdjustment;
-  totalDesire = Math.max(0, Math.min(1, totalDesire));
-  
-  // 6. 降低欲望值（干预判断后的调整）
-  const originalDesire = totalDesire;
-  totalDesire = totalDesire * (1 - reductionPercent);
-  totalDesire = Math.max(0, Math.min(1, totalDesire));
-  
-  // 7. Sigmoid激活转换为概率（平滑过渡）
-  const newProbability = sigmoidActivation(totalDesire, config.sigmoidSteepness);
-  
-  // 8. 判断是否仍然通过阈值
-  const needReply = newProbability >= config.baseReplyThreshold;
-  
-  const groupInfo = msg.group_id ? `群${msg.group_id}` : '私聊';
-  logger.debug(`[${groupInfo}] 用户${senderId} 欲望降低: ${originalDesire.toFixed(3)} → ${totalDesire.toFixed(3)} (-${(reductionPercent * 100).toFixed(0)}%)`);
-  logger.debug(`[${groupInfo}] 用户${senderId} 概率重算: Sigmoid(${totalDesire.toFixed(3)}) = ${newProbability.toFixed(3)} (阈值=${config.baseReplyThreshold})`);
-  logger.info(`[${groupInfo}] 用户${senderId} 干预后判断: needReply=${needReply}, prob=${(newProbability * 100).toFixed(1)}%`);
-  
+  logger.info(`[${groupInfo}] 用户${senderId} 启动对话: ${reason}, task=${taskId}`);
+
   return {
-    probability: newProbability,
-    needReply,
-    totalDesire,
-    state
+    needReply: true,
+    reason,
+    mandatory,
+    probability,
+    conversationId,
+    taskId
   };
 }
-
-/**
- * 清理过期的会话状态（防止内存泄漏）
- */
-export function cleanupExpiredStates() {
-  const now = Date.now() / 1000;
-  const maxAge = 3600 * 24; // 24小时
-  
-  for (const [id, state] of conversationStates.entries()) {
-    if (now - state.lastReplyTime > maxAge) {
-      conversationStates.delete(id);
-    }
-  }
-}
-
-// 定期清理（每小时）
-setInterval(cleanupExpiredStates, 3600 * 1000);

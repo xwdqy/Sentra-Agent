@@ -1,0 +1,96 @@
+{
+  "name": "qq_message_send",
+  "description": "QQ平台：主动发送私聊消息（支持文本与多媒体资源，单条或多条合并发送）",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "user_id": {
+        "type": "integer",
+        "description": "目标QQ号（必填，数字类型）。从上下文或历史消息中获取真实的QQ号，不要使用昵称或备注名。"
+      },
+      "text": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "要发送的文本内容（支持多行）。模型应直接生成自然语言回复，不要包含 CQ 码 或 XML 标签。"
+          },
+          {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "多段文本，每段将按顺序发送或合并。数组中的每一项会被视为一个独立的段落。"
+          }
+        ],
+        "description": "可选：发送的文本内容。text 和 resources 至少需要提供一个。"
+      },
+      "resources": {
+        "type": "array",
+        "description": "可选：要发送的多媒体资源列表（图片/视频/语音/文件），使用绝对文件路径或 HTTP/HTTPS URL。若为 URL，NapCat 将尝试自动下载后发送。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["image", "video", "record", "file"],
+              "description": "资源类型：image=图片，video=视频，record=语音，file=普通文件。"
+            },
+            "path": {
+              "type": "string",
+              "description": "资源路径：本地绝对路径（如 C:/path/to/image.jpg）或 HTTP/HTTPS URL。"
+            },
+            "caption": {
+              "type": "string",
+              "description": "可选：资源前的说明文字，将和资源一起发送。模型应生成简短说明，例如‘这是处理后的图片’。"
+            }
+          },
+          "required": ["type", "path"],
+          "additionalProperties": true
+        }
+      },
+      "send_mode": {
+        "type": "string",
+        "enum": ["combined", "separate"],
+        "description": "发送模式：combined=将所有文本和资源尽量组合为一条或少量消息；separate=为每段文本或每个资源单独发送一条消息（推荐）。默认 separate；仅在需要显式合并为一条消息时使用 combined。"
+      },
+      "requestId": {
+        "type": "string",
+        "description": "可选：自定义请求ID，用于日志与追踪。一般无需手动设置，由系统自动生成。"
+      },
+      "schedule": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "当用户需要延迟处理/延迟反馈时使用：例如 '5分钟后'、'30秒后'、'明天09:00'、ISO 字符串。仅控制反馈时间，不延迟执行。"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "when": {
+                "type": "string",
+                "description": "时间表达：如 '5分钟后' / '明天09:00' / ISO 字符串"
+              },
+              "language": {
+                "type": "string",
+                "description": "语言标识，例如 zh|en（默认 zh）"
+              },
+              "timezone": {
+                "type": "string",
+                "description": "IANA 时区名称，例如 Asia/Shanghai"
+              }
+            },
+            "additionalProperties": true
+          }
+        ],
+        "description": "可选：当用户需要延迟处理/延迟反馈时使用；仅控制反馈时间，不延迟执行。若到点未完成，将先反馈进行中状态。"
+      }
+    },
+    "required": ["user_id"],
+    "additionalProperties": true
+  },
+  "timeoutMs": 20000,
+  "meta": {
+    "realWorldAction": "发送QQ私聊消息",
+    "responseStyle": "自然语言（简洁）",
+    "responseExample": "已向指定好友发送私聊消息"
+  }
+}
+

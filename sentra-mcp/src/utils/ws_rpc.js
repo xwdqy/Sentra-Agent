@@ -1,3 +1,38 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
+
+let projectEnvCache = null;
+function getProjectEnv() {
+  if (projectEnvCache) return projectEnvCache;
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const projectRoot = path.resolve(__dirname, '../..');
+    const envPath = path.join(projectRoot, '.env');
+    if (fs.existsSync(envPath)) {
+      projectEnvCache = dotenv.parse(fs.readFileSync(envPath));
+    } else {
+      projectEnvCache = {};
+    }
+  } catch {
+    projectEnvCache = {};
+  }
+  return projectEnvCache;
+}
+
+function getProjectEnvNumber(key) {
+  const raw = getProjectEnv()?.[key];
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+const DEFAULT_WS_TIMEOUT_MS = (() => {
+  const fromEnv = getProjectEnvNumber('WS_RPC_TIMEOUT_MS');
+  return Math.max(1000, Number.isFinite(fromEnv) ? fromEnv : 15000);
+})();
+
 async function getWebSocketImpl() {
   if (typeof globalThis !== 'undefined' && typeof globalThis.WebSocket === 'function') {
     return globalThis.WebSocket;
@@ -30,7 +65,7 @@ function buildDefaultMatcher(payload) {
   };
 }
 
-export default async function wsCall({ url, path, args = [], requestId, timeoutMs = 15000, match } = {}) {
+export default async function wsCall({ url, path, args = [], requestId, timeoutMs = DEFAULT_WS_TIMEOUT_MS, match } = {}) {
   const WS = await getWebSocketImpl();
   if (!WS) throw new Error('WebSocket 客户端不可用，请安装 ws 或使用 Node 18+ 并启用 undici');
 

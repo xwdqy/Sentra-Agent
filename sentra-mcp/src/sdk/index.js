@@ -3,6 +3,7 @@
 
 import MCPCore from '../mcpcore/index.js';
 import { planThenExecute, planThenExecuteStream } from '../agent/planners.js';
+import { cancelRun } from '../bus/runCancel.js';
 import { startHotReloadWatchers } from '../config/hotReload.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -160,6 +161,17 @@ export class SentraMcpSDK {
       stop() { stopped = true; },
       done,
     };
+  }
+
+  /**
+   * 标记指定 runId 的运行为取消状态。
+   * 实际效果由执行器在内部轮询 isRunCancelled(runId) 后尽快停止调度新步骤。
+   * @param {string} runId
+   */
+  cancelRun(runId) {
+    try {
+      cancelRun(runId);
+    } catch {}
   }
 }
 

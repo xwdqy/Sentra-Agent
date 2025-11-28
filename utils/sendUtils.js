@@ -109,7 +109,7 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
   }
   
   // 更新用户消息历史
-  updateConversationHistory(msg);
+  await updateConversationHistory(msg);
   
   // 决定发送策略
   const isPrivateChat = msg.type === 'private';
@@ -120,7 +120,7 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
   const mentionsToUse = hasSendDirective ? mentions : [];
   
   // 获取要引用的消息ID（仅当允许引用时）
-  const replyMessageId = allowReply ? getReplyableMessageId(msg) : null;
+  const replyMessageId = allowReply ? await getReplyableMessageId(msg) : null;
   let usedReply = false;
   
   logger.debug(`发送策略: 段落=${segments.length}, replyMode=${finalReplyMode}(${hasSendDirective ? 'by_send' : 'fallback'}), mentions=[${mentionsToUse.join(',')}], allowReply=${allowReply}, replyId=${replyMessageId}`);
@@ -198,7 +198,7 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
       
       // 更新消息历史
       if (sentMessageId) {
-        updateConversationHistory(msg, sentMessageId, true);
+        await updateConversationHistory(msg, sentMessageId, true);
         logger.debug(`第${i+1}段发送成功，消息ID: ${sentMessageId}`);
       }
       
@@ -352,14 +352,51 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
  * @param {string} response - AI响应内容
  * @param {Function} sendAndWaitResult - 发送函数
  * @param {boolean} allowReply - 是否允许引用回复（默认true），同一任务中只有第一次发送应设置为true
+ * @param {Object} options - 可选参数（例如 { hasTool: boolean } 用于发送阶段去重）
  * @returns {Promise} 发送完成的 Promise
  */
-export async function smartSend(msg, response, sendAndWaitResult, allowReply = true) {
+export async function smartSend(msg, response, sendAndWaitResult, allowReply = true, options = {}) {
   const groupId = msg?.group_id ? `G:${msg.group_id}` : `U:${msg.sender_id}`;
   const taskId = `${groupId}-${Date.now()}`;
   
-  // 将发送任务加入队列
+  // 预解析一次用于去重的文本和资源信息
+  let textForDedup = '';
+  let resourceKeys = [];
+  try {
+    if (typeof response === 'string') {
+      const parsed = parseSentraResponse(response);
+      const segments = Array.isArray(parsed.textSegments) ? parsed.textSegments : [];
+      textForDedup = segments
+        .map((s) => (typeof s === 'string' ? s.trim() : ''))
+        .filter(Boolean)
+        .join('\n');
+
+      const resources = Array.isArray(parsed.resources) ? parsed.resources : [];
+      resourceKeys = resources
+        .map((r) => {
+          const t = r?.type || '';
+          const src = r?.source || '';
+          return t && src ? `${t}|${src}` : '';
+        })
+        .filter(Boolean);
+    }
+  } catch (e) {
+    logger.warn('smartSend: 预解析用于去重的 sentra-response 失败，将回退为基于完整响应字符串的去重', { err: String(e) });
+  }
+
+  // 将发送任务加入队列（附带去重所需的元信息）
+  const meta = {
+    groupId,
+    response: typeof response === 'string' ? response : String(response ?? ''),
+    textForDedup,
+    resourceKeys
+  };
+
+  if (typeof options.hasTool === 'boolean') {
+    meta.hasTool = options.hasTool;
+  }
+
   return replySendQueue.enqueue(async () => {
     return await _smartSendInternal(msg, response, sendAndWaitResult, allowReply);
-  }, taskId);
+  }, taskId, meta);
 }
