@@ -16,7 +16,8 @@ import {
   getActiveTaskCount,
   isTaskCancelled,
   clearCancelledTask,
-  markTasksCancelledForSender
+  markTasksCancelledForSender,
+  resetReplyGateForSender
 } from './utils/replyPolicy.js';
 import { randomUUID } from 'crypto';
 import GroupHistoryManager from './utils/groupHistoryManager.js';
@@ -311,6 +312,7 @@ async function runProactiveReply(candidate) {
   const isFirstAfterUser = !!candidate.isFirstAfterUser;
 
   try {
+	resetReplyGateForSender(userid);
 	const activeCountAtRun = getActiveTaskCount(userid);
 	if (activeCountAtRun > 0) {
 		logger.info(

@@ -156,14 +156,16 @@ export function assessReplyWorth(msg, signals = {}, options = {}) {
     decision = 'ignore';
     reasonBase = 'policy_blocked';
   } else {
-    // 纯概率 gate：以 analyzer.probability 作为“进入 LLM 决策”的抽样概率
-    const r = Math.random();
-    if (r < finalProbability) {
-      decision = 'llm';
-      reasonBase = 'sampled_to_llm';
-    } else {
+    // 去掉每条消息的随机抽样，改为确定性决策：
+    // - 概率极低时直接视为噪声，忽略
+    // - 其余情况统一交给上层（会话级累积 + LLM）决策
+    const veryLowThreshold = 0.02;
+    if (finalProbability <= veryLowThreshold) {
       decision = 'ignore';
-      reasonBase = 'sampled_to_ignore';
+      reasonBase = 'below_min_threshold';
+    } else {
+      decision = 'llm';
+      reasonBase = 'pass_to_llm';
     }
   }
 

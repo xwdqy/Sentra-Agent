@@ -21,6 +21,7 @@ const groupAttention = new Map();
 const senderReplyStats = new Map(); // senderId -> { timestamps: number[] }
 const groupReplyStats = new Map();  // groupKey -> { timestamps: number[] }
 const cancelledTasks = new Set();   // 记录被标记为取消的任务ID（taskId）
+const gateSessions = new Map();
 
 /**
  * 任务状态
@@ -42,6 +43,74 @@ function normalizeSenderId(senderId) {
 
 function getGroupKey(groupId) {
   return `G:${groupId ?? ''}`;
+}
+
+function makeGateKey(groupId, senderId) {
+  const g = groupId != null ? String(groupId) : '';
+  const s = normalizeSenderId(senderId);
+  return `${g}::${s}`;
+}
+
+function resetGateSessionsForSender(senderId) {
+  const s = normalizeSenderId(senderId);
+  for (const [key, session] of gateSessions.entries()) {
+    if (key.endsWith(`::${s}`) && session) {
+      session.value = 0;
+      session.lastTs = 0;
+    }
+  }
+}
+
+function updateGateSessionAndCheck(msg, senderId, config, gateProb, activeCount) {
+  if (!msg || msg.type !== 'group' || !msg.group_id) return true;
+  if (!Number.isFinite(gateProb) || gateProb <= 0) return true;
+
+  const baseline = Number.isFinite(config.replyGateAccumBaseline)
+    ? config.replyGateAccumBaseline
+    : 0.15;
+  const threshold = Number.isFinite(config.replyGateAccumThreshold)
+    ? config.replyGateAccumThreshold
+    : 1.0;
+  const halflifeMs = Number.isFinite(config.replyGateAccumHalflifeMs) && config.replyGateAccumHalflifeMs > 0
+    ? config.replyGateAccumHalflifeMs
+    : 180000;
+
+  const eff = gateProb - baseline;
+  const now = Date.now();
+  const key = makeGateKey(msg.group_id, senderId);
+  let session = gateSessions.get(key);
+  if (!session) {
+    session = { value: 0, lastTs: now };
+    gateSessions.set(key, session);
+  }
+
+  const lastTs = Number.isFinite(session.lastTs) && session.lastTs > 0 ? session.lastTs : now;
+  let value = Number.isFinite(session.value) ? session.value : 0;
+  const dt = now - lastTs;
+  if (dt > 0 && halflifeMs > 0) {
+    const decay = Math.pow(0.5, dt / halflifeMs);
+    value *= decay;
+  }
+  if (eff > 0) {
+    value += eff;
+  }
+
+  session.value = value;
+  session.lastTs = now;
+
+  if (value < threshold) {
+    return false;
+  }
+
+  if (activeCount > 0) {
+    session.value = 0;
+    session.lastTs = now;
+    return false;
+  }
+
+  session.value = 0;
+  session.lastTs = now;
+  return true;
 }
 
 function getOrInitSenderStats(senderId) {
@@ -310,6 +379,11 @@ export function clearCancelledTask(taskId) {
   cancelledTasks.delete(taskId);
 }
 
+export function resetReplyGateForSender(senderId) {
+  if (!senderId) return;
+  resetGateSessionsForSender(senderId);
+}
+
 /**
  * 添加活跃任务
  */
@@ -320,6 +394,7 @@ function addActiveTask(senderId, taskId) {
   }
   activeTasks.get(key).add(taskId);
   logger.debug(`活跃任务+: ${key} 添加任务 ${taskId?.substring(0,8)}, 当前活跃数: ${activeTasks.get(key).size}`);
+  resetGateSessionsForSender(senderId);
 }
 
 /**
@@ -380,7 +455,10 @@ function getConfig() {
     groupReplyBaseLimit: getEnvInt('GROUP_REPLY_BASE_LIMIT', 30),
     groupReplyMinIntervalMs: getEnvInt('GROUP_REPLY_MIN_INTERVAL_MS', 2000),
     groupReplyBackoffFactor: parseFloat(getEnv('GROUP_REPLY_BACKOFF_FACTOR', '2')),
-    groupReplyMaxBackoffMultiplier: parseFloat(getEnv('GROUP_REPLY_MAX_BACKOFF_MULTIPLIER', '8'))
+    groupReplyMaxBackoffMultiplier: parseFloat(getEnv('GROUP_REPLY_MAX_BACKOFF_MULTIPLIER', '8')),
+    replyGateAccumBaseline: parseFloat(getEnv('REPLY_GATE_ACCUM_BASELINE', '0.15')),
+    replyGateAccumThreshold: parseFloat(getEnv('REPLY_GATE_ACCUM_THRESHOLD', '1.0')),
+    replyGateAccumHalflifeMs: getEnvInt('REPLY_GATE_ACCUM_HALFLIFE_MS', 180000)
   };
 }
 
@@ -675,6 +753,45 @@ export async function shouldReply(msg, options = {}) {
       logger.debug(`ReplyGate 预判失败，回退为正常 LLM 决策: ${groupInfo} sender ${senderId}`, {
         err: String(e)
       });
+    }
+  }
+
+  if (isGroup && msg.group_id && !isExplicitMention && gateProb != null) {
+    const allowByAccum = updateGateSessionAndCheck(msg, senderId, config, gateProb, activeCount);
+    if (!allowByAccum) {
+      try {
+        let analyzerProb = null;
+        if (
+          gateResult &&
+          gateResult.debug &&
+          gateResult.debug.analyzer &&
+          typeof gateResult.debug.analyzer.probability === 'number'
+        ) {
+          analyzerProb = gateResult.debug.analyzer.probability;
+        }
+        await updateAttentionStatsAfterDecision({
+          groupId: msg.group_id,
+          senderId,
+          analyzerProb,
+          gateProb,
+          fusedProb: 0,
+          didReply: false
+        });
+      } catch (e) {
+        logger.debug(`updateAttentionStatsAfterDecision 失败: group ${msg.group_id} sender ${senderId}`, {
+          err: String(e)
+        });
+      }
+      const reasonAccum = 'ReplyGateAccum: below_threshold_or_busy';
+      logger.info(`[${groupInfo}] 用户${senderId} 决策为不回复: ${reasonAccum}`);
+      return {
+        needReply: false,
+        reason: reasonAccum,
+        mandatory: false,
+        probability: gateProb,
+        conversationId,
+        taskId: null
+      };
     }
   }
 

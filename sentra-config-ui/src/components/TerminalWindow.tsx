@@ -2,12 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import styles from './TerminalWindow.module.css';
 
 interface TerminalWindowProps {
     processId: string;
-    theme?: 'light' | 'dark';
+    theme?: any;
     headerText?: string;
 }
 
@@ -20,53 +21,50 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
     const userScrolledRef = useRef(false);
     const lastScrollPositionRef = useRef(0);
 
+    // Initialize terminal
     useEffect(() => {
         if (!terminalRef.current) return;
 
+        // Clean up previous instance
+        if (xtermInstance.current) {
+            xtermInstance.current.dispose();
+        }
+        if (eventSourceRef.current) {
+            eventSourceRef.current.close();
+        }
+
         const term = new Terminal({
             cursorBlink: true,
-            theme: theme === 'light' ? {
-                background: '#ffffff',
-                foreground: '#000000',
-                cursor: '#000000',
-                selectionBackground: 'rgba(0, 0, 0, 0.3)'
-            } : {
-                background: '#1e1e1e',
+            fontSize: 14,
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            theme: theme || {
+                background: '#000000',
                 foreground: '#ffffff',
                 cursor: '#ffffff',
-                selectionBackground: 'rgba(255, 255, 255, 0.3)'
+                selectionBackground: 'rgba(255, 255, 255, 0.3)',
             },
-            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-            fontSize: 14,
-            allowProposedApi: true
+            allowProposedApi: true,
+            convertEol: true,
         });
 
         const fitAddon = new FitAddon();
         term.loadAddon(fitAddon);
+        fitAddonRef.current = fitAddon;
 
-        term.loadAddon(new WebLinksAddon((event, uri) => {
+        const webLinksAddon = new WebLinksAddon((_event, uri) => {
             window.open(uri, '_blank');
-        }));
+        });
+        term.loadAddon(webLinksAddon);
+
+        const searchAddon = new SearchAddon();
+        term.loadAddon(searchAddon);
 
         term.open(terminalRef.current);
-
-        try {
-            fitAddon.fit();
-        } catch (e) {
-            console.warn('Initial fit failed', e);
-        }
-
-        // Initial fit retry
-        setTimeout(() => {
-            try {
-                fitAddon.fit();
-            } catch (e) {
-                console.warn('Retry fit failed', e);
-            }
-        }, 50);
-
         xtermInstance.current = term;
-        fitAddonRef.current = fitAddon;
+
+        if (headerText) {
+            term.write(`\x1b[1;36m${headerText}\x1b[0m\r\n\r\n`);
+        }
 
         // Auto-scroll logic: Monitor scroll position
         const checkScrollPosition = () => {
@@ -232,13 +230,13 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             eventSource.close();
         };
 
-        // Delayed fit and initial scroll to bottom
-        setTimeout(() => {
+        // Initial fit
+        requestAnimationFrame(() => {
             try {
                 fitAddon.fit();
                 scrollToBottom();
             } catch (e) { }
-        }, 200);
+        });
 
         return () => {
             window.removeEventListener('resize', handleResize);
@@ -248,35 +246,46 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         };
     }, [processId, autoScroll, theme]); // Added theme to dependency array to re-init on theme change
 
-    // Re-fit observer with debouncing
+    // Re-fit observer with requestAnimationFrame for smoothness
     useEffect(() => {
         if (!terminalRef.current) return;
 
-        let timeoutId: NodeJS.Timeout;
+        let animationFrameId: number;
         const ro = new ResizeObserver(() => {
-            clearTimeout(timeoutId);
-            timeoutId = setTimeout(() => {
+            // Cancel any pending frame to avoid stacking
+            cancelAnimationFrame(animationFrameId);
+
+            // Schedule fit on next frame to ensure layout is settled
+            animationFrameId = requestAnimationFrame(() => {
                 try {
                     fitAddonRef.current?.fit();
                 } catch (e) { }
-            }, 50);
+            });
         });
 
         ro.observe(terminalRef.current);
 
         return () => {
-            clearTimeout(timeoutId);
+            cancelAnimationFrame(animationFrameId);
             ro.disconnect();
         };
     }, []);
 
     return (
-        <div className={styles.terminalContainer}>
-            <div
-                ref={terminalRef}
-                className={styles.terminalWrapper}
-                style={{ width: '100%', height: '100%' }}
-            />
+        <div className={styles.terminalContainer} style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' }}>
+            {headerText && (
+                <div className={styles.header} style={{ flexShrink: 0 }}>
+                    {headerText}
+                </div>
+            )}
+            <div style={{ flex: 1, position: 'relative', width: '100%', overflow: 'hidden' }}>
+                <div
+                    ref={terminalRef}
+                    className={styles.terminalWrapper}
+                    style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}
+                />
+            </div>
+
             {!autoScroll && (
                 <div
                     className={styles.scrollHint}
