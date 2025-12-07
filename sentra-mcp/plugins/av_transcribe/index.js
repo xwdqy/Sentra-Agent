@@ -106,6 +106,102 @@ function pickLanguage(langs) {
   return best || langs.find(Boolean) || '未知';
 }
 
+function inferLangCode(value) {
+  const val = String(value || '').trim();
+  if (!val) return null;
+  if (/^[a-z]{2,5}$/i.test(val)) return val.toLowerCase();
+  const match = val.match(/^([a-z]{2,3})[-_][a-z]{2}$/i);
+  if (match) return match[1].toLowerCase();
+  return null;
+}
+
+function guessLanguageInfo(raw, hint) {
+  const rawStr = String(raw || '').trim();
+  const hintStr = String(hint || '').trim();
+  const code = inferLangCode(rawStr) || inferLangCode(hintStr);
+  const name = rawStr || hintStr || '';
+  return {
+    raw: rawStr || hintStr || '',
+    code,
+    name,
+    hint: hintStr || null,
+  };
+}
+
+function normalizeTranscribeOutput(raw, extra = {}) {
+  const baseMeta = {
+    model: extra.model || null,
+    file: extra.file || null,
+    chunks: typeof extra.chunks === 'number' ? extra.chunks : null,
+    source: extra.source || null,
+  };
+
+  const fromArray = (arr) => {
+    const list = Array.isArray(arr) ? arr : [];
+    if (!list.length) {
+      return {
+        text: '',
+        segments: [],
+        language: guessLanguageInfo('', extra.languageHint),
+        meta: { ...baseMeta, raw: list, rawType: 'array' },
+      };
+    }
+    const langRaw = list[list.length - 1];
+    const segRaw = list.slice(0, -1);
+    const segTexts = segRaw
+      .map((item) => {
+        if (item == null) return '';
+        if (typeof item === 'string') return item;
+        try { return JSON.stringify(item); } catch { return String(item); }
+      })
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const langInfo = guessLanguageInfo(langRaw, extra.languageHint);
+    return {
+      text: segTexts.join('\n'),
+      segments: segTexts.map((t, idx) => ({ index: idx, text: t })),
+      language: langInfo,
+      meta: { ...baseMeta, raw: list, rawType: 'array' },
+    };
+  };
+
+  if (Array.isArray(raw)) {
+    return fromArray(raw);
+  }
+
+  if (raw && typeof raw === 'object') {
+    if (Array.isArray(raw.data) && raw.data.length >= 2) {
+      return fromArray(raw.data);
+    }
+    const text = String(raw.text || raw.transcript || raw.content || raw.result || '').trim();
+    const langRaw = raw.language_name || raw.language || '';
+    const langInfo = guessLanguageInfo(langRaw, extra.languageHint);
+    return {
+      text,
+      segments: text ? [{ index: 0, text }] : [],
+      language: langInfo,
+      meta: { ...baseMeta, raw, rawType: 'object' },
+    };
+  }
+
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    return {
+      text,
+      segments: text ? [{ index: 0, text }] : [],
+      language: guessLanguageInfo('', extra.languageHint),
+      meta: { ...baseMeta, raw, rawType: 'string' },
+    };
+  }
+
+  return {
+    text: '',
+    segments: [],
+    language: guessLanguageInfo('', extra.languageHint),
+    meta: { ...baseMeta, raw, rawType: typeof raw },
+  };
+}
+
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 function toErrInfo(e) {
@@ -223,7 +319,7 @@ export default async function handler(args = {}, options = {}) {
     });
 
     if (!canChunk) {
-      // 单次直传（保持之前行为：直接返回 API 响应）
+      // 单次直传：调用一次 ASR 接口，然后将结果归一化为结构化 JSON
       const FormData = (await import('form-data')).default;
       const formData = new FormData();
       if (isUrl && !usingTemp) {
@@ -242,9 +338,16 @@ export default async function handler(args = {}, options = {}) {
       logger.info?.('av_transcribe:api_call', { label: 'PLUGIN', url: `${baseUrl}/audio/transcriptions`, model, language, source: isUrl ? 'url' : 'file', mode: 'single' });
       const response = await postWithRetry(`${baseUrl}/audio/transcriptions`, formData, timeoutMs, retries, retryBaseMs);
       logger.info?.('av_transcribe:complete', { label: 'PLUGIN' });
-      const data = response.data;
+      const raw = response.data;
       if (usingTemp) { try { fssync.unlinkSync(localPath); } catch {} }
-      return data;
+      const normalized = normalizeTranscribeOutput(raw, {
+        model,
+        file: filePath,
+        chunks: 1,
+        source: isUrl ? 'url' : 'file',
+        languageHint: language,
+      });
+      return { success: true, code: 'OK', data: normalized };
     }
 
     // 分片并发处理
@@ -308,7 +411,15 @@ export default async function handler(args = {}, options = {}) {
 
     logger.info?.('av_transcribe:complete', { label: 'PLUGIN', chunks: chunks.length });
     if (usingTemp) { try { fssync.unlinkSync(localPath); } catch {} }
-    return { success: true, data: [combinedText, combinedLang] };
+
+    const normalized = normalizeTranscribeOutput([combinedText, combinedLang], {
+      model,
+      file: filePath,
+      chunks: chunks.length,
+      source: isUrl ? 'url' : 'file',
+      languageHint: language,
+    });
+    return { success: true, code: 'OK', data: normalized };
     
   } catch (e) {
     logger.error?.('av_transcribe:error', {

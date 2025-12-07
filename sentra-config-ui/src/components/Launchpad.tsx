@@ -22,8 +22,8 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
 
   const pagesContainerRef = useRef<HTMLDivElement>(null);
   const [pageCapacity, setPageCapacity] = useState<number>(20);
-  const [gridCols, setGridCols] = useState<number>(5); // Track columns for keyboard nav
-  const prevPageRef = useRef<number>(0);
+  const [gridCols, setGridCols] = useState<number>(5);
+  const [pageDir, setPageDir] = useState<number>(1); // Track direction as state
 
   // Keyboard navigation state
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
@@ -166,11 +166,19 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
 
   const handlePageChange = useCallback((direction: 'prev' | 'next') => {
     if (direction === 'prev') {
+      setPageDir(-1);
       setCurrentPage(p => Math.max(0, p - 1));
     } else {
+      setPageDir(1);
       setCurrentPage(p => Math.min(totalPages - 1, p + 1));
     }
   }, [totalPages]);
+
+  // For jumping to a specific page (dots/numbers)
+  const jumpToPage = useCallback((targetPage: number) => {
+    setPageDir(targetPage > currentPage ? 1 : -1);
+    setCurrentPage(targetPage);
+  }, [currentPage]);
 
   // Keyboard Navigation Handler
   useEffect(() => {
@@ -250,18 +258,19 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
   }, [isOpen, selectedIndex, currentItems, activePage, totalPages, gridCols, handlePageChange, onClose, pages, searchTerm]);
 
 
-  const pageDir = currentPage >= prevPageRef.current ? 1 : -1;
-  useEffect(() => { prevPageRef.current = currentPage; }, [currentPage]);
 
   return (
     <AnimatePresence>
       {isOpen && (
         <motion.div
           className={`${styles.overlay} ${isMobileView ? styles.mobileOverlay : ''}`}
-          initial={{ opacity: 0, scale: 1.1 }}
+          initial={{ opacity: 0, scale: 1.02 }}
           animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 1.1 }}
-          transition={{ duration: 0.2 }}
+          exit={{ opacity: 0, scale: 1.02 }}
+          transition={{
+            duration: 0.2,
+            ease: 'easeOut',
+          }}
           onClick={onClose}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -289,33 +298,27 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
               className={styles.pagesContainer}
               ref={pagesContainerRef}
             >
-              <AnimatePresence initial={false} custom={pageDir} mode='wait'>
+              <AnimatePresence initial={false} custom={pageDir} mode="popLayout">
                 <motion.div
                   key={activePage}
                   className={`${styles.grid} ${isMobileView ? styles.mobileGrid : ''}`}
                   custom={pageDir}
                   variants={{
                     enter: (direction: number) => ({
-                      x: direction > 0 ? 100 : -100,
-                      opacity: 0
+                      x: direction > 0 ? '100%' : '-100%',
                     }),
                     center: {
-                      zIndex: 1,
                       x: 0,
-                      opacity: 1
                     },
                     exit: (direction: number) => ({
-                      zIndex: 0,
-                      x: direction < 0 ? 100 : -100,
-                      opacity: 0
+                      x: direction < 0 ? '100%' : '-100%',
                     })
                   }}
                   initial="enter"
                   animate="center"
                   exit="exit"
                   transition={{
-                    x: { type: "spring", stiffness: 300, damping: 30 },
-                    opacity: { duration: 0.2 }
+                    x: { type: 'tween', duration: 0.3, ease: [0.25, 0.1, 0.25, 1] },
                   }}
                   drag={isMobileView ? 'x' : false}
                   dragConstraints={{ left: 0, right: 0 }}
@@ -345,8 +348,6 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
                         item.onClick();
                         onClose();
                       }}
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
                       onMouseEnter={() => setSelectedIndex(idx)} // Mouse hover updates selection
                     >
                       <div className={styles.iconWrapper}>
@@ -374,7 +375,7 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
                     <div
                       key={idx}
                       className={`${styles.dot} ${idx === activePage ? styles.activeDot : ''}`}
-                      onClick={() => setCurrentPage(idx)}
+                      onClick={() => jumpToPage(idx)}
                     />
                   ))}
                 </div>
@@ -384,7 +385,7 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
                     <button
                       key={`n-${i}`}
                       className={`${styles.pageNumber} ${i === activePage ? styles.activePageNumber : ''}`}
-                      onClick={() => setCurrentPage(i)}
+                      onClick={() => jumpToPage(i)}
                     >
                       {i + 1}
                     </button>

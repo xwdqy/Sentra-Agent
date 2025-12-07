@@ -5,7 +5,7 @@ import { chatCompletion } from '../../openai/client.js';
 import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
 import { parseFunctionCalls, buildFunctionCallInstruction, buildFCPolicy, formatSentraResult } from '../../utils/fc.js';
 import { clip } from '../../utils/text.js';
-import { manifestToBulletedText } from '../plan/manifest.js';
+import { manifestToXmlToolsCatalog } from '../plan/manifest.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,8 +43,8 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
       };
     }
     
-    // 构建工具清单文本（包括已使用和未使用的工具）
-    const availableTools = manifestToBulletedText(manifest);
+    // 构建工具清单（XML，包含已使用和未使用的工具）
+    const availableTools = manifestToXmlToolsCatalog(Array.isArray(manifest) ? manifest : []);
     
     // 构建工具执行历史（Sentra XML 格式）
     const toolHistoryXML = toolResults.map((h, idx) => {

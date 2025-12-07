@@ -115,7 +115,8 @@ export async function triggerPresetTeachingIfNeededCore(options = {}) {
         groupId,
         chatType,
         presetJson: presetSnapshot,
-        conversationText
+        conversationText,
+        presetSourceFileName: state?.sourceFileName || ''
       });
 
       if (!updated || typeof updated !== 'object') {

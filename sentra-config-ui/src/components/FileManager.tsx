@@ -58,14 +58,14 @@ const getFileIcon = (name: string) => {
     }
 };
 
-// Tree Item Component
+// Tree Item Component - Memoized for performance
 const FileTreeItem: React.FC<{
     node: FileNode;
     level: number;
     selectedPath: string | null;
     onSelect: (node: FileNode) => void;
     onContextMenu: (e: React.MouseEvent, node: FileNode) => void;
-}> = ({ node, level, selectedPath, onSelect, onContextMenu }) => {
+}> = React.memo(({ node, level, selectedPath, onSelect, onContextMenu }) => {
     const [expanded, setExpanded] = useState(false);
 
     const handleClick = (e: React.MouseEvent) => {
@@ -124,7 +124,7 @@ const FileTreeItem: React.FC<{
             )}
         </div>
     );
-};
+});
 
 interface OpenFile {
     node: FileNode;
@@ -132,7 +132,7 @@ interface OpenFile {
     originalContent: string;
     isBinary: boolean;
     isDirty: boolean;
-    preview: boolean; // Per-file preview state
+    preview: boolean;
 }
 
 export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => {
@@ -141,8 +141,10 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
     // Multi-tab state
     const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
     const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
-
     const [loading, setLoading] = useState(false);
+
+    // Race condition prevention
+    const loadingPathRef = React.useRef<string | null>(null);
 
     // Modal State
     const [modalOpen, setModalOpen] = useState(false);
@@ -153,12 +155,14 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
     // Context Menu State
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, node: FileNode } | null>(null);
 
-    const activeFile = openFiles.find(f => f.node.path === activeFilePath) || null;
+    const activeFile = React.useMemo(() =>
+        openFiles.find(f => f.node.path === activeFilePath) || null,
+        [openFiles, activeFilePath]
+    );
 
     const loadTree = useCallback(async () => {
         try {
             const tree = await fetchFileTree();
-            // Reconstruct tree from flat list
             const buildTree = (items: any[]): FileNode[] => {
                 const root: FileNode[] = [];
                 const map: { [key: string]: FileNode } = {};
@@ -202,23 +206,39 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
             return;
         }
 
+        // Prevent race condition: track the latest requested path
+        loadingPathRef.current = node.path;
         setLoading(true);
+
         try {
             const data = await fetchFileContent(node.path);
-            const newFile: OpenFile = {
-                node,
-                content: data.content,
-                originalContent: data.content,
-                isBinary: data.isBinary,
-                isDirty: false,
-                preview: false // Default to edit mode
-            };
-            setOpenFiles(prev => [...prev, newFile]);
-            setActiveFilePath(node.path);
+
+            // Only update if this is still the most recent request
+            if (loadingPathRef.current === node.path) {
+                const newFile: OpenFile = {
+                    node,
+                    content: data.content,
+                    originalContent: data.content,
+                    isBinary: data.isBinary,
+                    isDirty: false,
+                    preview: false
+                };
+                setOpenFiles(prev => {
+                    // Double check prevent duplicate
+                    if (prev.some(f => f.node.path === node.path)) return prev;
+                    return [...prev, newFile];
+                });
+                setActiveFilePath(node.path);
+            }
         } catch (e) {
-            addToast('error', '读取文件失败');
+            if (loadingPathRef.current === node.path) {
+                addToast('error', '读取文件失败');
+            }
         } finally {
-            setLoading(false);
+            if (loadingPathRef.current === node.path) {
+                setLoading(false);
+                loadingPathRef.current = null;
+            }
         }
     };
 
@@ -442,7 +462,7 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
 
                 <div className={styles.editorContainer}>
                     {activeFile ? (
-                        loading ? (
+                        (loading && loadingPathRef.current === activeFile.node.path) ? (
                             <div className={styles.emptyState}>加载中...</div>
                         ) : activeFile.isBinary ? (
                             <div className={styles.imagePreview}>

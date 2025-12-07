@@ -19,6 +19,27 @@ export const USER_QUESTION_FILTER_KEYS = [
   'segments', 'images', 'videos', 'files', 'records'
 ];
 
+export function escapeXml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+export function escapeXmlAttr(str) {
+  return escapeXml(str).replace(/"/g, '&quot;');
+}
+
+export function unescapeXml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&gt;/g, '>')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&');
+}
+
 /**
  * 检查是否为敏感字段
  */
@@ -57,10 +78,12 @@ export function extractAllFullXMLTags(text, tagName) {
 }
 
 /**
- * 生成简单 XML 标签，不转义内容（符合 Sentra XML 协议的“原样输出”原则）
+ * 生成简单 XML 标签，不转义内容
+ * - 在写入前会将常见 XML/HTML 实体（&lt;/&gt;/&amp; 等）还原为原始字符
  */
 export function tag(name, val) {
-  const v = val == null ? '' : String(val);
+  const raw = val == null ? '' : String(val);
+  const v = unescapeXml(raw);
   return `<${name}>${v}</${name}>`;
 }
 
@@ -100,9 +123,8 @@ export function valueToXMLString(value, depth = 0, maxDepth = 100, seen = new Se
   const type = typeof value;
   
   if (type === 'string') {
-    // 直接返回原始字符串，不转义
-    // 这样可以保留 HTML、代码等内容的原始格式
-    return value;
+    // 将常见 XML/HTML 实体还原为原始字符，再原样写入
+    return unescapeXml(value);
   }
   
   if (type === 'number' || type === 'boolean') {
@@ -258,7 +280,7 @@ export function jsonToXMLLines(data, indent = 1, depth = 0, maxDepth = 100, filt
 }
 
 /**
- * 提取XML标签内容（增强版，支持多种格式变化）
+ * 提取XML标签内容
  * @param {string} text - 包含 XML 标签的文本
  * @param {string} tagName - 标签名称
  * @param {Object} options - 选项

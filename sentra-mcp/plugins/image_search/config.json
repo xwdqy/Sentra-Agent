@@ -1,22 +1,53 @@
 {
   "name": "image_search",
-  "description": "使用 Unsplash API 搜索高清图片并下载到本地。支持自动打包（图片数量超过阈值时压缩为 zip）。",
+  "description": "使用多个图片搜索源（Bing / 壁纸 API / Unsplash）搜索高清图片并下载到本地。支持自动打包（图片数量超过阈值时压缩为 zip）。",
   "inputSchema": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "搜索关键词"
+        "description": "搜索关键词或自然语言描述，例如：'动漫 少女 高清 壁纸 4k'，支持中文/英文及风格、分辨率等组合提示词。"
       },
       "count": {
         "type": "integer",
         "description": "需要搜索的图片数量",
         "minimum": 1
       },
-      "orientation": {
+      "bingImageType": {
         "type": "string",
-        "enum": ["landscape", "portrait", "squarish"],
-        "description": "图片方向：landscape(横向)、portrait(纵向)、squarish(方形)，不指定则不限"
+        "enum": ["photo", "clipart", "linedrawing", "animated", "transparent"],
+        "default": "photo",
+        "description": "仅对 Bing 搜索源有效：图片类型（photo 照片、clipart 剪贴画、linedrawing 素描、animated 动画 GIF、transparent 透明背景）。未提供时默认使用 photo（照片）。"
+      },
+      "bingSize": {
+        "type": "string",
+        "enum": ["small", "medium", "large", "wallpaper", "all"],
+        "default": "wallpaper",
+        "description": "仅对 Bing 搜索源有效：图片尺寸（small 小、medium 中、large 大、wallpaper 壁纸、all 全部）。未提供或非法取值时自动回退为 wallpaper。"
+      },
+      "bingColor": {
+        "type": "string",
+        "enum": ["all", "coloronly", "bw", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "white", "gray", "black", "brown"],
+        "default": "all",
+        "description": "仅对 Bing 搜索源有效：颜色过滤（all 不限制，coloronly 彩色，bw 黑白，red 红色，orange 橙色，yellow 黄色，green 绿色，teal 青色，blue 蓝色，purple 紫色，pink 粉色，white 白色，gray 灰色，black 黑色，brown 棕色）。模型未指定时默认 all。"
+      },
+      "bingLayout": {
+        "type": "string",
+        "enum": ["all", "square", "wide", "tall"],
+        "default": "all",
+        "description": "仅对 Bing 搜索源有效：布局/长宽比（all 不限制，square 方图，wide 横向，tall 竖向）。模型未指定时默认 all。"
+      },
+      "bingFreshness": {
+        "type": "string",
+        "enum": ["all", "day", "week", "month"],
+        "default": "all",
+        "description": "仅对 Bing 搜索源有效：时间范围（all 不限制，day 最近24小时，week 最近7天，month 最近30天）。模型未指定时默认 all。"
+      },
+      "bingLicense": {
+        "type": "string",
+        "enum": ["all", "share", "sharecommercially", "modify", "modifycommercially", "public"],
+        "default": "all",
+        "description": "仅对 Bing 搜索源有效：版权许可（all 不限制，share 允许共享，sharecommercially 允许商业共享，modify 允许修改，modifycommercially 允许商业修改，public 公共领域/免费使用）。模型未指定时默认 all。"
       },
       "schedule": {
         "oneOf": [
@@ -37,7 +68,7 @@
         "description": "可选：延迟反馈时间。仅控制反馈时间，不延迟执行。如超时则先反馈进行中状态。"
       }
     },
-    "required": ["query", "count"],
+    "required": ["query", "count", "bingImageType"],
     "additionalProperties": true
   },
   "timeoutMs": 180000,

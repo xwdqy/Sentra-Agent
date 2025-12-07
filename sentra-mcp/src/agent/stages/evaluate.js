@@ -16,7 +16,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadToolDef } from '../tools/loader.js';
-import { manifestToBulletedText } from '../plan/manifest.js';
+import { manifestToBulletedText, manifestToXmlToolsCatalog } from '../plan/manifest.js';
 
 /**
  * 评估运行结果
@@ -40,7 +40,11 @@ export async function evaluateRun(objective, plan, exec, runId, context = {}) {
   const history = await HistoryStore.list(runId, 0, -1);
   const stepNames = (exec?.used || []).map((u) => u.aiName).join(', ');
   const tail = history;
-  const manifestText = manifestToBulletedText(Array.isArray(plan?.manifest) ? plan.manifest : []);
+  const manifestArr = Array.isArray(plan?.manifest) ? plan.manifest : [];
+  const strategy = String(config.llm?.toolStrategy || 'auto');
+  const manifestText = strategy === 'fc'
+    ? manifestToXmlToolsCatalog(manifestArr)
+    : manifestToBulletedText(manifestArr);
 
   // 复用“前置思考”流程（仅在开启时调用）
   let preThought = '';
@@ -80,7 +84,6 @@ export async function evaluateRun(objective, plan, exec, runId, context = {}) {
 
   let result = { success: true };
   let lastContent = '';
-  const strategy = String(config.llm?.toolStrategy || 'auto');
   const useFC = strategy === 'fc';
   const useAuto = strategy === 'auto';
 

@@ -233,6 +233,16 @@ def get_emotion_topk() -> int:
         return 0
 
 
+def get_emotion_min_score() -> float:
+    """Minimum emotion score threshold for filtering low-value emotions.
+    Default: 0.0 (no filtering).
+    """
+    try:
+        return float(os.getenv("EMO_MIN_EMOTION_SCORE", "0.0"))
+    except Exception:
+        return 0.0
+
+
 def get_sentiment_neutral_mode() -> str:
     """Return mode for including neutral in sentiment scores: auto|on|off.
     Default: auto
@@ -392,3 +402,51 @@ def get_analytics_max_events() -> int:
         return int(os.getenv("MBTI_ANALYTICS_MAX_EVENTS", "10000"))
     except Exception:
         return 10000
+
+
+def get_emo_backend() -> str:
+    v = os.getenv("EMO_BACKEND", "local").strip().lower()
+    if v in {"local", "online", "auto"}:
+        return v
+    return "local"
+
+
+def get_online_provider() -> str | None:
+    v = os.getenv("EMO_ONLINE_PROVIDER", "").strip().lower()
+    return v or None
+
+
+def get_nlpcloud_config() -> dict[str, Any]:
+    tokens_raw = os.getenv("NLP_CLOUD_API_TOKEN", "").strip()
+    tokens: list[str] = []
+    if tokens_raw:
+        tokens = [t.strip() for t in tokens_raw.split(",") if t.strip()]
+        # Preserve order while removing duplicates
+        seen = set()
+        deduped: list[str] = []
+        for tok in tokens:
+            if tok in seen:
+                continue
+            seen.add(tok)
+            deduped.append(tok)
+        tokens = deduped
+    token = tokens[0] if tokens else ""
+    model_sent = os.getenv("NLP_CLOUD_SENTIMENT_MODEL", "").strip()
+    model_emo = os.getenv("NLP_CLOUD_EMOTION_MODEL", "").strip()
+    gpu_raw = os.getenv("NLP_CLOUD_GPU", "false").strip().lower()
+    gpu = gpu_raw in {"1", "true", "yes", "on"}
+    try:
+        cooldown = float(os.getenv("NLP_CLOUD_TOKEN_COOLDOWN_SEC", "60"))
+    except Exception:
+        cooldown = 60.0
+    # If no explicit emotion model is provided, fall back to sentiment model
+    if not model_emo:
+        model_emo = model_sent
+    return {
+        "api_token": token or None,
+        "api_tokens": tokens,
+        "sentiment_model": model_sent or None,
+        "emotion_model": model_emo or None,
+        "gpu": gpu,
+        "token_cooldown": cooldown,
+    }

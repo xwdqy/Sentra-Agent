@@ -3,6 +3,7 @@ import fssync from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
+import { decode } from 'html-entities';
 import qs from 'qs';
 import archiver from 'archiver';
 import logger from '../../src/logger/index.js';
@@ -19,6 +20,15 @@ function toMarkdownPath(abs) {
  */
 function isStrEmpty(x) {
   return (!x && x !== 0 && x !== false) || x === "null";
+}
+
+/**
+ * 归一化可选字符串参数（空串视为 null）
+ */
+function normalizeOptionalString(v) {
+  if (v === undefined || v === null) return null;
+  const s = String(v).trim();
+  return s || null;
 }
 
 /**
@@ -252,6 +262,44 @@ async function fetchJsonWithRetry(url, options = {}, retries = 3, timeoutMs = 20
 }
 
 /**
+ * 带重试的 fetch 文本
+ */
+async function fetchTextWithRetry(url, options = {}, retries = 3, timeoutMs = 20000) {
+  let lastError;
+  
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetchWithTimeout(url, options, timeoutMs);
+      
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+      
+      const text = await res.text();
+      return text;
+      
+    } catch (e) {
+      lastError = e;
+      logger.warn?.('fetch:retry_text', { 
+        label: 'PLUGIN', 
+        attempt: i + 1, 
+        maxRetries: retries,
+        error: String(e?.message || e),
+        url: url.substring(0, 100)
+      });
+      
+      if (i < retries - 1) {
+        // 指数退避：1s, 2s, 4s...
+        const delay = Math.pow(2, i) * 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  throw lastError;
+}
+
+/**
  * 从URL猜测文件扩展名
  */
 function guessExtFromUrl(url) {
@@ -373,6 +421,238 @@ async function createZip(files, zipPath) {
     
     archive.finalize();
   });
+}
+
+/**
+ * 简单 HTML 实体解码（用于 Bing 搜索结果 JSON 片段）
+ */
+function decodeHtmlEntities(str) {
+  if (!str) return '';
+  try {
+    return decode(String(str));
+  } catch {
+    return String(str);
+  }
+}
+
+const BING_FILTERS = {
+  imageType: {
+    photo: '+filterui:photo-photo',
+    clipart: '+filterui:photo-clipart',
+    linedrawing: '+filterui:photo-linedrawing',
+    animated: '+filterui:photo-animatedgif',
+    transparent: '+filterui:photo-transparent',
+  },
+  size: {
+    small: '+filterui:imagesize-small',
+    medium: '+filterui:imagesize-medium',
+    large: '+filterui:imagesize-large',
+    wallpaper: '+filterui:imagesize-wallpaper',
+    all: '',
+  },
+  color: {
+    coloronly: '+filterui:color-color',
+    bw: '+filterui:color-bw',
+    red: '+filterui:color-red',
+    orange: '+filterui:color-orange',
+    yellow: '+filterui:color-yellow',
+    green: '+filterui:color-green',
+    teal: '+filterui:color-teal',
+    blue: '+filterui:color-blue',
+    purple: '+filterui:color-purple',
+    pink: '+filterui:color-pink',
+    white: '+filterui:color-white',
+    gray: '+filterui:color-gray',
+    black: '+filterui:color-black',
+    brown: '+filterui:color-brown',
+  },
+  layout: {
+    square: '+filterui:aspect-square',
+    wide: '+filterui:aspect-wide',
+    tall: '+filterui:aspect-tall',
+  },
+  freshness: {
+    day: '+filterui:age-lt1440',
+    week: '+filterui:age-lt10080',
+    month: '+filterui:age-lt43200',
+  },
+  license: {
+    share: '+filterui:license-L2_L3_L4_L5_L6_L7',
+    sharecommercially: '+filterui:license-L2_L3_L4',
+    modify: '+filterui:license-L2_L3_L5_L6',
+    modifycommercially: '+filterui:license-L2_L3',
+    public: '+filterui:license-L1',
+  },
+};
+
+/**
+ * 解析 Bing 图片搜索 HTML
+ */
+function parseBingImages(html, maxCount) {
+  const images = [];
+  const regex = /m=\s*"({[^"]+})"/g;
+  let match;
+  
+  while ((match = regex.exec(html)) !== null) {
+    try {
+      const jsonStr = decodeHtmlEntities(match[1]);
+      const data = JSON.parse(jsonStr);
+      const originalUrl = data.murl || data.turl;
+      if (!originalUrl) continue;
+      images.push({
+        source: 'bing',
+        url: originalUrl,
+        thumbnailUrl: data.turl || '',
+        title: data.t || '',
+        description: data.desc || '',
+        sourceUrl: data.purl || '',
+        width: data.expw || 0,
+        height: data.exph || 0,
+        md5: data.md5 || '',
+        contentId: data.cid || '',
+        mediaId: data.mid || '',
+      });
+      if (images.length >= maxCount) break;
+    } catch {
+      // 忽略解析错误
+    }
+  }
+  
+  // 去重
+  const seen = new Set();
+  const unique = [];
+  for (const img of images) {
+    const key = img.md5 || img.url;
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      unique.push(img);
+    }
+  }
+  return unique;
+}
+
+/**
+ * Bing 图片搜索
+ */
+async function searchBingImages(query, count, options = {}) {
+  const {
+    first = 1,
+    timeoutMs = 15000,
+    retries = 3,
+    headers = {},
+    imageType = null,
+    size = null,
+    color = null,
+    layout = null,
+    freshness = null,
+    license = null,
+  } = options;
+  
+  try {
+    const needCount = Math.max(1, count || 1);
+    const perPageMax = needCount * 10;
+
+    logger.info?.('bing:search_start', {
+      label: 'PLUGIN',
+      query,
+      needCount,
+      perPageMax,
+      imageType: imageType || 'any',
+      size: size || 'any',
+    });
+
+    const buildUrl = (firstVal) => {
+      const urlObj = new URL('https://cn.bing.com/images/search');
+      urlObj.searchParams.append('q', query);
+      urlObj.searchParams.append('form', 'HDRSC3');
+      urlObj.searchParams.append('first', String(firstVal));
+
+      const qftParts = [];
+      if (imageType && BING_FILTERS.imageType[imageType]) {
+        qftParts.push(BING_FILTERS.imageType[imageType]);
+      }
+      if (size && BING_FILTERS.size[size]) {
+        qftParts.push(BING_FILTERS.size[size]);
+      }
+      if (color && BING_FILTERS.color[color]) {
+        qftParts.push(BING_FILTERS.color[color]);
+      }
+      if (layout && BING_FILTERS.layout[layout]) {
+        qftParts.push(BING_FILTERS.layout[layout]);
+      }
+      if (freshness && BING_FILTERS.freshness[freshness]) {
+        qftParts.push(BING_FILTERS.freshness[freshness]);
+      }
+      if (license && BING_FILTERS.license[license]) {
+        qftParts.push(BING_FILTERS.license[license]);
+      }
+      if (qftParts.length) {
+        urlObj.searchParams.append('qft', qftParts.join(''));
+      }
+
+      return urlObj.toString();
+    };
+
+    const fetchPage = async (firstVal) => {
+      const url = buildUrl(firstVal);
+      const html = await fetchTextWithRetry(
+        url,
+        {
+          method: 'GET',
+          headers: {
+            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'accept-language': 'zh-CN,zh;q=0.9',
+            ...headers,
+          },
+        },
+        retries,
+        timeoutMs
+      );
+
+      return parseBingImages(html, perPageMax);
+    };
+
+    const allImages = [];
+
+    // 第 1 页
+    const page1 = await fetchPage(first);
+    allImages.push(...page1);
+
+    // 第 2 页（简单按 50 条一页估算偏移）
+    const secondFirst = first + 50;
+    const page2 = await fetchPage(secondFirst);
+    allImages.push(...page2);
+
+    // 跨页再去重
+    const seen = new Set();
+    const unique = [];
+    for (const img of allImages) {
+      const key = img.md5 || img.url;
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        unique.push(img);
+      }
+    }
+
+    logger.info?.('bing:search_success', {
+      label: 'PLUGIN',
+      query,
+      requested: needCount,
+      parsed: unique.length,
+      page1: page1.length,
+      page2: page2.length,
+    });
+
+    const shuffled = smartShuffleWithRelevance(unique, needCount);
+    return shuffled.slice(0, needCount);
+  } catch (e) {
+    logger.error?.('bing:search_failed', {
+      label: 'PLUGIN',
+      query,
+      error: String(e?.message || e),
+    });
+    return [];
+  }
 }
 
 /**
@@ -501,7 +781,6 @@ async function searchWallpapers(query, count, options = {}) {
 async function searchUnsplash(query, count, options = {}) {
   const {
     accessKey,
-    orientation = null,
     timeoutMs = 20000,
     retries = 3,
     headers = {}
@@ -516,8 +795,7 @@ async function searchUnsplash(query, count, options = {}) {
     logger.info?.('unsplash:search_start', { 
       label: 'PLUGIN', 
       query, 
-      count,
-      orientation: orientation || 'any'
+      count
     });
     
     const params = new URLSearchParams({
@@ -525,10 +803,6 @@ async function searchUnsplash(query, count, options = {}) {
       per_page: String(Math.min(count, 30)), // API限制
       client_id: accessKey,
     });
-    
-    if (orientation) {
-      params.append('orientation', orientation);
-    }
     
     const url = `https://api.unsplash.com/search/photos?${params.toString()}`;
     
@@ -571,7 +845,6 @@ async function searchUnsplash(query, count, options = {}) {
 export default async function handler(args = {}, options = {}) {
   const query = String(args.query || '').trim();
   const count = Number(args.count || 0);
-  const orientation = args.orientation || null;
   
   // 参数验证
   if (!query) {
@@ -616,6 +889,81 @@ export default async function handler(args = {}, options = {}) {
     });
   }
   
+  // 解析 provider 顺序（仅来自环境变量 IMAGE_SEARCH_PROVIDERS，未配置则使用默认顺序，默认以 Bing 为第一源）
+  let providers = [];
+  const envProviders = String(penv.IMAGE_SEARCH_PROVIDERS || process.env.IMAGE_SEARCH_PROVIDERS || '').trim();
+  if (envProviders) {
+    providers = envProviders
+      .split(',')
+      .map(p => p.trim().toLowerCase())
+      .filter(Boolean);
+  }
+  if (!providers.length) {
+    providers = hasUnsplashKey ? ['bing', 'wallpaper', 'unsplash'] : ['bing', 'wallpaper'];
+  }
+  providers = providers.filter(p => ['bing', 'wallpaper', 'unsplash'].includes(p));
+  if (!providers.length) {
+    providers = hasUnsplashKey ? ['bing', 'wallpaper', 'unsplash'] : ['bing', 'wallpaper'];
+  }
+  // 去重保持顺序
+  providers = [...new Set(providers)];
+
+  // Bing 专用筛选参数（非法取值回退为默认）
+  let bingImageType = normalizeOptionalString(args.bingImageType) || 'photo';
+  const allowedImageTypes = Object.keys(BING_FILTERS.imageType || {});
+  if (!allowedImageTypes.includes(bingImageType)) {
+    logger.warn?.('bing:param_image_type_invalid', {
+      label: 'PLUGIN',
+      value: bingImageType,
+    });
+    bingImageType = 'photo';
+  }
+  let bingSize = normalizeOptionalString(args.bingSize) || 'wallpaper';
+  const allowedSizes = Object.keys(BING_FILTERS.size || {});
+  if (!allowedSizes.includes(bingSize)) {
+    logger.warn?.('bing:param_size_invalid', {
+      label: 'PLUGIN',
+      value: bingSize,
+    });
+    bingSize = 'wallpaper';
+  }
+  const allowedColors = ['all', ...Object.keys(BING_FILTERS.color || {})];
+  let bingColor = normalizeOptionalString(args.bingColor) || 'all';
+  if (!allowedColors.includes(bingColor)) {
+    logger.warn?.('bing:param_color_invalid', {
+      label: 'PLUGIN',
+      value: bingColor,
+    });
+    bingColor = 'all';
+  }
+  const allowedLayouts = ['all', ...Object.keys(BING_FILTERS.layout || {})];
+  let bingLayout = normalizeOptionalString(args.bingLayout) || 'all';
+  if (!allowedLayouts.includes(bingLayout)) {
+    logger.warn?.('bing:param_layout_invalid', {
+      label: 'PLUGIN',
+      value: bingLayout,
+    });
+    bingLayout = 'all';
+  }
+  const allowedFreshness = ['all', ...Object.keys(BING_FILTERS.freshness || {})];
+  let bingFreshness = normalizeOptionalString(args.bingFreshness) || 'all';
+  if (!allowedFreshness.includes(bingFreshness)) {
+    logger.warn?.('bing:param_freshness_invalid', {
+      label: 'PLUGIN',
+      value: bingFreshness,
+    });
+    bingFreshness = 'all';
+  }
+  const allowedLicenses = ['all', ...Object.keys(BING_FILTERS.license || {})];
+  let bingLicense = normalizeOptionalString(args.bingLicense) || 'all';
+  if (!allowedLicenses.includes(bingLicense)) {
+    logger.warn?.('bing:param_license_invalid', {
+      label: 'PLUGIN',
+      value: bingLicense,
+    });
+    bingLicense = 'all';
+  }
+
   const headers = {
     'user-agent': userAgent,
     'accept': 'application/json',
@@ -627,36 +975,55 @@ export default async function handler(args = {}, options = {}) {
       query, 
       requestedCount: count, 
       actualCount: finalCount, 
-      orientation,
-      hasUnsplashKey
+      hasUnsplashKey,
+      providers
     });
     
-    let allPhotos = [];
+    const allPhotos = [];
     
-    const wallpaperResults = await searchWallpapers(query, finalCount, {
-      timeoutMs: fetchTimeoutMs,
-      retries
-    });
-    
-    allPhotos.push(...wallpaperResults);
-    
-    const remaining = finalCount - allPhotos.length;
-    if (remaining > 0 && hasUnsplashKey) {
-      const unsplashResults = await searchUnsplash(query, remaining, {
-        accessKey,
-        orientation,
-        timeoutMs: fetchTimeoutMs,
-        retries,
-        headers
-      });
-      allPhotos.push(...unsplashResults);
-    } else if (remaining > 0) {
-      logger.info?.('skip_unsplash', { 
-        label: 'PLUGIN', 
-        message: 'Unsplash补充跳过（无API Key）',
-        wallpaperCount: allPhotos.length,
-        remaining 
-      });
+    for (const provider of providers) {
+      const remaining = finalCount - allPhotos.length;
+      if (remaining <= 0) break;
+      
+      if (provider === 'bing') {
+        const bingHeaders = {
+          'user-agent': userAgent,
+        };
+        const results = await searchBingImages(query, remaining, {
+          timeoutMs: fetchTimeoutMs,
+          retries,
+          headers: bingHeaders,
+          imageType: bingImageType,
+          size: bingSize,
+          color: bingColor !== 'all' ? bingColor : null,
+          layout: bingLayout !== 'all' ? bingLayout : null,
+          freshness: bingFreshness !== 'all' ? bingFreshness : null,
+          license: bingLicense !== 'all' ? bingLicense : null,
+        });
+        allPhotos.push(...results);
+      } else if (provider === 'wallpaper') {
+        const results = await searchWallpapers(query, remaining, {
+          timeoutMs: fetchTimeoutMs,
+          retries
+        });
+        allPhotos.push(...results);
+      } else if (provider === 'unsplash') {
+        if (!hasUnsplashKey) {
+          logger.info?.('skip_unsplash', { 
+            label: 'PLUGIN', 
+            message: 'Unsplash补充跳过（无API Key）',
+            remaining 
+          });
+          continue;
+        }
+        const results = await searchUnsplash(query, remaining, {
+          accessKey,
+          timeoutMs: fetchTimeoutMs,
+          retries,
+          headers
+        });
+        allPhotos.push(...results);
+      }
     }
     
     // 检查是否有结果
@@ -906,7 +1273,6 @@ export default async function handler(args = {}, options = {}) {
       downloaded: files.length,
       failed: shuffledPhotos.length - files.length,
       sources: downloadedSourceStats,
-      orientation: orientation || 'any',
       timestamp: new Date().toISOString(),
       session_id: sessionId,
       total_size: totalSize,

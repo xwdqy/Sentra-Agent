@@ -34,7 +34,7 @@ time=getCurrentTime
 wechat_system_prompt=getWeChatSystemPrompt
 # 沙箱环境系统提示词（结合系统信息）
 sandbox_system_prompt=getSandboxSystemPrompt
-# MCP 工具导出（从 Sentra MCP SDK 导出工具为 Markdown）
+# MCP 工具导出（从 Sentra MCP SDK 导出工具为 XML 清单）
 MCP_TOOLS=getMcpTools
 ```
 
@@ -124,7 +124,7 @@ console.log(await resp.json());
   - 模板：`{{sandbox_system_prompt}}`
 
 - `getMcpTools()`（`functions/mcptools.js`）
-  - 调用外部 Sentra MCP SDK 导出工具为 Markdown；内部自动 `sdk.init()` 并带错误捕获。
+  - 调用外部 Sentra MCP SDK 导出工具为 XML（Sentra MCP 工具清单）；内部自动处理错误并返回 XML 块。
   - `.env`：`MCP_TOOLS=getMcpTools`
   - 模板：`{{MCP_TOOLS}}`
 

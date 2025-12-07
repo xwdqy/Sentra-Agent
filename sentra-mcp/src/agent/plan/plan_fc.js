@@ -1,7 +1,7 @@
 import logger from '../../logger/index.js';
 import { config, getStageModel } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
-import { buildPlanningManifest, manifestToBulletedText } from './manifest.js';
+import { buildPlanningManifest, manifestToBulletedText, manifestToXmlToolsCatalog } from './manifest.js';
 import { rerankManifest } from './router.js';
 import { getPreThought } from '../stages/prethought.js';
 import { upsertPlanMemory, searchPlanMemories } from '../../memory/index.js';
@@ -106,7 +106,7 @@ async function selectBestPlan({ objective, manifest, candidates, context }) {
     const overlayGlobal = overlays.global?.system || overlays.global || '';
     const overlayAudit = overlays.audit?.system || overlays.plan_audit?.system || overlays.audit || overlays.plan_audit || '';
     const sys = composeSystem(pa.system, [overlayGlobal, overlayAudit].filter(Boolean).join('\n\n'));
-    const manifestText = manifestToBulletedText(Array.isArray(manifest) ? manifest : []);
+    const manifestText = manifestToXmlToolsCatalog(Array.isArray(manifest) ? manifest : []);
     const candidatesList = candidates.map((c, i) => `#${i}: ${clip(c.steps, 1200)}`).join('\n');
     const base = compactMessages([
       { role: 'system', content: sys },
@@ -256,7 +256,7 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
     ...historyMessages,
     { role: 'user', content: renderTemplate(ep.user_goal, { objective }) },
     ...(usePT ? [{ role: 'assistant', content: renderTemplate(ep.assistant_thought, { preThought: preThought || '' }) }] : []),
-    { role: 'assistant', content: renderTemplate(ep.assistant_manifest, { manifestBulleted: manifestToBulletedText(manifest) }) },
+    { role: 'assistant', content: renderTemplate(ep.assistant_manifest, { manifestBulleted: manifestToXmlToolsCatalog(manifest) }) },
     ...planMemoryMsgs,
     { role: 'user', content: ep.user_request },
     { role: 'user', content: [policyText, planInstrText].join('\n\n') },

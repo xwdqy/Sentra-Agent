@@ -41,6 +41,54 @@ function toMarkdownCatalog(items = []) {
   }
   return lines.join('\n');
 }
+
+function toXmlCatalog(items = []) {
+  const lines = [];
+  lines.push('<sentra-mcp-tools>');
+  lines.push(
+    `  <summary>共有 ${items.length} 个 MCP 工具可用。以下清单仅供参考，请严格遵守每个工具描述的能力边界和使用场景。</summary>`
+  );
+
+  items.forEach((t, idx) => {
+    if (!t) return;
+    const index = idx + 1;
+    const aiName = t.aiName || t.name || '';
+    const name = t.name || '';
+    const provider = t.provider || '';
+    const serverId = t.serverId || '';
+    const desc = t.description || '';
+    const real = (t.meta && t.meta.realWorldAction) || '';
+    const cooldown = t.cooldownMs != null ? String(t.cooldownMs) : '';
+    const timeout = t.timeoutMs != null ? String(t.timeoutMs) : '';
+    const required = Array.isArray(t.inputSchema?.required)
+      ? t.inputSchema.required.join(', ')
+      : '';
+    const responseStyle = (t.meta && t.meta.responseStyle) || '';
+    const responseExample =
+      t.meta && t.meta.responseExample != null ? String(t.meta.responseExample) : '';
+
+    lines.push(`  <tool index="${index}">`);
+    if (aiName) lines.push(`    <ai_name>${aiName}</ai_name>`);
+    if (name) lines.push(`    <name>${name}</name>`);
+    if (provider) lines.push(`    <provider>${provider}</provider>`);
+    if (serverId) lines.push(`    <server_id>${serverId}</server_id>`);
+    if (desc) lines.push(`    <description>${desc}</description>`);
+    if (real) lines.push(`    <real_world_action>${real}</real_world_action>`);
+    if (required) lines.push(`    <required_params>${required}</required_params>`);
+    if (cooldown) lines.push(`    <cooldown_ms>${cooldown}</cooldown_ms>`);
+    if (timeout) lines.push(`    <timeout_ms>${timeout}</timeout_ms>`);
+    if (responseStyle || responseExample) {
+      lines.push('    <meta>');
+      if (responseStyle) lines.push(`      <response_style>${responseStyle}</response_style>`);
+      if (responseExample) lines.push(`      <response_example>${responseExample}</response_example>`);
+      lines.push('    </meta>');
+    }
+    lines.push('  </tool>');
+  });
+
+  lines.push('</sentra-mcp-tools>');
+  return lines.join('\n');
+}
 /**
  * Sentra SDK wrapper
  *
@@ -92,9 +140,9 @@ export class SentraMcpSDK {
   }
 
   /**
-   * Export available tools to JSON or Markdown.
+   * Export available tools to JSON / Markdown / XML.
    * If outputPath is provided, writes to disk; otherwise returns content.
-   * @param {{ format?: 'json'|'md'|'markdown', outputPath?: string, pretty?: number }} [opts]
+   * @param {{ format?: 'json'|'md'|'markdown'|'xml', outputPath?: string, pretty?: number }} [opts]
    */
   async exportTools(opts = {}) {
     await this.init();
@@ -106,6 +154,8 @@ export class SentraMcpSDK {
       content = JSON.stringify(items, null, pretty);
     } else if (format === 'md' || format === 'markdown') {
       content = toMarkdownCatalog(items);
+    } else if (format === 'xml') {
+      content = toXmlCatalog(items);
     } else {
       throw new Error(`Unsupported format: ${opts.format}`);
     }

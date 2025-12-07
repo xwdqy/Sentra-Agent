@@ -1,6 +1,8 @@
 import { createLogger } from '../utils/logger.js';
 import { appendTeachingLog } from '../utils/presetTeachingLogViewer.js';
 import { getEnv, getEnvBool } from '../utils/envHotReloader.js';
+import { escapeXml, escapeXmlAttr, unescapeXml } from '../utils/xmlUtils.js';
+import { getRecentPresetTeachingExamples, pushPresetTeachingExample } from '../utils/presetTeachingCache.js';
 
 const logger = createLogger('PresetTeaching');
 
@@ -319,17 +321,6 @@ function buildEditablePathsSummaryFromNodes(nodes) {
   return paths.map((p) => `- ${p}`).join('\n');
 }
 
-function escapeXml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function escapeXmlAttr(str) {
-  return escapeXml(str).replace(/"/g, '&quot;');
-}
-
 function buildTeachingInputXml({ nodes, conversationText }) {
   const lines = [];
   const list = Array.isArray(nodes) ? nodes.slice(0, 64) : [];
@@ -374,7 +365,10 @@ function extractTagText(xml, tagName) {
   // 同样允许关闭标签前存在空格
   const re = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\/${tagName}\\s*>`, 'i');
   const m = xml.match(re);
-  return m ? m[1].trim() : '';
+  if (!m) return '';
+  const raw = m[1];
+  const text = unescapeXml(raw);
+  return text.trim();
 }
 
 function castValueForNode(raw, node) {
@@ -668,7 +662,8 @@ export async function maybeTeachPreset(options = {}) {
     groupId,
     chatType,
     presetJson,
-    conversationText
+    conversationText,
+    presetSourceFileName
   } = options;
 
   const enabled = getEnvBool('AGENT_PRESET_TEACHING_ENABLED', false);
@@ -748,6 +743,18 @@ export async function maybeTeachPreset(options = {}) {
     '- 若本轮对话只是闲聊或无关内容，必须输出 <decision>no_change</decision> 且让 <edit_operations> 为空。',
     '- <new_value> 和 <change_reason> 内的自然语言都必须是地道中文，不要包含 XML 标签或转义实体。',
     '',
+    '## Historical teaching examples as few-shot context',
+    '在正式处理当前教导请求之前，你可能会在对话历史中看到若干轮已经成功执行过的教导示例：',
+    '- user 角色发送完整的 <sentra-agent-preset-edit-input>（包含当时的 <nodes> 与 <conversation>）。',
+    '- assistant 角色回复对应的 <sentra-agent-preset-edit-plan>（表示当时实际采用的编辑计划）。',
+    '',
+    '请将这些历史示例视为“已经落地的教导样本”，用途包括：',
+    '- 学习在不同场景下如何选择合适的 <target_index>、<edit_type> 与 <new_value>。',
+    '- 当当前 <conversation> 的教导意图与某个历史样本高度相似、且目标路径/改动方向基本一致时，优先倾向：',
+    '  - 直接输出 <decision>no_change</decision>，认为无需再次修改预设；或',
+    '  - 只在原有基础上做极少量、必要的补充，而不是反复对同一段设定做等价改写。',
+    '这些示例只是模式参考，不需要逐字复述，也不要帮它们再生成新的编辑计划。',
+    '',
     '## Example 1: 修改外貌衣服（update parameter）',
     'Teaching intent (from <conversation>):',
     '  用户: 以后别说黑色连帽衫了，我现在想让你设定成穿**白色连衣裙**，其余外貌不变。',
@@ -799,10 +806,37 @@ export async function maybeTeachPreset(options = {}) {
     '- 必须根据当前 <nodes> 列表中的实际顺序选择正确的 <target_index>（数值来自 <node index="N">）。'
   ].join('\n');
 
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: inputXml }
-  ];
+  const fewShotExamples = await getRecentPresetTeachingExamples(
+    undefined,
+    presetSourceFileName
+  );
+
+  const messages = [];
+  messages.push({ role: 'system', content: systemPrompt });
+
+  if (Array.isArray(fewShotExamples) && fewShotExamples.length > 0) {
+    for (const ex of fewShotExamples) {
+      if (!ex) continue;
+
+      const exInputText =
+        typeof ex.inputXml === 'string' && ex.inputXml.trim() ? ex.inputXml.trim() : '';
+      const exPlanText =
+        typeof ex.planXml === 'string' && ex.planXml.trim() ? ex.planXml.trim() : '';
+
+      // 只复用包含标准根标签的教学样本，避免污染 few-shot 上下文
+      if (!exInputText || !exInputText.includes('<sentra-agent-preset-edit-input')) {
+        continue;
+      }
+      if (!exPlanText || !exPlanText.includes('<sentra-agent-preset-edit-plan')) {
+        continue;
+      }
+
+      messages.push({ role: 'user', content: exInputText });
+      messages.push({ role: 'assistant', content: exPlanText });
+    }
+  }
+
+  messages.push({ role: 'user', content: inputXml });
 
   logger.info('PresetTeaching: 开始教导检查(XML 工作流)', {
     groupId,
@@ -811,7 +845,7 @@ export async function maybeTeachPreset(options = {}) {
     nodeCount: nodes.length
   });
 
-  const { operations, error } = await runEditPlanWithRetry({
+  const { operations, error, raw } = await runEditPlanWithRetry({
     agent,
     model,
     messages,
@@ -853,6 +887,40 @@ export async function maybeTeachPreset(options = {}) {
     });
   } catch (e) {
     logger.warn('PresetTeaching: 写入教导日志失败', { err: String(e) });
+  }
+
+  try {
+    const planXmlBlock =
+      typeof raw === 'string'
+        ? extractFirstTagBlock(raw, 'sentra-agent-preset-edit-plan')
+        : null;
+
+    if (!planXmlBlock || !planXmlBlock.includes('<sentra-agent-preset-edit-plan')) {
+      logger.debug(
+        'PresetTeaching: skip caching teaching example, invalid or missing <sentra-agent-preset-edit-plan> block'
+      );
+    } else if (planXmlBlock.includes('```')) {
+      // 防御性处理：若模型错误包裹为 markdown 代码块，则不进入示例缓存
+      logger.debug(
+        'PresetTeaching: skip caching teaching example, edit-plan XML contains code fences'
+      );
+    } else if (inputXml) {
+      await pushPresetTeachingExample(
+        {
+          time: new Date().toISOString(),
+          userId,
+          groupId,
+          chatType,
+          model,
+          presetSourceFileName: presetSourceFileName || '',
+          inputXml,
+          planXml: planXmlBlock
+        },
+        presetSourceFileName
+      );
+    }
+  } catch (e) {
+    logger.debug('PresetTeaching: push teaching example to Redis failed', { err: String(e) });
   }
 
   logger.success('PresetTeaching: 预设已生成新的 JSON（内存态，尚未写回磁盘）');

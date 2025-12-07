@@ -225,6 +225,17 @@ export class MCPCore {
     return allow.includes(aiName);
   }
 
+  // Only cache and reuse truly successful results
+  static _isCacheableResult(out) {
+    if (!out || out.success !== true) return false;
+    const data = out.data;
+    if (data && typeof data === 'object' && 'success' in data && data.success === false) {
+      // 工具自身在 data.success 中声明失败时，不参与缓存/复用
+      return false;
+    }
+    return true;
+  }
+
   static _cacheKey(aiName, hash) {
     const pfx = String(config.redis?.metricsPrefix || 'sentra:mcp:metrics');
     return `${pfx}:cache:tool:${aiName}:${hash}`;
@@ -276,7 +287,7 @@ export class MCPCore {
             const cached = await r.get(cacheKey);
             if (cached) {
               let obj; try { obj = JSON.parse(cached); } catch { obj = null; }
-              if (obj && obj.success === true) {
+              if (MCPCore._isCacheableResult(obj)) {
                 logger.info('命中工具结果缓存', { label: 'MCP', aiName, provider: t.providerType, cacheKey });
                 return obj; // shape already ok()
               }
@@ -321,7 +332,7 @@ export class MCPCore {
                   if (s >= vecReuseThreshold && s >= bestScore) {
                     let parsed;
                     try { parsed = JSON.parse(d.result || 'null'); } catch { parsed = null; }
-                    if (parsed && parsed.success === true) {
+                    if (MCPCore._isCacheableResult(parsed)) {
                       bestScore = s;
                       bestResult = parsed;
                       if (typeof d.args === 'string') {
@@ -365,8 +376,8 @@ export class MCPCore {
           try { await Metrics.incrSuccess(t.name, 'local'); } catch {}
           try { await Metrics.addLatency(t.name, Date.now() - start, 'local'); } catch {}
           const out = ok(res?.data ?? res, 'OK', { provider: 'local' });
-          // Write cache on success
-          if (cacheEnabled && out?.success === true && cacheKey) {
+          // Write cache on success（过滤掉 data.success === false 的伪成功）
+          if (cacheEnabled && cacheKey && MCPCore._isCacheableResult(out)) {
             try {
               const r = getRedis();
               await r.setex(cacheKey, ttlSec, JSON.stringify(out));
@@ -375,7 +386,7 @@ export class MCPCore {
               logger.warn?.('写入工具缓存失败（忽略）', { label: 'MCP', aiName, error: String(e) });
             }
           }
-          if (vecAllowed && out?.success === true) {
+          if (vecAllowed && MCPCore._isCacheableResult(out)) {
             try {
               if (!argsVec) {
                 const text = MCPCore._stableStringify({ aiName, args: args || {} });
@@ -419,7 +430,7 @@ export class MCPCore {
           try { await Metrics.addLatency(t.name, Date.now() - start, `external:${t.serverId}`); } catch {}
           // Wrap external result
           const out = ok(res?.content ?? res?.result ?? res, 'OK', { provider: `external:${t.serverId}` });
-          if (cacheEnabled && out?.success === true && cacheKey) {
+          if (cacheEnabled && cacheKey && MCPCore._isCacheableResult(out)) {
             try {
               const r = getRedis();
               await r.setex(cacheKey, ttlSec, JSON.stringify(out));

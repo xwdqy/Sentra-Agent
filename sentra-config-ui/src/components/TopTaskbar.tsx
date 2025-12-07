@@ -4,7 +4,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import type { DeskWindow, TerminalWin } from '../types/ui';
 import { getDisplayName, getIconForType } from '../utils/icons';
 
-
 interface TopTaskbarProps {
     openWindows: DeskWindow[];
     terminalWindows: TerminalWin[];
@@ -15,10 +14,6 @@ interface TopTaskbarProps {
     onCloseWindow: (id: string) => void;
     onCloseTerminal: (id: string) => void;
 }
-
-
-
-// ... imports
 
 export const TopTaskbar: React.FC<TopTaskbarProps> = ({
     openWindows,
@@ -42,7 +37,7 @@ export const TopTaskbar: React.FC<TopTaskbarProps> = ({
         })),
         ...terminalWindows.map(t => ({
             id: t.id,
-            title: t.title, // Terminals already have display titles
+            title: t.title,
             type: 'terminal' as const,
             isActive: t.id === activeTerminalId,
             icon: <IoTerminal />,
@@ -70,10 +65,11 @@ export const TopTaskbar: React.FC<TopTaskbarProps> = ({
                 display: 'flex',
                 gap: 6,
                 pointerEvents: 'auto', // Re-enable clicks for tabs
-                width: '100%', // Full width to allow flex shrinking
+                flex: 1, // Take available space
                 overflowX: 'auto',
                 padding: '4px 0',
                 scrollbarWidth: 'none',
+                alignItems: 'center',
             }}>
                 <AnimatePresence>
                     {allTabs.map(tab => (
@@ -105,7 +101,7 @@ export const TopTaskbar: React.FC<TopTaskbarProps> = ({
                                     : '0 1px 2px rgba(0,0,0,0.05)',
                                 border: '1px solid rgba(255,255,255,0.2)',
                                 transition: 'all 0.2s',
-                                flex: 1, // Allow growing/shrinking
+                                flex: '0 1 auto', // Allow growing/shrinking
                                 minWidth: 0, // Allow shrinking below content size
                                 maxWidth: 200, // Maximum width
                             }}
@@ -122,7 +118,7 @@ export const TopTaskbar: React.FC<TopTaskbarProps> = ({
                                 width: 16,
                                 height: 16,
                                 opacity: 0.8,
-                                flexShrink: 0, // Don't shrink icon
+                                flexShrink: 0,
                             }}>
                                 {tab.icon}
                             </div>
@@ -132,7 +128,7 @@ export const TopTaskbar: React.FC<TopTaskbarProps> = ({
                                 overflow: 'hidden',
                                 textOverflow: 'ellipsis',
                                 fontWeight: tab.isActive ? 600 : 400,
-                                minWidth: 0, // Allow text truncation
+                                minWidth: 0,
                             }}>
                                 {tab.title}
                             </div>
@@ -150,7 +146,7 @@ export const TopTaskbar: React.FC<TopTaskbarProps> = ({
                                     borderRadius: '50%',
                                     cursor: 'pointer',
                                     opacity: 0.6,
-                                    flexShrink: 0, // Don't shrink close button
+                                    flexShrink: 0,
                                 }}
                                 onMouseEnter={(e) => {
                                     e.currentTarget.style.background = 'rgba(0,0,0,0.1)';

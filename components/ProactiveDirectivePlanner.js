@@ -2,6 +2,7 @@ import { Agent } from '../agent.js';
 import { createLogger } from '../utils/logger.js';
 import { getEnv, getEnvInt } from '../utils/envHotReloader.js';
 import { parseSentraResponse } from '../utils/protocolUtils.js';
+import { escapeXml } from '../utils/xmlUtils.js';
 import { chatWithRetry as chatWithRetryCore } from './ChatWithRetry.js';
 import { initAgentPresetCore } from './AgentPresetInitializer.js';
 import sentraPrompts from 'sentra-prompts';
@@ -13,13 +14,6 @@ function toBool(value) {
   const s = String(value ?? '').trim().toLowerCase();
   if (!s) return false;
   return s === 'true' || s === '1' || s === 'yes' || s === 'y';
-}
-
-function escapeXml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 function getPlannerConfig() {

@@ -5,15 +5,14 @@
   width: 100vw;
   height: 100vh;
   background: rgba(0, 0, 0, 0.85);
-  /* backdrop-filter: blur(20px); Removed for performance */
-  /* -webkit-backdrop-filter: blur(20px); */
   z-index: 9998;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  will-change: opacity;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
 }
 
 .content {
@@ -71,7 +70,10 @@
   justify-items: center;
   align-content: flex-start;
   padding: 20px 20px 100px 20px;
-  /* 底部留白给分页条 */
+  /* GPU acceleration for page transitions */
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  transform-origin: center center;
 }
 
 /* Mobile full-width grid */
@@ -99,7 +101,16 @@
   will-change: transform;
   border-radius: 12px;
   padding: 8px 0;
-  transition: background 0.2s;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.appItem:hover {
+  transform: translateZ(0) scale(1.05);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.appItem:active {
+  transform: translateZ(0) scale(0.95);
 }
 
 .selected {

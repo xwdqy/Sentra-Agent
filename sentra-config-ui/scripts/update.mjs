@@ -39,6 +39,14 @@ function getFileHash(filePath) {
     }
 }
 
+function isNodeProject(dir) {
+    return exists(path.join(dir, 'package.json'));
+}
+
+function isPythonProject(dir) {
+    return exists(path.join(dir, 'requirements.txt'));
+}
+
 function listSentraSubdirs(root) {
     const out = [];
     try {
@@ -54,11 +62,12 @@ function listSentraSubdirs(root) {
     return out;
 }
 
-function isNodeProject(dir) {
-    return exists(path.join(dir, 'package.json'));
-}
 
-function listNestedNodeProjects(dir) {
+
+/**
+ * Recursively find nested projects in a given directory
+ */
+function listNestedProjects(dir) {
     const results = [];
     let entries = [];
     try {
@@ -69,31 +78,78 @@ function listNestedNodeProjects(dir) {
     for (const e of entries) {
         if (!e.isDirectory()) continue;
         const name = e.name;
-        if (name === 'node_modules' || name.startsWith('.')) continue;
+        if (name === 'node_modules' || name === '.venv' || name === '__pycache__' || name.startsWith('.')) continue;
+
         const sub = path.join(dir, name);
-        if (isNodeProject(sub)) results.push(sub);
+        if (isNodeProject(sub) || isPythonProject(sub)) {
+            results.push(sub);
+        }
     }
     return results;
 }
 
-function collectAllNodeProjects() {
+function collectAllProjects() {
     const projects = new Set();
     const uiDir = path.resolve(ROOT_DIR, 'sentra-config-ui');
 
-    // Add root and UI directory
-    if (isNodeProject(ROOT_DIR)) projects.add(ROOT_DIR);
-    if (isNodeProject(uiDir)) projects.add(uiDir);
+    const tryAdd = (d) => {
+        if (isNodeProject(d) || isPythonProject(d)) projects.add(d);
+    };
+
+    tryAdd(ROOT_DIR);
+    tryAdd(uiDir);
 
     // Add all sentra-* directories
     for (const dir of listSentraSubdirs(ROOT_DIR)) {
-        if (isNodeProject(dir)) projects.add(dir);
-        // Also include one-level nested Node projects
-        for (const nested of listNestedNodeProjects(dir)) {
+        tryAdd(dir);
+        // Also include one-level nested projects
+        for (const nested of listNestedProjects(dir)) {
             projects.add(nested);
         }
     }
 
     return Array.from(projects);
+}
+
+
+
+// --- Python Venv Management ---
+
+function getVenvPath(projectDir) {
+    return path.join(projectDir, '.venv');
+}
+
+function getVenvPython(projectDir) {
+    const venv = getVenvPath(projectDir);
+    // Windows: .venv/Scripts/python.exe
+    // POSIX: .venv/bin/python
+    if (process.platform === 'win32') {
+        return path.join(venv, 'Scripts', 'python.exe');
+    } else {
+        return path.join(venv, 'bin', 'python');
+    }
+}
+
+function getVenvPip(projectDir) {
+    const venv = getVenvPath(projectDir);
+    if (process.platform === 'win32') {
+        return path.join(venv, 'Scripts', 'pip.exe');
+    } else {
+        return path.join(venv, 'bin', 'pip');
+    }
+}
+
+async function ensureVenv(projectDir, spinner) {
+    const venvPath = getVenvPath(projectDir);
+    const pythonExe = getVenvPython(projectDir);
+
+    if (!exists(pythonExe)) {
+        if (spinner) spinner.text = 'Creating virtual environment...';
+        else console.log(chalk.gray('    Creating virtual environment (.venv)...'));
+
+        await execCommand('python', ['-m', 'venv', '.venv'], projectDir);
+    }
+    return venvPath;
 }
 
 function collectPnpmLockFiles(projects) {
@@ -282,17 +338,24 @@ async function update() {
         console.log(chalk.cyan(`\n🌐 Update Source: ${env.UPDATE_SOURCE || 'github'} (${targetUrl})`));
         await switchRemote(targetUrl);
 
-        // Step 1: Get package.json hashes before update
-        console.log(chalk.cyan('\n📦 Detecting package.json files...\n'));
-        const projects = collectAllNodeProjects();
+        // Step 1: Detect projects and record pre-update hashes
+        console.log(chalk.cyan('\n📦 Detecting projects...\n'));
+        const projects = collectAllProjects();
         const beforeHashes = new Map();
 
         for (const dir of projects) {
-            const pkgPath = path.join(dir, 'package.json');
-            const hash = getFileHash(pkgPath);
             const label = path.relative(ROOT_DIR, dir) || '.';
-            beforeHashes.set(dir, hash);
-            console.log(chalk.gray(`  Found: ${label}`));
+            const isNode = isNodeProject(dir);
+            const isPy = isPythonProject(dir);
+
+            let typeStr = '';
+            if (isNode) typeStr += 'Node';
+            if (isPy) typeStr += (typeStr ? '/Python' : 'Python');
+
+            console.log(chalk.gray(`  Found [${typeStr}]: ${label}`));
+
+            if (isNode) beforeHashes.set(dir + ':pkg', getFileHash(path.join(dir, 'package.json')));
+            if (isPy) beforeHashes.set(dir + ':req', getFileHash(path.join(dir, 'requirements.txt')));
         }
         console.log();
 
@@ -301,7 +364,6 @@ async function update() {
         // Step 2: Git operations
         if (isForce) {
             console.log(chalk.yellow.bold('⚠️  Force Update Mode - This will discard local changes!\n'));
-
             spinner.start('Fetching latest changes...');
             await execCommand('git', ['fetch', '--all'], ROOT_DIR);
             spinner.succeed('Fetched latest changes');
@@ -317,7 +379,6 @@ async function update() {
             if (lockFiles.length > 0) {
                 await ensureSkipWorktreeForLockFiles(lockFiles);
             }
-
             spinner.start('Checking for updates...');
             await execCommand('git', ['fetch'], ROOT_DIR);
             spinner.succeed('Checked for updates');
@@ -333,53 +394,96 @@ async function update() {
             }
         }
 
-        // Step 3: Check which projects need dependency installation
+        // Step 3: Check which projects need installation
         console.log(chalk.cyan('\n🔍 Checking for dependency changes...\n'));
-        const projectsToInstall = [];
+        const installQueue = [];
 
         for (const dir of projects) {
             const label = path.relative(ROOT_DIR, dir) || '.';
-            const pkgPath = path.join(dir, 'package.json');
-            const nmPath = path.join(dir, 'node_modules');
+            const isNode = isNodeProject(dir);
+            const isPy = isPythonProject(dir);
 
-            // Check if node_modules exists
-            if (!exists(nmPath)) {
-                console.log(chalk.yellow(`  ${label}: node_modules missing → will install`));
-                projectsToInstall.push({ dir, label, reason: 'missing node_modules' });
-                continue;
+            // --- Node Check ---
+            if (isNode) {
+                const nmPath = path.join(dir, 'node_modules');
+                const pkgPath = path.join(dir, 'package.json');
+                const beforeHash = beforeHashes.get(dir + ':pkg');
+                const afterHash = getFileHash(pkgPath);
+
+                if (!exists(nmPath)) {
+                    console.log(chalk.yellow(`  [Node] ${label}: node_modules missing → install needed`));
+                    installQueue.push({ dir, label, type: 'node', reason: 'missing node_modules' });
+                } else if (beforeHash !== afterHash) {
+                    console.log(chalk.yellow(`  [Node] ${label}: package.json changed → install needed`));
+                    installQueue.push({ dir, label, type: 'node', reason: 'package.json changed' });
+                } else if (isForce) {
+                    console.log(chalk.yellow(`  [Node] ${label}: Force update → reinstalling`));
+                    installQueue.push({ dir, label, type: 'node', reason: 'force update' });
+                } else {
+                    console.log(chalk.gray(`  [Node] ${label}: no changes → skip`));
+                }
             }
 
-            // Check if package.json changed
-            const beforeHash = beforeHashes.get(dir);
-            const afterHash = getFileHash(pkgPath);
+            // --- Python Check ---
+            if (isPy) {
+                const venvPath = getVenvPath(dir);
+                const reqPath = path.join(dir, 'requirements.txt');
+                const beforeHash = beforeHashes.get(dir + ':req');
+                const afterHash = getFileHash(reqPath);
+                const venvPython = getVenvPython(dir);
 
-            if (beforeHash !== afterHash) {
-                console.log(chalk.yellow(`  ${label}: package.json changed → will install`));
-                projectsToInstall.push({ dir, label, reason: 'package.json changed' });
-            } else {
-                console.log(chalk.gray(`  ${label}: no changes → skip`));
+                if (!exists(venvPath) || !exists(venvPython)) {
+                    console.log(chalk.yellow(`  [Python] ${label}: venv missing/broken → install needed`));
+                    installQueue.push({ dir, label, type: 'python', reason: 'missing .venv' });
+                } else if (beforeHash !== afterHash) {
+                    console.log(chalk.yellow(`  [Python] ${label}: requirements.txt changed → install needed`));
+                    installQueue.push({ dir, label, type: 'python', reason: 'requirements.txt changed' });
+                } else if (isForce) {
+                    console.log(chalk.yellow(`  [Python] ${label}: Force update → reinstalling`));
+                    installQueue.push({ dir, label, type: 'python', reason: 'force update' });
+                } else {
+                    console.log(chalk.gray(`  [Python] ${label}: no changes → skip`));
+                }
             }
         }
 
-        // Step 4: Install dependencies for projects that need it
-        if (projectsToInstall.length > 0) {
-            console.log(chalk.cyan(`\n📥 Installing dependencies for ${projectsToInstall.length} project(s)...\n`));
+        // Step 4: Execute Installations
+        if (installQueue.length > 0) {
+            console.log(chalk.cyan(`\n📥 Installing dependencies for ${installQueue.length} targets...\n`));
             const npmRegistry = resolveNpmRegistry();
             const pm = choosePM(env.PACKAGE_MANAGER || 'auto');
 
-            for (const { dir, label, reason } of projectsToInstall) {
-                spinner.start(`Installing ${label} (${reason}) with ${pm}...`);
-                try {
-                    const extraEnv = {};
-                    if (npmRegistry) {
-                        extraEnv.npm_config_registry = npmRegistry;
-                        extraEnv.NPM_CONFIG_REGISTRY = npmRegistry;
+            for (const item of installQueue) {
+                const { dir, label, type, reason } = item;
+
+                if (type === 'node') {
+                    spinner.start(`[Node] Installing ${label} (${reason})...`);
+                    try {
+                        const extraEnv = {};
+                        if (npmRegistry) {
+                            extraEnv.npm_config_registry = npmRegistry;
+                            extraEnv.NPM_CONFIG_REGISTRY = npmRegistry;
+                        }
+                        await execCommand(pm, ['install'], dir, extraEnv);
+                        spinner.succeed(`[Node] Installed ${label}`);
+                    } catch (error) {
+                        spinner.fail(`[Node] Failed to install ${label}`);
+                        throw error;
                     }
-                    await execCommand(pm, ['install'], dir, extraEnv);
-                    spinner.succeed(`Installed ${label}`);
-                } catch (error) {
-                    spinner.fail(`Failed to install ${label}`);
-                    throw error;
+                } else if (type === 'python') {
+                    spinner.start(`[Python] Preparing ${label} (${reason})...`);
+                    try {
+                        await ensureVenv(dir, spinner);
+                        const pip = getVenvPip(dir);
+                        if (!exists(pip)) throw new Error(`Pip not found at ${pip}`);
+
+                        spinner.text = `[Python] Pip installing ${label}...`;
+                        await execCommand(pip, ['install', '-r', 'requirements.txt'], dir);
+                        spinner.succeed(`[Python] Installed ${label}`);
+                    } catch (error) {
+                        spinner.fail(`[Python] Failed to install ${label}`);
+                        throw error;
+                    }
                 }
             }
         } else {

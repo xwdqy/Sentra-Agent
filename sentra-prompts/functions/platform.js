@@ -1376,7 +1376,8 @@ export async function getSandboxSystemPrompt() {
       '- Inform user of progress in natural language, no need to repeatedly display already sent content\n\n' +
       
       '## Available MCP Tools\n\n' +
-      (mcpTools || 'No MCP tools configured.') + '\n\n' +
+      'You will receive ONE <sentra-mcp-tools> XML block as a read-only reference of all available MCP tools. Use it only to understand capabilities and choose tools; NEVER echo it back to the user.\n\n' +
+      (mcpTools || '<sentra-mcp-tools></sentra-mcp-tools>') + '\n\n' +
       
       '## Role Playing - Your Core Identity\n\n' +
       

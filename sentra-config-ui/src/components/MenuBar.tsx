@@ -10,10 +10,12 @@ import {
   IoVolumeHigh,
   IoSunny,
   IoMoon,
-  IoApps
+  IoApps,
+  IoReload
 } from 'react-icons/io5';
 import { BsController } from 'react-icons/bs';
 import { motion, AnimatePresence } from 'framer-motion';
+import { MacAlert } from './MacAlert';
 import styles from './MenuBar.module.css';
 
 interface MenuBarProps {
@@ -28,6 +30,21 @@ interface MenuBarProps {
   onToggleDock: () => void;
 }
 
+const Clock: React.FC = () => {
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <div className={styles.menuItem} style={{ fontWeight: 500 }}>
+      {format(currentTime, 'M月d日 EEE HH:mm', { locale: zhCN })}
+    </div>
+  );
+};
+
 export const MenuBar: React.FC<MenuBarProps> = ({
   title = 'Sentra Agent',
   menus = [],
@@ -39,16 +56,27 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   showDock,
   onToggleDock
 }) => {
-  const [currentTime, setCurrentTime] = useState(new Date());
   const [activeMenu, setActiveMenu] = useState<number | null>(null);
   const [showControlCenter, setShowControlCenter] = useState(false);
   const [showSpotlight, setShowSpotlight] = useState(false);
   const [spotlightQuery, setSpotlightQuery] = useState('');
 
-  useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  // Restart State
+  const [showRestartAlert, setShowRestartAlert] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
+
+  const handleRestartConfirm = async () => {
+    setIsRestarting(true);
+    try {
+      await fetch('/api/system/restart', { method: 'POST' });
+      setTimeout(() => {
+        window.location.reload();
+      }, 5000);
+    } catch (e) {
+      setIsRestarting(false);
+      alert('Failed to restart system: ' + e);
+    }
+  };
 
   // Close menus when clicking outside
   useEffect(() => {
@@ -124,11 +152,66 @@ export const MenuBar: React.FC<MenuBarProps> = ({
           <div className={styles.menuItem} onClick={() => setShowControlCenter(!showControlCenter)}>
             <BsController size={18} />
           </div>
-          <div className={styles.menuItem} style={{ fontWeight: 500 }}>
-            {format(currentTime, 'M月d日 EEE HH:mm', { locale: zhCN })}
+          <div
+            className={styles.menuItem}
+            onClick={() => setShowRestartAlert(true)}
+            title="重启系统"
+          >
+            <IoReload size={18} />
           </div>
+          <Clock />
         </div>
       </div>
+
+      <MacAlert
+        isOpen={showRestartAlert}
+        title="系统重启"
+        message="确定要重启系统吗？这将停止所有正在运行的进程并重新加载界面。"
+        onClose={() => setShowRestartAlert(false)}
+        onConfirm={handleRestartConfirm}
+        confirmText="重启"
+        cancelText="取消"
+        isDanger={true}
+      />
+
+      {/* Restarting Overlay */}
+      <AnimatePresence>
+        {isRestarting && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '100vw',
+              height: '100vh',
+              background: 'rgba(255, 255, 255, 0.95)', // Solid background instead of blur
+              zIndex: 99999,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#333',
+              fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+              transform: 'translateZ(0)', // Hardware acceleration
+            }}
+          >
+            <div style={{
+              width: 40,
+              height: 40,
+              border: '4px solid rgba(0,0,0,0.1)',
+              borderTop: '4px solid #007AFF',
+              borderRadius: '50%',
+              marginBottom: 20,
+              animation: 'spin 1s linear infinite'
+            }} />
+            <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+            <div style={{ fontSize: 18, fontWeight: 500 }}>系统重启中...</div>
+            <div style={{ fontSize: 14, opacity: 0.7, marginTop: 8 }}>页面将自动刷新</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Spotlight Search */}
       <AnimatePresence>

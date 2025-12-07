@@ -72,12 +72,13 @@ function extractAndCountTokens(response) {
 function buildProtocolReminder() {
   return [
     'CRITICAL OUTPUT RULES:',
-    '1) 必须使用 <sentra-response>...</sentra-response> 包裹整个回复',
+    '1) 必须使用 <sentra-response>...</sentra-response> 包裹整个回复，禁止在 XML 外输出任何额外文字',
     '2) 使用分段 <text1>, <text2>, <text3>, <textx>...（每段1句，语气自然）',
     '3) 严禁输出只读输入标签：<sentra-user-question>/<sentra-result>/<sentra-result-group>/<sentra-pending-messages>/<sentra-emo>',
     '4) 不要输出工具或技术术语（如 tool/success/return/data field 等）',
-    '5) 文本标签内部不要做 XML 转义（直接输出原始内容）',
-    '6) <resources> 可为空；若无资源，输出 <resources></resources>'
+    '5) 文本标签内部不要做 XML 转义（直接输出原始内容），不要把 < 或 > 等字符写成 &lt; / &gt;',
+    '6) 禁止使用 ``` 等 markdown 代码块包裹 XML 或任何内容',
+    '7) <resources> 可为空；若无资源，输出 <resources></resources>'
   ].join('\n');
 }
 

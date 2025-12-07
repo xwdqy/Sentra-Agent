@@ -5,7 +5,7 @@
 
 import { config, getStageModel } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
-import { manifestToBulletedText } from '../plan/manifest.js';
+import { manifestToXmlToolsCatalog } from '../plan/manifest.js';
 import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
 import { compactMessages, normalizeConversation } from '../utils/messages.js';
 import { parseFunctionCalls, buildFunctionCallInstruction, buildFCPolicy } from '../../utils/fc.js';
@@ -70,7 +70,7 @@ export async function judgeToolNecessityFC(objective, manifest, conversation, co
     const overlayGlobal = overlays.global?.system || overlays.global || '';
     const overlayJud = overlays.judge?.system || overlays.judge || '';
     const baseSystem = composeSystem(jp.system, [overlayGlobal, overlayJud].filter(Boolean).join('\n\n'));
-    const manifestBullet = manifestToBulletedText(manifest);
+    const manifestXml = manifestToXmlToolsCatalog(Array.isArray(manifest) ? manifest : []);
     
     // FC 模式：使用 Sentra XML 协议（统一使用英文提示词）
     const policy = await buildFCPolicy({ locale: 'en' });
@@ -83,7 +83,7 @@ export async function judgeToolNecessityFC(objective, manifest, conversation, co
     const systemContent = [
       baseSystem,
       jp.manifest_intro,
-      manifestBullet,
+      manifestXml,
       policy,
       fcInstruction,
     ].join('\n');

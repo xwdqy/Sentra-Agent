@@ -77,3 +77,83 @@ export function summarizeRequiredFieldsDetail(schema = {}) {
     return '';
   }
 }
+
+export function summarizeRequiredFieldsDetailXml(schema = {}) {
+  try {
+    const req = Array.isArray(schema.required) ? schema.required : [];
+    const props = schema.properties || {};
+    const lines = [];
+    lines.push('<params>');
+    for (const k of req) {
+      const p = props[k] || {};
+      const tRaw = p.type;
+      const types = Array.isArray(tRaw) ? tRaw : (tRaw ? [tRaw] : []);
+      const typeStr = types.length ? types.join('|') : 'any';
+      const desc = typeof p.description === 'string' ? p.description : '';
+      const enums = Array.isArray(p.enum) ? p.enum : [];
+      lines.push(`  <param name="${k}">`);
+      lines.push(`    <type>${typeStr}</type>`);
+      if (enums.length) {
+        lines.push(`    <enum>${enums.join(', ')}</enum>`);
+      }
+      if (desc) {
+        lines.push(`    <description>${desc}</description>`);
+      }
+      lines.push('  </param>');
+    }
+    lines.push('</params>');
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+export function manifestToXmlToolsCatalog(manifest = []) {
+  try {
+    const lines = [];
+    const total = Array.isArray(manifest) ? manifest.length : 0;
+    lines.push('<sentra-mcp-tools>');
+    lines.push(`  <summary>共有 ${total} 个 MCP 工具可用于本次任务。以下为工具清单和关键参数概览，仅供你在规划和参数生成时参考。</summary>`);
+    (manifest || []).forEach((m, idx) => {
+      if (!m) return;
+      const aiName = m.aiName || '';
+      const name = m.name || '';
+      const desc = m.description || '';
+      const schema = m.inputSchema || {};
+      const req = Array.isArray(schema.required) ? schema.required : [];
+      const props = schema.properties || {};
+      const index = idx + 1;
+      lines.push(`  <tool index="${index}">`);
+      if (aiName) lines.push(`    <ai_name>${aiName}</ai_name>`);
+      if (name) lines.push(`    <name>${name}</name>`);
+      if (desc) lines.push(`    <description>${desc}</description>`);
+      if (req.length) lines.push(`    <required_params>${req.join(', ')}</required_params>`);
+      if (req.length) {
+        lines.push('    <params>');
+        for (const k of req) {
+          const p = props[k] || {};
+          const tRaw = p.type;
+          const types = Array.isArray(tRaw) ? tRaw : (tRaw ? [tRaw] : []);
+          const typeStr = types.length ? types.join('|') : 'any';
+          const desc2 = typeof p.description === 'string' ? p.description : '';
+          const enums = Array.isArray(p.enum) ? p.enum : [];
+          lines.push(`      <param name="${k}">`);
+          lines.push(`        <type>${typeStr}</type>`);
+          if (enums.length) {
+            lines.push(`        <enum>${enums.join(', ')}</enum>`);
+          }
+          if (desc2) {
+            lines.push(`        <description>${desc2}</description>`);
+          }
+          lines.push('      </param>');
+        }
+        lines.push('    </params>');
+      }
+      lines.push('  </tool>');
+    });
+    lines.push('</sentra-mcp-tools>');
+    return lines.join('\n');
+  } catch {
+    return '<sentra-mcp-tools></sentra-mcp-tools>';
+  }
+}

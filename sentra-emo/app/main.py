@@ -7,8 +7,8 @@ from typing import List, Optional
 
 from .schemas import AnalyzeRequest, AnalyzeResponse, LabelScore, SentimentResult, VADResult, PADResult, StressResult, BatchAnalyzeRequest, UserState
 from .models import ModelManager
-from .analysis import emotions_to_vad, derive_stress, init_vad_mapper, get_vad_status, canonicalize_distribution
-from .config import get_device_report, use_emotion_label_alias
+from .analysis import emotions_to_vad, derive_stress, init_vad_mapper, get_vad_status, canonicalize_distribution, normalize_distribution
+from .config import get_device_report, use_emotion_label_alias, get_emo_backend, get_online_provider, get_nlpcloud_config, get_emotion_min_score
 from .user_store import get_store
 
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +51,68 @@ def _record_emotion_top1(score: float) -> None:
     if len(_metrics["emotion_top1_scores"]) > 2000:
         del _metrics["emotion_top1_scores"][: len(_metrics["emotion_top1_scores"]) - 1000]
         del _metrics["emotion_top1_times"][: len(_metrics["emotion_top1_times"]) - 1000]
+
+
+def _analyze_sentiment_with_backend(text: str):
+    """Select sentiment backend according to configuration.
+
+    - EMO_BACKEND=local: always use local ModelManager
+    - EMO_BACKEND=online and EMO_ONLINE_PROVIDER=nlpcloud: always use NLP Cloud
+    - EMO_BACKEND=auto and EMO_ONLINE_PROVIDER=nlpcloud: prefer local, fallback to NLP Cloud
+    """
+    mode = get_emo_backend()
+    provider = get_online_provider()
+
+    # Online only
+    if mode == "online" and provider == "nlpcloud":
+        from .online import analyze_sentiment_nlpcloud
+
+        return analyze_sentiment_nlpcloud(text)
+
+    # Auto: prefer local, fallback to online
+    if mode == "auto" and provider == "nlpcloud":
+        try:
+            return models.analyze_sentiment(text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Local sentiment failed in auto mode, falling back to NLP Cloud: %s", e)
+            from .online import analyze_sentiment_nlpcloud
+
+            return analyze_sentiment_nlpcloud(text)
+
+    # Default: local backend
+    return models.analyze_sentiment(text)
+
+
+def _analyze_emotions_with_backend(text: str):
+    """Select emotion backend according to configuration.
+
+    - EMO_BACKEND=local: always use local ModelManager (Chinese-Emotion-Small).
+    - EMO_BACKEND=online and EMO_ONLINE_PROVIDER=nlpcloud: use NLP Cloud
+      zho_Hans/distilbert-base-uncased-emotion distribution directly.
+    - EMO_BACKEND=auto and EMO_ONLINE_PROVIDER=nlpcloud: prefer local, fallback
+      to NLP Cloud on failure.
+    """
+    mode = get_emo_backend()
+    provider = get_online_provider()
+
+    # Online only
+    if mode == "online" and provider == "nlpcloud":
+        from .online import analyze_emotions_nlpcloud
+
+        return analyze_emotions_nlpcloud(text)
+
+    # Auto: prefer local, fallback to online
+    if mode == "auto" and provider == "nlpcloud":
+        try:
+            return models.analyze_emotions(text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Local emotions failed in auto mode, falling back to NLP Cloud: %s", e)
+            from .online import analyze_emotions_nlpcloud
+
+            return analyze_emotions_nlpcloud(text)
+
+    # Default: local backend
+    return models.analyze_emotions(text)
 
 
 @asynccontextmanager
@@ -122,31 +184,55 @@ async def analyze(req: AnalyzeRequest):
 
     t0 = time.perf_counter()
     try:
-        # Local backend flow only
-        # Ensure emotion model is ready and initialize VAD mapper dynamically using its labels
-        emo_pipe, emo_mid = models.ensure_emotion()
-        labels = []
-        try:
-            id2label = getattr(emo_pipe.model.config, "id2label", None)
-            if isinstance(id2label, dict) and id2label:
-                # Try to preserve order 0..N-1 if numeric keys
-                numeric_keys = [k for k in id2label.keys() if isinstance(k, int) or (isinstance(k, str) and str(k).isdigit())]
-                if numeric_keys:
-                    # sort by numeric
-                    idxs = sorted([int(k) for k in id2label.keys()])
-                    labels = [str(id2label[i]) for i in idxs]
-                else:
-                    labels = [str(v) for v in id2label.values()]
-        except Exception:
-            labels = []
-        init_vad_mapper(emo_mid, labels if labels else None)
+        backend_mode = get_emo_backend()
+        provider = get_online_provider()
 
-        sentiment = models.analyze_sentiment(text)
-        emotions_pairs = models.analyze_emotions(text)
+        # Ensure emotion model and VAD mapper only when using local backend.
+        if not (backend_mode == "online" and provider == "nlpcloud"):
+            emo_pipe, emo_mid = models.ensure_emotion()
+            labels = []
+            try:
+                id2label = getattr(emo_pipe.model.config, "id2label", None)
+                if isinstance(id2label, dict) and id2label:
+                    numeric_keys = [k for k in id2label.keys() if isinstance(k, int) or (isinstance(k, str) and str(k).isdigit())]
+                    if numeric_keys:
+                        idxs = sorted([int(k) for k in id2label.keys()])
+                        labels = [str(id2label[i]) for i in idxs]
+                    else:
+                        labels = [str(v) for v in id2label.values()]
+            except Exception:
+                labels = []
+            init_vad_mapper(emo_mid, labels if labels else None)
+
+        # Online+NLP Cloud 优化：若情感和情绪使用同一模型，只发一次 HTTP 请求
+        sentiment = None
+        emotions_pairs = None
+        if backend_mode == "online" and provider == "nlpcloud":
+            cfg = get_nlpcloud_config()
+            sent_model = cfg.get("sentiment_model")
+            emo_model = cfg.get("emotion_model")
+            same_model = (emo_model is None) or (emo_model == sent_model)
+            if same_model:
+                from .online import analyze_combined_nlpcloud
+
+                sentiment, emotions_pairs = analyze_combined_nlpcloud(text)
+
+        if sentiment is None or emotions_pairs is None:
+            sentiment = _analyze_sentiment_with_backend(text)
+            emotions_pairs = _analyze_emotions_with_backend(text)
         if use_emotion_label_alias():
             canon_pairs = canonicalize_distribution(emotions_pairs)
         else:
             canon_pairs = emotions_pairs
+
+        # 应用情绪最小分数阈值过滤（仅当配置 > 0 时生效）
+        min_score = get_emotion_min_score()
+        if min_score > 0.0:
+            filtered = [(k, float(vv)) for k, vv in canon_pairs if float(vv) >= min_score]
+            # 只有在仍有剩余标签时才替换，避免全部被过滤导致信息丢失
+            if filtered:
+                canon_pairs = filtered
+                canon_pairs = normalize_distribution(canon_pairs)
         v, a, d = emotions_to_vad(canon_pairs)
         stress, level = derive_stress(v, a, canon_pairs)
 
@@ -165,6 +251,16 @@ async def analyze(req: AnalyzeRequest):
             except Exception:
                 user_state = None
 
+        # Decide emotion model name for telemetry field
+        emotion_model_name = models._emotion_model_id or "unknown"
+        if backend_mode in {"online", "auto"} and provider == "nlpcloud":
+            cfg = get_nlpcloud_config()
+            emotion_model_name = (
+                cfg.get("emotion_model")
+                or cfg.get("sentiment_model")
+                or emotion_model_name
+            )
+
         resp = AnalyzeResponse(
             sentiment=SentimentResult(**sentiment),
             emotions=[LabelScore(label=k, score=float(v)) for k, v in canon_pairs],
@@ -173,7 +269,7 @@ async def analyze(req: AnalyzeRequest):
             stress=StressResult(score=float(stress), level=level),
             models={
                 "sentiment": sentiment.get("raw_model", "unknown"),
-                "emotion": models._emotion_model_id or "unknown",
+                "emotion": emotion_model_name,
             },
             user=user_state,
         )
@@ -218,43 +314,67 @@ async def analyze_batch(req: BatchAnalyzeRequest):
     if not texts:
         raise HTTPException(status_code=400, detail="texts 不能为空且需包含至少一条非空文本")
 
-    # Preload models and initialize VAD mapper once
-    try:
-        emo_pipe, emo_mid = models.ensure_emotion()
-        labels = []
-        try:
-            id2label = getattr(emo_pipe.model.config, "id2label", None)
-            if isinstance(id2label, dict) and id2label:
-                numeric_keys = [k for k in id2label.keys() if isinstance(k, int) or (isinstance(k, str) and str(k).isdigit())]
-                if numeric_keys:
-                    idxs = sorted([int(k) for k in id2label.keys()])
-                    labels = [str(id2label[i]) for i in idxs]
-                else:
-                    labels = [str(v) for v in id2label.values()]
-        except Exception:
-            labels = []
-        init_vad_mapper(emo_mid, labels if labels else None)
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Batch startup VAD init failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+    backend_mode = get_emo_backend()
+    provider = get_online_provider()
 
-    try:
-        models.ensure_sentiment()
-    except Exception as e:  # noqa: BLE001
-        logger.exception("Batch sentiment preload failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+    # Preload local models and initialize VAD mapper only when backend is local/auto.
+    if not (backend_mode == "online" and provider == "nlpcloud"):
+        try:
+            emo_pipe, emo_mid = models.ensure_emotion()
+            labels = []
+            try:
+                id2label = getattr(emo_pipe.model.config, "id2label", None)
+                if isinstance(id2label, dict) and id2label:
+                    numeric_keys = [k for k in id2label.keys() if isinstance(k, int) or (isinstance(k, str) and str(k).isdigit())]
+                    if numeric_keys:
+                        idxs = sorted([int(k) for k in id2label.keys()])
+                        labels = [str(id2label[i]) for i in idxs]
+                    else:
+                        labels = [str(v) for v in id2label.values()]
+            except Exception:
+                labels = []
+            init_vad_mapper(emo_mid, labels if labels else None)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Batch startup VAD init failed: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+        try:
+            models.ensure_sentiment()
+        except Exception as e:  # noqa: BLE001
+            logger.exception("Batch sentiment preload failed: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
 
     results: List[AnalyzeResponse] = []
     use_alias = use_emotion_label_alias()
     for text in texts:
         t0 = time.perf_counter()
         try:
-            sentiment = models.analyze_sentiment(text)
-            emotions_pairs = models.analyze_emotions(text)
+            sentiment = None
+            emotions_pairs = None
+            if backend_mode == "online" and provider == "nlpcloud":
+                cfg = get_nlpcloud_config()
+                sent_model = cfg.get("sentiment_model")
+                emo_model = cfg.get("emotion_model")
+                same_model = (emo_model is None) or (emo_model == sent_model)
+                if same_model:
+                    from .online import analyze_combined_nlpcloud
+
+                    sentiment, emotions_pairs = analyze_combined_nlpcloud(text)
+
+            if sentiment is None or emotions_pairs is None:
+                sentiment = _analyze_sentiment_with_backend(text)
+                emotions_pairs = _analyze_emotions_with_backend(text)
             if use_alias:
                 canon_pairs = canonicalize_distribution(emotions_pairs)
             else:
                 canon_pairs = emotions_pairs
+
+            min_score = get_emotion_min_score()
+            if min_score > 0.0:
+                filtered = [(k, float(vv)) for k, vv in canon_pairs if float(vv) >= min_score]
+                if filtered:
+                    canon_pairs = filtered
+                    canon_pairs = normalize_distribution(canon_pairs)
             v, a, d = emotions_to_vad(canon_pairs)
             stress, level = derive_stress(v, a, canon_pairs)
 
@@ -273,6 +393,16 @@ async def analyze_batch(req: BatchAnalyzeRequest):
                 except Exception:
                     user_state = None
 
+            # Decide emotion model name for telemetry field
+            emotion_model_name = models._emotion_model_id or "unknown"
+            if backend_mode in {"online", "auto"} and provider == "nlpcloud":
+                cfg = get_nlpcloud_config()
+                emotion_model_name = (
+                    cfg.get("emotion_model")
+                    or cfg.get("sentiment_model")
+                    or emotion_model_name
+                )
+
             resp = AnalyzeResponse(
                 sentiment=SentimentResult(**sentiment),
                 emotions=[LabelScore(label=k, score=float(vv)) for k, vv in canon_pairs],
@@ -281,7 +411,7 @@ async def analyze_batch(req: BatchAnalyzeRequest):
                 stress=StressResult(score=float(stress), level=level),
                 models={
                     "sentiment": sentiment.get("raw_model", "unknown"),
-                    "emotion": models._emotion_model_id or "unknown",
+                    "emotion": emotion_model_name,
                 },
                 user=user_state,
             )
@@ -342,7 +472,7 @@ async def models_status():
     """Return available models, selected models, and VAD mapping/alias sources and unknown-labels info."""
     try:
         status = models.get_status()
-        status["backend"] = "local"
+        status["backend"] = get_emo_backend()
     except Exception as e:  # pragma: no cover
         status = {"error": str(e)}
     try:

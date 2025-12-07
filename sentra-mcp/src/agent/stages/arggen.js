@@ -7,7 +7,7 @@ import { config, getStageModel } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
 import { validateAndRepairArgs } from '../../utils/schema.js';
 import { clip } from '../../utils/text.js';
-import { summarizeRequiredFieldsDetail } from '../plan/manifest.js';
+import { summarizeRequiredFieldsDetail, summarizeRequiredFieldsDetailXml } from '../plan/manifest.js';
 import { buildToolDialogueMessages, buildDependentContextText } from '../plan/history.js';
 import { searchToolMemories } from '../../memory/index.js';
 import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
@@ -56,10 +56,12 @@ export async function generateToolArgs(params) {
   const requiredList = Array.isArray((currentToolFull.inputSchema || {}).required)
     ? currentToolFull.inputSchema.required
     : (Array.isArray(manifestItem?.inputSchema?.required) ? manifestItem.inputSchema.required : []);
-  const requiredDetail = summarizeRequiredFieldsDetail(currentToolFull.inputSchema || {});
 
   // 判断是否使用 FC 模式
   const useFC = String(config.llm?.toolStrategy || 'auto') === 'fc';
+  const requiredDetail = useFC
+    ? summarizeRequiredFieldsDetailXml(currentToolFull.inputSchema || {})
+    : summarizeRequiredFieldsDetail(currentToolFull.inputSchema || {});
 
   // 构建上下文（FC 模式使用 XML 格式）
   // 🔥 重试模式：includeCurrentStep=true 包含当前步骤的失败历史，让 LLM 看到之前的尝试
@@ -464,10 +466,12 @@ export async function fixToolArgs(params) {
 
   try {
     const requiredList = Array.isArray((schema || {}).required) ? schema.required : [];
-    const requiredDetail = summarizeRequiredFieldsDetail(schema || {});
 
     // 判断是否使用 FC 模式（需要在构建上下文前判断）
     const useFC = String(config.llm?.toolStrategy || 'auto') === 'fc';
+    const requiredDetail = useFC
+      ? summarizeRequiredFieldsDetailXml(schema || {})
+      : summarizeRequiredFieldsDetail(schema || {});
     const useAuto = String(config.llm?.toolStrategy || 'auto') === 'auto';
     
     // FC 模式使用专用模板（XML 结构化格式）

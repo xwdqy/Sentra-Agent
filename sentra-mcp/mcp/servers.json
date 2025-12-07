@@ -1,1 +1,24 @@
-[]
+[
+  {
+    "id": "bingcn",
+    "type": "stdio",
+    "command": "npx",
+    "args": ["bing-cn-mcp"]
+  },
+  {
+    "id": "bingcn2",
+    "type": "stdio",
+    "command": "cmd",
+    "args": ["/c", "npx", "bing-cn-mcp"]
+  },
+  {
+    "id": "bingcn3",
+    "type": "streamable_http",
+    "url": "https://mcp.api-inference.modelscope.net/24773f8e54b849/mcp"
+  },
+  {
+    "id": "bingcn4",
+    "type": "http",
+    "url": "https://mcp.api-inference.modelscope.net/24773f8e54b849/mcp"
+  }
+]

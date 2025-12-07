@@ -101,6 +101,9 @@ importers:
       sensitive-word-filter:
         specifier: ^1.0.2
         version: 1.0.2
+      sentiment-zh_cn_web:
+        specifier: ^1.0.2
+        version: 1.0.2
       sentra-mcp:
         specifier: ./sentra-mcp
         version: link:sentra-mcp
@@ -970,6 +973,9 @@ packages:
   linkify-it@5.0.0:
     resolution: {integrity: sha512-5aHCbzQRADcdP+ATqnDuhhJ/MRIqDkZX5pyjFHRRysS8vZ5AbqGEoFIb6pYHPZ+L/OC2Lc+xT8uHVVR5CAK/wQ==}
 
+  lodash.assign@4.1.0:
+    resolution: {integrity: sha512-+Fjy5btNBLSALL+nTVYe0qmc3DDYf9OvupsPpc0oC9ja0U+eLkCXZ4DJJ3paa37b8lTkT+hTJZ3sJgne1MliyQ==}
+
   lodash.defaults@4.2.0:
     resolution: {integrity: sha512-qjxPLHd3r5DnsdGacqOMU6pb/avJzdh9tFX2ymgoZE27BmjXrNy/y4LoaiTeAb+O3gL8AfpJGtqfX/ae2leYYQ==}
 
@@ -1355,6 +1361,10 @@ packages:
 
   sensitive-word-filter@1.0.2:
     resolution: {integrity: sha512-P/RUI2A9M6J921lfKNneLK6a/OToF0+qmz5xVtPS9yjRrS/FBNBHQJDnlmHpMYtdhydjqlebrh2hfAEDLFx8GA==}
+
+  sentiment-zh_cn_web@1.0.2:
+    resolution: {integrity: sha512-EwuFJb6Wsqr1Zej4PqdX2MrDK5supnCv3FdAjnhc8GxOZLLn+WWQTFfyb+EdHXRHdBGn9I3b5mE7VW2RL20hUg==}
+    engines: {node: '>=4.0'}
 
   shebang-command@2.0.0:
     resolution: {integrity: sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==}
@@ -2310,6 +2320,8 @@ snapshots:
     dependencies:
       uc.micro: 2.1.0
 
+  lodash.assign@4.1.0: {}
+
   lodash.defaults@4.2.0: {}
 
   lodash.isarguments@3.1.0: {}
@@ -2699,6 +2711,11 @@ snapshots:
   semver@7.7.3: {}
 
   sensitive-word-filter@1.0.2: {}
+
+  sentiment-zh_cn_web@1.0.2:
+    dependencies:
+      lodash.assign: 4.1.0
+      segmentit: 2.0.3
 
   shebang-command@2.0.0:
     dependencies:

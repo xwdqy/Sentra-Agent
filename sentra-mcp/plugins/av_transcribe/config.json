@@ -59,6 +59,6 @@
   "meta": {
     "realWorldAction": "音视频转文本",
     "responseStyle": "纯文本",
-    "responseExample": "纯文本"
+    "responseExample": "{ success: true, data: { text: '完整转录文本', segments: [{ index: 0, text: '第一段' }, { index: 1, text: '第二段' }], language: { raw: '中文 / Chinese', code: 'zh', name: 'Chinese', hint: 'zh' }, meta: { model: 'whisper-1', file: 'E:/media/audio.mp3', chunks: 1, source: 'file' } } }"
   }
 }

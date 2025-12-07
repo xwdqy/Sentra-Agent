@@ -159,18 +159,12 @@ export const MacWindow: React.FC<MacWindowProps> = ({
       style={{
         width: isMaximized ? '100vw' : size.width,
         height: isMaximized ? 'calc(100vh - 30px)' : size.height,
-        zIndex,
+        zIndex: isMaximized ? 10000 : zIndex, // Higher than TopTaskbar (9000) when maximized
         position: isMaximized ? 'fixed' : 'absolute',
         top: isMaximized ? 30 : 0,
         left: isMaximized ? 0 : 0,
         borderRadius: isMaximized ? 0 : 8,
         resize: 'none',
-        // When maximized, we need to override the transform set by Draggable
-        // But Draggable applies transform via style prop.
-        // If we are inside Draggable, we can't easily override it unless we use !important or controlled position.
-        // Since we use controlled position in Draggable (pos), we can set pos to {0, 30} when maximized?
-        // No, we want to preserve the 'restore' position.
-        // So we should disable Draggable and force styles.
       }}
       onMouseDown={onFocus}
       initial="hidden"
