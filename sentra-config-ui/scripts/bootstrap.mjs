@@ -106,6 +106,62 @@ function isNodeInstalled(dir) {
   return exists(path.join(dir, 'node_modules'));
 }
 
+/**
+ * 获取 lock 文件路径和修改时间（支持多种包管理器）
+ */
+function getLockFileInfo(dir) {
+  const lockFiles = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock'];
+  for (const lockFile of lockFiles) {
+    const lockPath = path.join(dir, lockFile);
+    if (exists(lockPath)) {
+      try {
+        const stat = fs.statSync(lockPath);
+        return { file: lockFile, path: lockPath, mtime: stat.mtimeMs };
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 检查 lock 文件是否比 node_modules 更新
+ * 如果 lock 文件更新，说明依赖有变化需要重新安装
+ */
+function isLockNewerThanNodeModules(dir) {
+  const nmPath = path.join(dir, 'node_modules');
+  if (!exists(nmPath)) return false;
+
+  const lockInfo = getLockFileInfo(dir);
+  if (!lockInfo) return false;
+
+  try {
+    const nmStat = fs.statSync(nmPath);
+    // lock 文件比 node_modules 目录新 -> 需要重新安装
+    return lockInfo.mtime > nmStat.mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 检查 package.json 是否比 node_modules 更新
+ */
+function isPkgNewerThanNodeModules(dir) {
+  const nmPath = path.join(dir, 'node_modules');
+  const pkgPath = path.join(dir, 'package.json');
+  if (!exists(nmPath) || !exists(pkgPath)) return false;
+
+  try {
+    const nmStat = fs.statSync(nmPath);
+    const pkgStat = fs.statSync(pkgPath);
+    return pkgStat.mtimeMs > nmStat.mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
 function choosePM(preferred) {
   if (preferred && preferred !== 'auto') {
     if (!commandExists(preferred)) throw new Error(`Package manager ${preferred} not found in PATH`);
@@ -201,14 +257,30 @@ async function ensureNodeProjects(pm, force, dryRun, registry) {
   for (const dir of projects) {
     if (!isNodeProject(dir)) continue;
     const installed = isNodeInstalled(dir);
-    results.push({ dir, installed });
+    const lockNewer = isLockNewerThanNodeModules(dir);
+    const pkgNewer = isPkgNewerThanNodeModules(dir);
+    results.push({ dir, installed, lockNewer, pkgNewer });
   }
   for (const r of results) {
-    if (!r.installed || force) {
+    const label = path.relative(repoRoot, r.dir) || '.';
+    let reason = null;
+
+    if (!r.installed) {
+      reason = 'node_modules missing';
+    } else if (force) {
+      reason = 'force install';
+    } else if (r.lockNewer) {
+      const lockInfo = getLockFileInfo(r.dir);
+      reason = `${lockInfo?.file || 'lock file'} changed`;
+    } else if (r.pkgNewer) {
+      reason = 'package.json changed';
+    }
+
+    if (reason) {
+      console.log(chalk.yellow(`[Node] ${label}: ${reason} → installing...`));
       await installNode(r.dir, pm, dryRun, registry);
     } else {
-      const label = path.relative(repoRoot, r.dir) || '.';
-      console.log(chalk.gray(`[Node] Skipped (already installed) @ ${label}`));
+      console.log(chalk.gray(`[Node] Skipped (up to date) @ ${label}`));
     }
   }
 }

@@ -2,8 +2,6 @@
  * XML处理工具模块
  * 包含XML标签提取、JSON转XML、敏感信息过滤等功能
  */
-
-import getUrls from 'get-urls';
 import extractPathModule from 'extract-path';
 
 const extractPath = extractPathModule.default || extractPathModule;
@@ -317,7 +315,7 @@ export function extractXMLTag(text, tagName, options = {}) {
 }
 
 /**
- * 提取所有重复的XML标签（增强版）
+ * 提取所有重复的XML标签
  * @param {string} text - 包含 XML 标签的文本
  * @param {string} tagName - 标签名称
  * @param {Object} options - 选项
@@ -361,28 +359,57 @@ export function extractFilesFromContent(data, basePath = []) {
   const checkAndAdd = (value, key) => {
     if (typeof value !== 'string') return;
     const keyPath = [...basePath, key].join('.');
+    const keyPathLower = keyPath.toLowerCase();
+    // 跳过示例/样例字段，例如 toolMeta.responseExample
+    if (keyPathLower.includes('responseexample')) return;
     const text = value;
+    const trimmed = text.trim();
 
-    // 使用 get-urls 提取任意 URL（包括 markdown 里的链接 / 图片）
-    try {
-      const urlSet = getUrls(text) || new Set();
-      for (const url of urlSet) {
-        if (!url) continue;
-        files.push({ key: keyPath, path: String(url) });
+    if (!trimmed) return;
+
+    // 只从 Markdown 形式的链接/图片中提取：![](...) 或 [](...)
+    const mdRegex = /!\[[^\]]*\]\(([^)]+)\)|\[[^\]]*\]\(([^)]+)\)/g;
+
+    const addCandidate = (rawCandidate) => {
+      if (!rawCandidate) return;
+      const candidate = String(rawCandidate).trim();
+      if (!candidate) return;
+
+      // http(s) 开头：直接作为 URL
+      if (/^https?:\/\//i.test(candidate)) {
+        files.push({ key: keyPath, path: candidate });
+        return;
       }
-    } catch {}
 
-    // 如果字符串本身不是以 http/https 开头，再尝试通过 extract-path 提取本地 / 相对文件路径
-    if (!/^https?:\/\//i.test(text)) {
+      // 其他情况：作为潜在本地路径，交给 extract-path + 正则兜底
+      let localPath = null;
       try {
-        const localPath = extractPath(text, {
+        localPath = extractPath(candidate, {
           validateFileExists: false,
           resolveWithFallback: false
         });
-        if (localPath && typeof localPath === 'string') {
-          files.push({ key: keyPath, path: localPath });
-        }
       } catch {}
+
+      if (!localPath) {
+        // 简单兜底：Windows 盘符路径或 Unix 风格的 /dir/file.ext
+        const m2 = candidate.match(/([A-Za-z]:[\\/][^*?"<>|]+?\.[A-Za-z0-9]{2,5}|\/(?:[^\s]+\/)*[^\s]+\.[A-Za-z0-9]{2,5})/);
+        if (m2 && m2[1]) {
+          localPath = m2[1];
+        }
+      }
+
+      if (localPath && typeof localPath === 'string') {
+        const normalized = localPath.trim();
+        if (!normalized) return;
+        files.push({ key: keyPath, path: normalized });
+      }
+    };
+
+    let m;
+    while ((m = mdRegex.exec(trimmed)) !== null) {
+      // m[1] 对应 ![](...)，m[2] 对应 [](...)
+      const candidate = m[1] ?? m[2];
+      addCandidate(candidate);
     }
   };
   

@@ -598,27 +598,33 @@ export default async function handler(args = {}, options = {}) {
         generation_info: {
           model: resp.model,
           created: resp.created,
-          baseURL: penv.HTML_TO_APP_BASE_URL || process.env.HTML_TO_APP_BASE_URL || config.llm.baseURL
-        }
-      }
+          baseURL: penv.HTML_TO_APP_BASE_URL || process.env.HTML_TO_APP_BASE_URL || config.llm.baseURL,
+        },
+      },
     };
-    
+
     // 添加自动化流程结果
     if (autoInstall || autoBuild || autoZip) {
       result.data.automation = {
         install: installResult ? { success: installResult.success, packageManager } : null,
         build: buildResult ? { success: buildResult.success, files: buildFiles } : null,
-        zip: zipResult ? { success: true, path: zipResult.path, path_markdown: `[${appName}_build.zip](${toPosix(zipResult.path)})`, size: zipResult.size } : null
+        zip: zipResult
+          ? {
+              success: true,
+              path_markdown: `[${appName}_build.zip](${toPosix(zipResult.path)})`,
+              size: zipResult.size,
+            }
+          : null,
       };
     }
-    
+
     return result;
   } catch (e) {
     logger.error?.('html_to_app: 生成失败', { label: 'PLUGIN', error: String(e?.message || e), stack: e?.stack });
     return {
       success: false,
       code: 'GENERATION_ERROR',
-      error: String(e?.message || e)
+      error: String(e?.message || e),
     };
   }
 }

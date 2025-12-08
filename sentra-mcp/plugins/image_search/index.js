@@ -1278,30 +1278,29 @@ export default async function handler(args = {}, options = {}) {
       total_size: totalSize,
       total_size_mb: (totalSize / 1024 / 1024).toFixed(2),
     };
-    
+
     if (files.length > zipThreshold) {
-      logger.info?.('zip:start', { 
-        label: 'PLUGIN', 
-        fileCount: files.length, 
-        threshold: zipThreshold 
+      logger.info?.('zip:start', {
+        label: 'PLUGIN',
+        fileCount: files.length,
+        threshold: zipThreshold,
       });
-      
+
       const zipName = `images_${query.replace(/[^\w\u4e00-\u9fa5]+/g, '_')}_${sessionId}.zip`;
       const zipPath = path.join(baseAbs, zipName);
-      
+
       const { size: zipSize } = await createZip(files, zipPath);
-      
-      logger.info?.('zip:complete', { 
-        label: 'PLUGIN', 
+
+      logger.info?.('zip:complete', {
+        label: 'PLUGIN',
         zipSizeMB: (zipSize / 1024 / 1024).toFixed(2),
-        compressionRatio: ((1 - zipSize / totalSize) * 100).toFixed(1) + '%'
+        compressionRatio: ((1 - zipSize / totalSize) * 100).toFixed(1) + '%',
       });
-      
+
       const sourceInfo = Object.entries(downloadedSourceStats)
         .map(([k, v]) => `${k}:${v}张`)
         .join(', ');
-      
-      data.zip_path = zipPath;
+
       data.zip_path_markdown = toMarkdownPath(zipPath);
       data.zip_size = zipSize;
       data.zip_size_mb = (zipSize / 1024 / 1024).toFixed(2);
@@ -1316,12 +1315,10 @@ export default async function handler(args = {}, options = {}) {
         size_mb: (f.size / 1024 / 1024).toFixed(2),
         title: f.title,
       }));
-      
     } else {
       // 直接模式：返回每个文件的详细信息
       data.files = files.map((f, i) => ({
         index: i + 1,
-        path: f.path,
         path_markdown: f.path_markdown,
         filename: path.basename(f.path),
         size: f.size,
@@ -1334,13 +1331,13 @@ export default async function handler(args = {}, options = {}) {
         width: f.width,
         height: f.height,
       }));
-      
+
       data.status = 'OK_DIRECT';
-      
+
       const sourceInfo = Object.entries(downloadedSourceStats)
         .map(([k, v]) => `${k}:${v}张`)
         .join(', ');
-      
+
       data.summary = `✅ 成功搜索并下载 ${files.length} 张关于 "${query}" 的图片（${sourceInfo}），已保存至本地。总大小：${(totalSize / 1024 / 1024).toFixed(2)}MB。`;
     }
     

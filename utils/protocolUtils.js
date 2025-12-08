@@ -114,24 +114,7 @@ export function buildSentraResultBlock(ev) {
       lines.push('</sentra-result-group>');
       return lines.join('\n');
     }
-    // 忽略 args/args_group：保持兼容但不生成对应标签
-    // 兜底：旧行为（用完整 ev 填充 <sentra-result>），保证向后兼容
-    const xmlLines = ['<sentra-result>'];
-    xmlLines.push(...jsonToXMLLines(ev, 1, 0, 8));
-    const root = ev?.result && (ev.result.data !== undefined ? ev.result.data : ev.result);
-    const files = root ? extractFilesFromContent(root) : [];
-    if (files.length > 0) {
-      xmlLines.push('  <extracted_files>');
-      files.forEach(f => {
-        xmlLines.push('    <file>');
-        xmlLines.push(`      <key>${f.key}</key>`);
-        xmlLines.push(`      <path>${valueToXMLString(f.path, 0)}</path>`);
-        xmlLines.push('    </file>');
-      });
-      xmlLines.push('  </extracted_files>');
-    }
-    xmlLines.push('</sentra-result>');
-    return xmlLines.join('\n');
+    return '';
   } catch (e) {
     // 发生异常时返回 JSON 包裹，避免终止主流程
     try { return `<sentra-result>${valueToXMLString(JSON.stringify(ev), 0)}</sentra-result>`; } catch { return '<sentra-result></sentra-result>'; }
@@ -189,16 +172,18 @@ function buildSingleResultXML(ev) {
   // 附带文件路径（可选）
   const fileRoot = ev?.result && (ev.result.data !== undefined ? ev.result.data : ev.result);
   const files = fileRoot ? extractFilesFromContent(fileRoot) : [];
+  lines.push('  <extracted_files>');
   if (files.length > 0) {
-    lines.push('  <extracted_files>');
     for (const f of files) {
       lines.push('    <file>');
       lines.push(`      <key>${f.key}</key>`);
       lines.push(`      <path>${valueToXMLString(f.path, 0)}</path>`);
       lines.push('    </file>');
     }
-    lines.push('  </extracted_files>');
+  } else {
+    lines.push('    <no_resource>true</no_resource>');
   }
+  lines.push('  </extracted_files>');
 
   lines.push('</sentra-result>');
   return lines.join('\n');

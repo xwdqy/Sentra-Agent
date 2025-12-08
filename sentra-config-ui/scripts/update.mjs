@@ -152,51 +152,17 @@ async function ensureVenv(projectDir, spinner) {
     return venvPath;
 }
 
-function collectPnpmLockFiles(projects) {
-    const lockFiles = [];
-    for (const dir of projects) {
-        const lockPath = path.join(dir, 'pnpm-lock.yaml');
-        if (exists(lockPath)) {
-            lockFiles.push(lockPath);
-        }
+/**
+ * 获取 lock 文件的哈希值（支持 pnpm-lock.yaml, package-lock.json, yarn.lock）
+ */
+function getLockFileHash(dir) {
+    const lockFiles = ['pnpm-lock.yaml', 'package-lock.json', 'yarn.lock'];
+    for (const lockFile of lockFiles) {
+        const lockPath = path.join(dir, lockFile);
+        const hash = getFileHash(lockPath);
+        if (hash) return { file: lockFile, hash };
     }
-    return lockFiles;
-}
-
-function toGitPath(absolutePath) {
-    const rel = path.relative(ROOT_DIR, absolutePath) || '.';
-    return rel.split(path.sep).join('/');
-}
-
-async function isGitTracked(gitPath) {
-    try {
-        // 如果文件未被 Git 跟踪，ls-files --error-unmatch 会抛错
-        await execCommandOutput('git', ['ls-files', '--error-unmatch', gitPath], ROOT_DIR);
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-async function ensureSkipWorktreeForLockFiles(lockFiles) {
-    if (!lockFiles.length) return;
-
-    console.log(chalk.cyan('\n🔧 Configuring Git to ignore local changes to pnpm-lock.yaml...\n'));
-
-    for (const file of lockFiles) {
-        const gitPath = toGitPath(file);
-        try {
-            const tracked = await isGitTracked(gitPath);
-            if (!tracked) {
-                console.log(chalk.gray(`  - ${gitPath}: not tracked by git, skip skip-worktree`));
-                continue;
-            }
-            await execCommand('git', ['update-index', '--skip-worktree', gitPath], ROOT_DIR);
-            console.log(chalk.gray(`  - ${gitPath}: marked as skip-worktree`));
-        } catch (e) {
-            console.log(chalk.yellow(`  - ${gitPath}: skip-worktree failed (${e.message})`));
-        }
-    }
+    return { file: null, hash: null };
 }
 
 function resolveMirrorProfileDefaults() {
@@ -354,12 +320,17 @@ async function update() {
 
             console.log(chalk.gray(`  Found [${typeStr}]: ${label}`));
 
-            if (isNode) beforeHashes.set(dir + ':pkg', getFileHash(path.join(dir, 'package.json')));
+            if (isNode) {
+                beforeHashes.set(dir + ':pkg', getFileHash(path.join(dir, 'package.json')));
+                const lockInfo = getLockFileHash(dir);
+                beforeHashes.set(dir + ':lock', lockInfo.hash);
+                beforeHashes.set(dir + ':lockFile', lockInfo.file);
+            }
             if (isPy) beforeHashes.set(dir + ':req', getFileHash(path.join(dir, 'requirements.txt')));
         }
         console.log();
 
-        const lockFiles = collectPnpmLockFiles(projects);
+
 
         // Step 2: Git operations
         if (isForce) {
@@ -376,9 +347,6 @@ async function update() {
             await execCommand('git', ['clean', '-fd'], ROOT_DIR);
             spinner.succeed('Cleaned untracked files');
         } else {
-            if (lockFiles.length > 0) {
-                await ensureSkipWorktreeForLockFiles(lockFiles);
-            }
             spinner.start('Checking for updates...');
             await execCommand('git', ['fetch'], ROOT_DIR);
             spinner.succeed('Checked for updates');
@@ -407,15 +375,22 @@ async function update() {
             if (isNode) {
                 const nmPath = path.join(dir, 'node_modules');
                 const pkgPath = path.join(dir, 'package.json');
-                const beforeHash = beforeHashes.get(dir + ':pkg');
-                const afterHash = getFileHash(pkgPath);
+                const beforePkgHash = beforeHashes.get(dir + ':pkg');
+                const afterPkgHash = getFileHash(pkgPath);
+                const beforeLockHash = beforeHashes.get(dir + ':lock');
+                const afterLockInfo = getLockFileHash(dir);
+                const afterLockHash = afterLockInfo.hash;
+                const lockFileName = afterLockInfo.file || beforeHashes.get(dir + ':lockFile') || 'lock file';
 
                 if (!exists(nmPath)) {
                     console.log(chalk.yellow(`  [Node] ${label}: node_modules missing → install needed`));
                     installQueue.push({ dir, label, type: 'node', reason: 'missing node_modules' });
-                } else if (beforeHash !== afterHash) {
+                } else if (beforePkgHash !== afterPkgHash) {
                     console.log(chalk.yellow(`  [Node] ${label}: package.json changed → install needed`));
                     installQueue.push({ dir, label, type: 'node', reason: 'package.json changed' });
+                } else if (beforeLockHash !== afterLockHash) {
+                    console.log(chalk.yellow(`  [Node] ${label}: ${lockFileName} changed → install needed`));
+                    installQueue.push({ dir, label, type: 'node', reason: `${lockFileName} changed` });
                 } else if (isForce) {
                     console.log(chalk.yellow(`  [Node] ${label}: Force update → reinstalling`));
                     installQueue.push({ dir, label, type: 'node', reason: 'force update' });

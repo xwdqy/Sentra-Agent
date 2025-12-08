@@ -74,7 +74,7 @@ export default async function handler(args = {}, options = {}) {
   if (useCache) {
     const cached = getFromMem(userId);
     if (cached && cached.path_absolute) {
-      return { success: true, cached: true, data: { user_id: userId, content: `![avatar](${cached.path_absolute})`, path_absolute: cached.path_absolute, path_markdown: `![avatar](${cached.path_absolute})` } };
+      return { success: true, cached: true, data: { user_id: userId, content: `![avatar](${cached.path_absolute})`, path_markdown: `![avatar](${cached.path_absolute})` } };
     }
   }
 
@@ -84,7 +84,7 @@ export default async function handler(args = {}, options = {}) {
     if (cached && cached.path_absolute) {
       // backfill memory cache
       setToMem(userId, cached, TTL_SEC);
-      return { success: true, cached: true, data: { user_id: userId, content: `![avatar](${cached.path_absolute})`, path_absolute: cached.path_absolute, path_markdown: `![avatar](${cached.path_absolute})` } };
+      return { success: true, cached: true, data: { user_id: userId, content: `![avatar](${cached.path_absolute})`, path_markdown: `![avatar](${cached.path_absolute})` } };
     }
   }
 
@@ -96,7 +96,7 @@ export default async function handler(args = {}, options = {}) {
       setToMem(userId, data, TTL_SEC);
       await writeFileCache(userId, data, TTL_SEC);
     }
-    return { success: true, data: { user_id: userId, content: `![avatar](${abs})`, path_absolute: abs, path_markdown: `![avatar](${abs})` } };
+    return { success: true, data: { user_id: userId, content: `![avatar](${abs})`, path_markdown: `![avatar](${abs})` } };
   } catch (e) {
     logger.warn?.('qq_avatar_get:download_failed', { label: 'PLUGIN', error: String(e?.message || e) });
     return { success: false, code: 'ERR', error: String(e?.message || e) };

@@ -517,7 +517,6 @@ export default async function handler(args = {}, options = {}) {
       success: true,
       data: {
         action: 'write_file',
-        path: toPosix(abs), // 返回 POSIX 格式的绝对路径（正斜杠）
         path_markdown: toMarkdownPath(abs),
         size,
         fileType: type,

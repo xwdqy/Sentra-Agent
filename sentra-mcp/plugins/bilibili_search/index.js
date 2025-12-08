@@ -447,10 +447,9 @@ export default async function handler(args = {}, options = {}) {
         data.summary = `已获取视频"${title}"（${bvid}），下载阶段中止（${note}），按策略返回链接：${urlVideoPage}`;
         return { success: true, data };
       }
-      // 与规范一致，提供顶层 path 与 path_markdown（指向视频文件）
-      data.path = videoAbs;
+      // 与规范一致，仅提供 markdown 形式的本地视频文件路径
       data.path_markdown = toMarkdownPath(videoAbs);
-      data.video = { path: videoAbs, path_markdown: toMarkdownPath(videoAbs), size: videoSize, contentType };
+      data.video = { path_markdown: toMarkdownPath(videoAbs), size: videoSize, contentType };
       data.downloaded = true;
       const sizeMB = +(videoSize / 1024 / 1024).toFixed(2);
       data.size_bytes = videoSize;
@@ -468,7 +467,7 @@ export default async function handler(args = {}, options = {}) {
         const coverName = `${id}_cover${ext}`;
         const coverAbs = toAbs(path.join(baseAbs, coverName));
         const { size: coverSize, contentType: coverType } = await downloadToFile(coverUrl, coverAbs, headersWithCookie, fetchTimeoutMs);
-        data.cover = { path: coverAbs, path_markdown: toMarkdownPath(coverAbs), size: coverSize, contentType: coverType };
+        data.cover = { path_markdown: toMarkdownPath(coverAbs), size: coverSize, contentType: coverType };
         logger.info?.('bilibili_search:step:download_cover_done', { label: 'PLUGIN' });
       } catch (e) {
         logger.warn?.('bilibili_search:cover_download_failed', { label: 'PLUGIN', error: String(e?.message || e) });

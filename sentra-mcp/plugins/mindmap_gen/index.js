@@ -380,7 +380,6 @@ export default async function handler(args = {}, options = {}) {
   const data = {
     prompt,
     markdown_content: content,
-    path: image?.abs || null,
     path_markdown: image?.abs ? `![${path.basename(image.abs)}](${image.abs})` : null,
     width,
     height,

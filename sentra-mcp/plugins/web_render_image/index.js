@@ -322,7 +322,6 @@ export default async function handler(args = {}, options = {}) {
       success: true,
       data: {
         action: 'web_render_image',
-        path: outPath,
         path_markdown: md,
         size_bytes: stat.size,
         format: 'png',
