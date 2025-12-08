@@ -1,6 +1,7 @@
 import logger from '../../src/logger/index.js';
 import wsCall from '../../src/utils/ws_rpc.js';
 import { getIdsWithCache } from '../../src/utils/message_cache_helper.js';
+import { httpRequest } from '../../src/utils/http.js';
 
 function toInt(v) {
   const n = Number(v);
@@ -16,9 +17,15 @@ function pickOne(arr, idx, random) {
 
 async function searchMusic163(keyword, limit = 6) {
   const url = `http://music.163.com/api/search/get/web?s=${encodeURIComponent(keyword)}&type=1&offset=0&total=true&limit=${limit}`;
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-  if (!res.ok) throw new Error(`163 search HTTP ${res.status}`);
-  const json = await res.json();
+  const res = await httpRequest({
+    method: 'GET',
+    url,
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    timeoutMs: 15000,
+    validateStatus: () => true,
+  });
+  if (res.status < 200 || res.status >= 300) throw new Error(`163 search HTTP ${res.status}`);
+  const json = res.data;
   const songs = json?.result?.songs || [];
   return songs.map((s) => ({
     id: s.id,
@@ -32,17 +39,21 @@ async function getMusicUrl163(ids, musicUCookie = '') {
   let url = `http://music.163.com/song/media/outer/url?id=${ids}`;
   if (!musicUCookie) return url; // 无 COOKIE 直接返回外链（通常会302到实际地址）
   const body = `ids=${encodeURIComponent(JSON.stringify([ids]))}&level=standard&encodeType=mp3`;
-  const res = await fetch('https://music.163.com/api/song/enhance/player/url/v1', {
+  const res = await httpRequest({
     method: 'POST',
+    url: 'https://music.163.com/api/song/enhance/player/url/v1',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 12; MI Build/SKQ1.211230.001)',
       'Cookie': `versioncode=8008070; os=android; channel=xiaomi; appver=8.8.70; MUSIC_U=${musicUCookie}`,
     },
-    body,
+    data: body,
+    timeoutMs: 15000,
+    validateStatus: () => true,
   });
-  if (!res.ok) return url;
-  const json = await res.json().catch(() => ({}));
+  if (res.status < 200 || res.status >= 300) return url;
+  let json = {};
+  try { json = res.data || {}; } catch { json = {}; }
   const u = json?.data?.[0]?.url;
   return u || url;
 }

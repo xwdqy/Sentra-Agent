@@ -8,6 +8,7 @@ import qs from 'qs';
 import archiver from 'archiver';
 import logger from '../../src/logger/index.js';
 import { abs as toAbs } from '../../src/utils/path.js';
+import { httpRequest } from '../../src/utils/http.js';
 
 function toMarkdownPath(abs) {
   const label = path.basename(abs);
@@ -199,31 +200,6 @@ function smartShuffleWithRelevance(array, needCount) {
 }
 
 /**
- * 带超时的 fetch 封装
- */
-async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
-  
-  try {
-    const res = await fetch(url, { 
-      ...options, 
-      signal: controller.signal 
-    });
-    clearTimeout(timer);
-    return res;
-  } catch (e) {
-    clearTimeout(timer);
-    if (e.name === 'AbortError') {
-      throw new Error(`请求超时 (${timeoutMs}ms): ${url}`);
-    }
-    throw e;
-  }
-}
-
-/**
  * 带重试的 fetch JSON
  */
 async function fetchJsonWithRetry(url, options = {}, retries = 3, timeoutMs = 20000) {
@@ -231,14 +207,22 @@ async function fetchJsonWithRetry(url, options = {}, retries = 3, timeoutMs = 20
   
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetchWithTimeout(url, options, timeoutMs);
-      
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const { method = 'GET', headers, body } = options || {};
+      const res = await httpRequest({
+        method,
+        url,
+        headers,
+        data: body,
+        timeoutMs,
+        // 让我们自己根据 status 判断是否抛错
+        validateStatus: () => true,
+      });
+
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
       }
-      
-      const json = await res.json();
-      return json;
+
+      return res.data;
       
     } catch (e) {
       lastError = e;
@@ -269,13 +253,23 @@ async function fetchTextWithRetry(url, options = {}, retries = 3, timeoutMs = 20
   
   for (let i = 0; i < retries; i++) {
     try {
-      const res = await fetchWithTimeout(url, options, timeoutMs);
-      
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const { method = 'GET', headers, body } = options || {};
+      const res = await httpRequest({
+        method,
+        url,
+        headers,
+        data: body,
+        timeoutMs,
+        responseType: 'text',
+        validateStatus: () => true,
+      });
+
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
       }
-      
-      const text = await res.text();
+
+      const data = res.data;
+      const text = typeof data === 'string' ? data : JSON.stringify(data || {});
       return text;
       
     } catch (e) {
@@ -337,47 +331,55 @@ function extFromContentType(ct) {
  * 流式下载文件（带进度跟踪）
  */
 async function downloadToFile(url, absPath, headers = {}, timeoutMs = 120000) {
-  const res = await fetchWithTimeout(url, { headers }, timeoutMs);
-  
-  if (!res.ok) {
-    throw new Error(`下载失败: HTTP ${res.status} ${res.statusText}`);
+  const res = await httpRequest({
+    method: 'GET',
+    url,
+    headers,
+    timeoutMs,
+    responseType: 'stream',
+    validateStatus: () => true,
+  });
+
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`下载失败: HTTP ${res.status} ${res.statusText || ''}`.trim());
   }
-  
-  const ct = (res.headers?.get?.('content-type') || '').split(';')[0].trim();
-  
-  if (!res.body) {
+
+  const ct = (res.headers?.['content-type'] || '').split(';')[0].trim();
+
+  const stream = res.data;
+  if (!stream) {
     throw new Error('响应体为空');
   }
-  
+
   await fs.mkdir(path.dirname(absPath), { recursive: true });
-  
+
   // 进度跟踪 Transform Stream
   let downloaded = 0;
   const logInterval = 2 * 1024 * 1024; // 2MB
   let lastLog = 0;
-  
+
   const { Transform } = await import('node:stream');
   const progressTransform = new Transform({
     transform(chunk, encoding, callback) {
       downloaded += chunk.length;
       if (downloaded - lastLog >= logInterval) {
-        logger.debug?.('download:progress', { 
-          label: 'PLUGIN', 
+        logger.debug?.('download:progress', {
+          label: 'PLUGIN',
           downloadedMB: (downloaded / 1024 / 1024).toFixed(2),
-          file: path.basename(absPath)
+          file: path.basename(absPath),
         });
         lastLog = downloaded;
       }
       callback(null, chunk);
-    }
+    },
   });
-  
+
   await pipeline(
-    res.body,
+    stream,
     progressTransform,
-    fssync.createWriteStream(absPath)
+    fssync.createWriteStream(absPath),
   );
-  
+
   return { size: downloaded, contentType: ct };
 }
 

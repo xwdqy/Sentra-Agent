@@ -4,6 +4,7 @@ import logger from '../../src/logger/index.js';
 import { config } from '../../src/config/index.js';
 import OpenAI from 'openai';
 import mime from 'mime-types';
+import { httpRequest } from '../../src/utils/http.js';
 
 function isHttpUrl(s) {
   try { const u = new URL(String(s)); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
@@ -36,9 +37,15 @@ async function downloadVideosAndRewrite(md, prefix = 'video') {
   let idx = 0;
   for (const { url } of links) {
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      let ct = (res.headers?.get?.('content-type') || '').split(';')[0].trim();
+      const res = await httpRequest({
+        method: 'GET',
+        url,
+        timeoutMs: 60000,
+        responseType: 'arraybuffer',
+        validateStatus: () => true,
+      });
+      if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
+      let ct = (res.headers?.['content-type'] || '').split(';')[0].trim();
       if (!ct) {
         try { const u = new URL(url); ct = String(mime.lookup(u.pathname) || ''); } catch {}
       }
@@ -46,8 +53,7 @@ async function downloadVideosAndRewrite(md, prefix = 'video') {
       const isVideo = (ct && ct.startsWith('video/'));
       if (!isVideo) continue;
 
-      const ab = await res.arrayBuffer();
-      const buf = Buffer.from(ab);
+      const buf = Buffer.from(res.data);
       let ext = '';
       if (ct && ct.startsWith('video/')) {
         const e = mime.extension(ct);

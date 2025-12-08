@@ -4,6 +4,7 @@ import logger from '../../src/logger/index.js';
 import { config } from '../../src/config/index.js';
 import OpenAI from 'openai';
 import mime from 'mime-types';
+import { httpRequest } from '../../src/utils/http.js';
 
 function isHttpUrl(s) {
   try { const u = new URL(String(s)); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
@@ -12,11 +13,16 @@ function isHttpUrl(s) {
 async function readVideoAsBase64WithMime(src) {
   let buf; let type = '';
   if (isHttpUrl(src)) {
-    const res = await fetch(src);
-    if (!res.ok) throw new Error(`fetch video failed: ${res.status}`);
-    const ab = await res.arrayBuffer();
-    buf = Buffer.from(ab);
-    const ct = (res.headers?.get?.('content-type') || '').split(';')[0].trim();
+    const res = await httpRequest({
+      method: 'GET',
+      url: src,
+      timeoutMs: 60000,
+      responseType: 'arraybuffer',
+      validateStatus: () => true,
+    });
+    if (res.status < 200 || res.status >= 300) throw new Error(`fetch video failed: ${res.status}`);
+    buf = Buffer.from(res.data);
+    const ct = (res.headers?.['content-type'] || '').split(';')[0].trim();
     if (ct && ct.startsWith('video/')) type = ct;
     if (!type) {
       try { const u = new URL(String(src)); type = mime.lookup(u.pathname) || ''; } catch {}

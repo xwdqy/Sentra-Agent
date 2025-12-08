@@ -1,5 +1,5 @@
-import axios from 'axios';
 import logger from '../../src/logger/index.js';
+import { httpClient } from '../../src/utils/http.js';
 
 function processUrl(input) {
   try {

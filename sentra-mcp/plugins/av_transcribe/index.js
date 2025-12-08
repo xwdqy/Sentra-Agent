@@ -1,8 +1,8 @@
 import fssync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import axios from 'axios';
 import logger from '../../src/logger/index.js';
+import { httpClient } from '../../src/utils/http.js';
 
 // ---- Chunking helpers ----
 function mb(n) { return Math.max(0, Number(n) || 0) * 1024 * 1024; }
@@ -39,7 +39,7 @@ async function downloadToTempFile(url, timeoutMs, headers, baseTmpDir) {
   const root = baseTmpDir || path.join(os.tmpdir(), 'av_transcribe');
   try { fssync.mkdirSync(root, { recursive: true }); } catch {}
   const tmp = path.join(root, `av_transcribe_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`);
-  const resp = await axios.get(url, { responseType: 'stream', timeout: timeoutMs, maxBodyLength: Infinity, headers });
+  const resp = await httpClient.get(url, { responseType: 'stream', timeout: timeoutMs, maxBodyLength: Infinity, headers });
   await new Promise((resolve, reject) => {
     const ws = fssync.createWriteStream(tmp);
     resp.data.pipe(ws);
@@ -71,7 +71,7 @@ function buildChunks(fileSize, chunkSize, overlapBytes) {
 
 async function headRemote(url, timeoutMs) {
   try {
-    const res = await axios.head(url, { timeout: Math.min(timeoutMs, 15000) });
+    const res = await httpClient.head(url, { timeout: Math.min(timeoutMs, 15000) });
     const len = Number(res.headers['content-length']);
     const acceptRanges = String(res.headers['accept-ranges'] || '').toLowerCase();
     return { size: Number.isFinite(len) ? len : null, acceptRanges };
@@ -232,11 +232,11 @@ function shouldRetry(e) {
   return false;
 }
 
-async function postWithRetry(url, formData, timeoutMs, retries, baseDelayMs) {
+async function postWithRetry(url, formData, timeoutMs, retries, retryBaseMs) {
   let attempt = 0;
   while (true) {
     try {
-      const res = await axios.post(url, formData, {
+      const res = await httpClient.post(url, formData, {
         headers: formData.getHeaders(),
         timeout: timeoutMs,
         maxBodyLength: Infinity,

@@ -1,5 +1,5 @@
-import axios from 'axios';
 import logger from '../../src/logger/index.js';
+import { httpClient } from '../../src/utils/http.js';
 
 function parseGitHubRepoSpec(input) {
   const raw = String(input || '').trim();
@@ -43,7 +43,7 @@ function parseGitHubRepoSpec(input) {
 
 async function fetchGitHubAPI(baseURL, path, headers) {
   const url = `${baseURL.replace(/\/$/, '')}/${path.replace(/^\//, '')}`;
-  const resp = await axios.get(url, { headers, timeout: 20000, validateStatus: () => true });
+  const resp = await httpClient.get(url, { headers, timeout: 20000, validateStatus: () => true });
   const { status, data } = resp;
   if (status >= 400) {
     const msg = (data && data.message) ? data.message : `HTTP ${status}`;
@@ -86,7 +86,7 @@ function clamp(n, min, max) {
 
 async function fetchGitHubAPIRaw(baseURL, path, headers, extra = {}) {
   const url = `${baseURL.replace(/\/$/, '')}/${path.replace(/^\//, '')}`;
-  const resp = await axios.get(url, {
+  const resp = await httpClient.get(url, {
     headers,
     timeout: extra.timeout || 20000,
     responseType: extra.responseType || 'json',

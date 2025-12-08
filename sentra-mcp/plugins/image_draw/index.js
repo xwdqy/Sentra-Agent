@@ -4,6 +4,7 @@ import logger from '../../src/logger/index.js';
 import { config } from '../../src/config/index.js';
 import OpenAI from 'openai';
 import mime from 'mime-types';
+import { httpRequest } from '../../src/utils/http.js';
 
 // 模型简化：仅使用环境变量 DRAW_MODEL（未配置则回退全局模型）
 
@@ -32,11 +33,16 @@ async function downloadImagesAndRewrite(md, prefix = 'draw') {
   let idx = 0;
   for (const url of urls) {
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const ab = await res.arrayBuffer();
-      const buf = Buffer.from(ab);
-      let ct = (res.headers?.get?.('content-type') || '').split(';')[0].trim();
+      const res = await httpRequest({
+        method: 'GET',
+        url,
+        timeoutMs: 60000,
+        responseType: 'arraybuffer',
+        validateStatus: () => true,
+      });
+      if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(res.data);
+      let ct = (res.headers?.['content-type'] || '').split(';')[0].trim();
       if (!ct) {
         try { const u = new URL(url); ct = String(mime.lookup(u.pathname) || ''); } catch {}
       }

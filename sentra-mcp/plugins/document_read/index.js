@@ -7,6 +7,7 @@ import xlsx from 'xlsx';
 import pdfParse from 'pdf-parse';
 import { XMLParser } from 'fast-xml-parser';
 import iconv from 'iconv-lite';
+import { httpRequest } from '../../src/utils/http.js';
 
 function isHttpUrl(s) {
   try { const u = new URL(String(s)); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
@@ -115,11 +116,16 @@ async function parseDocument(buffer, fileType, options = {}) {
 async function fetchDocument(src) {
   let buffer; let mimeType = ''; let ext = '';
   if (isHttpUrl(src)) {
-    const res = await fetch(src);
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    const arrayBuffer = await res.arrayBuffer();
-    buffer = Buffer.from(arrayBuffer);
-    const ct = (res.headers?.get?.('content-type') || '').split(';')[0].trim();
+    const res = await httpRequest({
+      method: 'GET',
+      url: src,
+      timeoutMs: 60000,
+      responseType: 'arraybuffer',
+      validateStatus: () => true,
+    });
+    if (res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res.status}: ${res.statusText || ''}`.trim());
+    buffer = Buffer.from(res.data);
+    const ct = (res.headers?.['content-type'] || '').split(';')[0].trim();
     if (ct) mimeType = ct;
     try { const u = new URL(src); ext = path.extname(u.pathname).toLowerCase(); } catch {}
   } else {

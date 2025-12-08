@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import logger from '../../src/logger/index.js';
+import { httpGet } from '../../src/utils/http.js';
 
 // 缓存目录路径
 const CACHE_DIR = path.resolve(process.cwd(), 'cache', 'weather');
@@ -166,15 +167,15 @@ async function getCityId(cityName, weatherKey, weatherUrl) {
 
   try {
     logger.debug?.('天气报告', `正在获取城市ID：${cityName}`, { label: 'PLUGIN' });
-    const { default: fetch } = await import('node-fetch');
-    const response = await fetch(lookupUrl, { timeout: 10000 });
+    const response = await httpGet(lookupUrl, { timeoutMs: 10000, validateStatus: () => true });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`QWeather City Lookup API failed: ${response.status} ${errorText.substring(0, 200)}`);
+    if (response.status !== 200) {
+      const raw = response.data;
+      const text = typeof raw === 'string' ? raw : JSON.stringify(raw || {});
+      throw new Error(`QWeather City Lookup API failed: ${response.status} ${text.substring(0, 200)}`);
     }
 
-    const data = await response.json();
+    const data = response.data;
     if (data.code === '200' && data.location && data.location.length > 0) {
       const cityId = data.location[0].id;
       logger.debug?.('天气报告', `成功找到城市ID：${cityId}`, { label: 'PLUGIN' });
@@ -201,15 +202,15 @@ async function getCurrentWeather(cityId, weatherKey, weatherUrl) {
 
   try {
     logger.debug?.('天气报告', `正在获取当前天气，城市ID：${cityId}`, { label: 'PLUGIN' });
-    const { default: fetch } = await import('node-fetch');
-    const response = await fetch(weatherUrlEndpoint, { timeout: 10000 });
+    const response = await httpGet(weatherUrlEndpoint, { timeoutMs: 10000, validateStatus: () => true });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`QWeather Current Weather API failed: ${response.status} ${errorText.substring(0, 200)}`);
+    if (response.status !== 200) {
+      const raw = response.data;
+      const text = typeof raw === 'string' ? raw : JSON.stringify(raw || {});
+      throw new Error(`QWeather Current Weather API failed: ${response.status} ${text.substring(0, 200)}`);
     }
 
-    const data = await response.json();
+    const data = response.data;
     if (data.code === '200' && data.now) {
       logger.debug?.('天气报告', `成功获取当前天气，城市ID：${cityId}`, { label: 'PLUGIN' });
       return { success: true, data: data.now, error: null };
@@ -233,15 +234,15 @@ async function get7DayForecast(cityId, weatherKey, weatherUrl) {
 
   try {
     logger.debug?.('天气报告', `正在获取7天预报，城市ID：${cityId}`, { label: 'PLUGIN' });
-    const { default: fetch } = await import('node-fetch');
-    const response = await fetch(forecastUrlEndpoint, { timeout: 10000 });
+    const response = await httpGet(forecastUrlEndpoint, { timeoutMs: 10000, validateStatus: () => true });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`QWeather 7-day Forecast API failed: ${response.status} ${errorText.substring(0, 200)}`);
+    if (response.status !== 200) {
+      const raw = response.data;
+      const text = typeof raw === 'string' ? raw : JSON.stringify(raw || {});
+      throw new Error(`QWeather 7-day Forecast API failed: ${response.status} ${text.substring(0, 200)}`);
     }
 
-    const data = await response.json();
+    const data = response.data;
     if (data.code === '200' && data.daily) {
       logger.debug?.('天气报告', `成功获取7天预报，城市ID：${cityId}`, { label: 'PLUGIN' });
       return { success: true, data: data.daily, error: null };
@@ -265,15 +266,15 @@ async function get24HourForecast(cityId, weatherKey, weatherUrl) {
 
   try {
     logger.debug?.('天气报告', `正在获取24小时预报，城市ID：${cityId}`, { label: 'PLUGIN' });
-    const { default: fetch } = await import('node-fetch');
-    const response = await fetch(hourlyUrlEndpoint, { timeout: 10000 });
+    const response = await httpGet(hourlyUrlEndpoint, { timeoutMs: 10000, validateStatus: () => true });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`QWeather 24-hour Forecast API failed: ${response.status} ${errorText.substring(0, 200)}`);
+    if (response.status !== 200) {
+      const raw = response.data;
+      const text = typeof raw === 'string' ? raw : JSON.stringify(raw || {});
+      throw new Error(`QWeather 24-hour Forecast API failed: ${response.status} ${text.substring(0, 200)}`);
     }
 
-    const data = await response.json();
+    const data = response.data;
     if (data.code === '200' && data.hourly) {
       logger.debug?.('天气报告', `成功获取24小时预报，城市ID：${cityId}`, { label: 'PLUGIN' });
       return { success: true, data: data.hourly, error: null };
@@ -297,15 +298,15 @@ async function getWeatherWarning(cityId, weatherKey, weatherUrl) {
 
   try {
     logger.debug?.('天气报告', `正在获取天气预警，城市ID：${cityId}`, { label: 'PLUGIN' });
-    const { default: fetch } = await import('node-fetch');
-    const response = await fetch(warningUrlEndpoint, { timeout: 10000 });
+    const response = await httpGet(warningUrlEndpoint, { timeoutMs: 10000, validateStatus: () => true });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`QWeather Warning API failed: ${response.status} ${errorText.substring(0, 200)}`);
+    if (response.status !== 200) {
+      const raw = response.data;
+      const text = typeof raw === 'string' ? raw : JSON.stringify(raw || {});
+      throw new Error(`QWeather Warning API failed: ${response.status} ${text.substring(0, 200)}`);
     }
 
-    const data = await response.json();
+    const data = response.data;
     if (data.code === '200') {
       logger.debug?.('天气报告', `成功获取天气预警，城市ID：${cityId}`, { label: 'PLUGIN' });
       return { success: true, data: data.warning || [], error: null };

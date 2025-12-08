@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import logger from '../../src/logger/index.js';
+import { httpGet } from '../../src/utils/http.js';
 
 // In-memory cache: Map<userId, { expireAt:number, data:any }>
 const memCache = new Map();
@@ -52,10 +53,9 @@ function buildAvatarUrl(userId) {
 
 async function downloadToArtifacts(userId) {
   const url = buildAvatarUrl(userId);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const ab = await res.arrayBuffer();
-  const buf = Buffer.from(ab);
+  const res = await httpGet(url, { responseType: 'arraybuffer', timeoutMs: 15000, validateStatus: () => true });
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+  const buf = Buffer.from(res.data);
   const baseDir = 'artifacts';
   await fs.mkdir(baseDir, { recursive: true });
   const name = `qq_avatar_${String(userId).replace(/[^\w-]/g, '_')}.jpg`;
