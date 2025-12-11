@@ -736,6 +736,19 @@ export async function buildProactiveRootDirectiveXml(payload = {}) {
       : 0;
   const penaltyActive = !!(ue && ue.penaltyActive);
   const repliedSinceLastProactive = !!(ue && ue.repliedSinceLastProactive);
+  const lastUserAtTs = ue && Number.isFinite(ue.lastUserAt) && ue.lastUserAt > 0 ? ue.lastUserAt : 0;
+  const lastUserReplyAtTs =
+    ue && Number.isFinite(ue.lastUserReplyAt) && ue.lastUserReplyAt > 0 ? ue.lastUserReplyAt : 0;
+  const lastProactiveAtTs =
+    ue && Number.isFinite(ue.lastProactiveAt) && ue.lastProactiveAt > 0 ? ue.lastProactiveAt : 0;
+  const penaltyUntilTs =
+    ue && Number.isFinite(ue.penaltyUntil) && ue.penaltyUntil > 0 ? ue.penaltyUntil : 0;
+  const lastUserAtLocal = lastUserAtTs > 0 ? formatLocalDateTime(lastUserAtTs, tz) : null;
+  const lastUserReplyAtLocal =
+    lastUserReplyAtTs > 0 ? formatLocalDateTime(lastUserReplyAtTs, tz) : null;
+  const lastProactiveAtLocal =
+    lastProactiveAtTs > 0 ? formatLocalDateTime(lastProactiveAtTs, tz) : null;
+  const penaltyUntilLocal = penaltyUntilTs > 0 ? formatLocalDateTime(penaltyUntilTs, tz) : null;
 
   const lines = [];
   lines.push('<sentra-root-directive>');
