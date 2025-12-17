@@ -73,7 +73,9 @@ export async function judgeReplySimilarity(textA, textB) {
     localSim = computeLocalSimilarity(a, b);
   }
 
-  const candidates = [embSim, localSim].filter((x) => x != null && !Number.isNaN(x));
+  const hasEmb = typeof embSim === 'number' && !Number.isNaN(embSim);
+  const hasLocal = typeof localSim === 'number' && !Number.isNaN(localSim);
+
   if (SEND_DEDUP_LOCAL_DEBUG) {
     try {
       logger.debug('judgeReplySimilarity 输入与初始相似度', {
@@ -81,11 +83,22 @@ export async function judgeReplySimilarity(textA, textB) {
         bPreview: b.slice(0, 80),
         embSim,
         localSim,
-        hasCandidates: candidates.length > 0
+        hasEmb,
+        hasLocal
       });
     } catch {}
   }
-  if (!candidates.length) {
+
+  let combined = null;
+  if (hasEmb && hasLocal) {
+    combined = (embSim + localSim) / 2;
+  } else if (hasEmb) {
+    combined = embSim;
+  } else if (hasLocal) {
+    combined = localSim;
+  }
+
+  if (combined == null) {
     if (!SEND_DEDUP_USE_LLM) {
       return { areSimilar: false, similarity: null, source: 'none' };
     }
@@ -98,11 +111,10 @@ export async function judgeReplySimilarity(textA, textB) {
     return { areSimilar: false, similarity: null, source: 'none' };
   }
 
-  const combined = Math.max(...candidates);
   const threshold = Number.isFinite(SEND_DEDUP_MIN_SIMILARITY) ? SEND_DEDUP_MIN_SIMILARITY : 0.8;
   const useLlm = SEND_DEDUP_USE_LLM;
 
-   if (SEND_DEDUP_LOCAL_DEBUG) {
+  if (SEND_DEDUP_LOCAL_DEBUG) {
     try {
       logger.debug('judgeReplySimilarity 综合相似度', {
         combined,

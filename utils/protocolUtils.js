@@ -591,18 +591,6 @@ export function convertHistoryToMCPFormat(historyConversations) {
     }
   }
 
-  // 详细输出一次转换后的 MCP 消息预览，便于排查上下文结构问题
-  try {
-    const total = mcpConversation.length;
-    const previewLimit = 50;
-    const preview = total > previewLimit ? mcpConversation.slice(0, previewLimit) : mcpConversation;
-    logger.debug(
-      `MCP格式转换详细messages预览(${preview.length}/${total}条): ${JSON.stringify(preview)}`
-    );
-  } catch (e) {
-    logger.debug(`MCP格式转换详细messages预览序列化失败: ${String(e)}`);
-  }
-
   logger.debug(
     `MCP格式转换: ${historyConversations.length}条 → ${mcpConversation.length}条 (转换${convertedCount}个工具, 跳过${skippedCount}条)`
   );
