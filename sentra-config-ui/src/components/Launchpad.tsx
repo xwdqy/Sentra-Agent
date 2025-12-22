@@ -79,8 +79,16 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
     const toolsApps: typeof items = [];
     const qqApps: typeof items = [];
 
+    const builtinToolOrder = ['file-manager', 'presets-editor', 'preset-importer', 'redis-editor', 'dev-center'];
+    const builtinToolSet = new Set(builtinToolOrder);
+    const builtinTools: typeof items = [];
+
     filteredItems.forEach(item => {
       const name = item.name.toLowerCase();
+      if (builtinToolSet.has(name)) {
+        builtinTools.push(item);
+        return;
+      }
       if (
         name.includes('sentra-prompts') ||
         name.includes('sentra-mcp') ||
@@ -99,6 +107,12 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
     const byName = (a: typeof items[number], b: typeof items[number]) =>
       getDisplayName(a.name).localeCompare(getDisplayName(b.name), 'zh-Hans-CN');
     coreApps.sort(byName); toolsApps.sort(byName); qqApps.sort(byName);
+
+    builtinTools.sort((a, b) => {
+      const ia = builtinToolOrder.indexOf(a.name.toLowerCase());
+      const ib = builtinToolOrder.indexOf(b.name.toLowerCase());
+      return ia - ib;
+    });
 
     // Priority items
     const isPriority = (it: typeof items[number]) => {
@@ -123,7 +137,7 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
     const corePages = chunkBy(coreList, size);
 
     // 2. Tools Pages
-    const toolsList = t;
+    const toolsList = [...builtinTools, ...t];
     const toolsPages = chunkBy(toolsList, size);
 
     // 3. QQ Pages

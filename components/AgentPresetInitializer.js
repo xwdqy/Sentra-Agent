@@ -1,5 +1,5 @@
 import { loadAgentPresetSync } from '../utils/agentPresetLoader.js';
-import { convertPresetTextToJson, normalizePresetJsonForRuntime } from '../utils/presetTextToJsonConverter.js';
+import { normalizePresetJsonForRuntime } from '../utils/presetTextToJsonConverter.js';
 import { buildAgentPresetXml, formatPresetJsonAsPlainText } from '../utils/jsonToSentraXmlConverter.js';
 import { createLogger } from '../utils/logger.js';
 
@@ -32,18 +32,6 @@ export async function initAgentPresetCore(agent) {
         rawText,
         fileName: loaded.fileName
       });
-    } else if (rawText && agent) {
-      try {
-        const { presetJson: convertedJson, rawText: newRaw } = await convertPresetTextToJson({
-          agent,
-          rawText,
-          fileName: loaded.fileName
-        });
-        presetJson = convertedJson;
-        rawText = newRaw || rawText;
-      } catch (e) {
-        logger.warn('Agent 预设文本转 JSON 失败，将继续按纯文本使用', { err: String(e) });
-      }
     }
 
     if (presetJson) {

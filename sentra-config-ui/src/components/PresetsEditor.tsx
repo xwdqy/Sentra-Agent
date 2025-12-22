@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import styles from './PresetsEditor.module.css';
-import { IoSearch, IoDocumentText, IoSave, IoReload, IoInformationCircle, IoAdd, IoTrash, IoChevronDown, IoChevronForward, IoFolder, IoFolderOpen } from 'react-icons/io5';
+import { IoSearch, IoDocumentText, IoSave, IoReload, IoInformationCircle, IoAdd, IoTrash, IoChevronDown, IoChevronForward, IoFolder, IoFolderOpen, IoCloudDownload } from 'react-icons/io5';
 import Editor from '@monaco-editor/react';
 import { SafeInput } from './SafeInput';
 import { PresetsEditorState } from '../hooks/usePresetsEditor';
@@ -10,9 +10,10 @@ interface PresetsEditorProps {
     theme: 'light' | 'dark';
     addToast: (type: 'success' | 'error', title: string, message?: string) => void;
     state: PresetsEditorState;
+    onOpenPresetImporter?: () => void;
 }
 
-export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state }) => {
+export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, onOpenPresetImporter }) => {
     const {
         folders,
         selectedFile,
@@ -149,6 +150,14 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state }) =>
                             <div className={styles.actions}>
                                 <button
                                     className={styles.actionBtn}
+                                    onClick={() => onOpenPresetImporter && onOpenPresetImporter()}
+                                    title="打开预设导入"
+                                >
+                                    <IoCloudDownload size={14} />
+                                    导入
+                                </button>
+                                <button
+                                    className={styles.actionBtn}
                                     onClick={() => selectFile(selectedFile)}
                                     title="重新加载"
                                 >
@@ -174,20 +183,24 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state }) =>
                         {loadingFile ? (
                             <div className={styles.emptyState}>读取文件中...</div>
                         ) : (
-                            <Editor
-                                height="100%"
-                                language={getLanguage(selectedFile.name)}
-                                value={fileContent}
-                                onChange={(value) => setFileContent(value || '')}
-                                theme={theme === 'dark' ? 'vs-dark' : 'light'}
-                                options={{
-                                    minimap: { enabled: true },
-                                    fontSize: 13,
-                                    fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
-                                    scrollBeyondLastLine: false,
-                                    automaticLayout: true,
-                                }}
-                            />
+                            <div className={styles.editorSplit}>
+                                <div className={styles.editorMain}>
+                                    <Editor
+                                        height="100%"
+                                        language={getLanguage(selectedFile.name)}
+                                        value={fileContent}
+                                        onChange={(value) => setFileContent(value || '')}
+                                        theme={theme === 'dark' ? 'vs-dark' : 'light'}
+                                        options={{
+                                            minimap: { enabled: true },
+                                            fontSize: 13,
+                                            fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
+                                            scrollBeyondLastLine: false,
+                                            automaticLayout: true,
+                                        }}
+                                    />
+                                </div>
+                            </div>
                         )}
                     </>
                 ) : (

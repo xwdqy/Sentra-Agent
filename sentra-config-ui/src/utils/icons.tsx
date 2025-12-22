@@ -26,7 +26,10 @@ import {
   IoPeople,
   IoPerson,
   IoApps,
-  IoServer
+  IoServer,
+  IoDocumentText,
+  IoCloudDownload,
+  IoFolderOpen
 } from 'react-icons/io5';
 import { BsRobot } from 'react-icons/bs';
 
@@ -66,6 +69,10 @@ export const getDisplayName = (name: string): string => {
     'dev-center': '开发中心',
     'utils/emoji-stickers': '表情包配置',
     'agent-presets': '预设撰写',
+    'presets-editor': '预设撰写',
+    'preset-importer': '预设导入',
+    'file-manager': '文件管理',
+    'redis-editor': 'Redis编辑器',
     'av_transcribe': '音频转录',
     'mindmap_gen': '思维导图',
     'custom_music_card': '自定义音卡',
@@ -133,6 +140,11 @@ export const getDisplayName = (name: string): string => {
 
 export const getIconForType = (name: string, type: 'module' | 'plugin'): React.ReactNode => {
   const n = name.toLowerCase();
+
+  // Built-in apps
+  if (n.includes('file-manager')) return <AppIconWrapper bg="linear-gradient(135deg, #f6d365 0%, #fda085 100%)"><IoFolderOpen color="white" /></AppIconWrapper>;
+  if (n.includes('preset-importer')) return <AppIconWrapper bg="linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)"><IoCloudDownload color="white" /></AppIconWrapper>;
+  if (n.includes('agent-presets') || n.includes('presets-editor')) return <AppIconWrapper bg="linear-gradient(135deg, #00b09b 0%, #96c93d 100%)"><IoDocumentText color="white" /></AppIconWrapper>;
 
   // Core Modules - Distinct colors for each
   if (n.includes('sentra-prompts')) return <AppIconWrapper bg="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"><BsRobot color="white" /></AppIconWrapper>;

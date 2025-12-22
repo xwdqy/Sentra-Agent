@@ -40,7 +40,7 @@ import { handleOneMessageCore } from './components/MessagePipeline.js';
 import { setupSocketHandlers } from './components/SocketHandlers.js';
 import { initAgentPresetCore } from './components/AgentPresetInitializer.js';
 import DesireManager from './utils/desireManager.js';
-import { buildProactiveRootDirectiveXml } from './components/ProactiveDirectivePlanner.js';
+import { buildProactiveRootDirectiveXml, checkProactiveWhitelistTarget } from './components/ProactiveDirectivePlanner.js';
 import { handleGroupReplyCandidate } from './utils/groupReplyMerger.js';
 import { startDelayJobWorker, enqueueDelayedJob } from './utils/delayJobQueue.js';
 import { createDelayJobRunJob } from './components/DelayJobWorker.js';
@@ -92,6 +92,33 @@ async function processProactiveQueue() {
 }
 
 function enqueueProactiveCandidate(candidate) {
+	const lastMsg = candidate?.lastMsg;
+	const senderId = lastMsg && lastMsg.sender_id != null
+		? String(lastMsg.sender_id)
+		: (candidate?.userId != null ? String(candidate.userId) : '');
+
+	const proactiveWhitelist = checkProactiveWhitelistTarget({
+		chatType: lastMsg && lastMsg.type === 'private' ? 'private' : 'group',
+		groupId: lastMsg && lastMsg.group_id ? `G:${lastMsg.group_id}` : null,
+		userId: senderId || null
+	});
+	if (!proactiveWhitelist.allowed) {
+		if (proactiveWhitelist.logFiltered) {
+			logger.info('主动回复白名单拦截: 候选入队时阻断', {
+				reason: proactiveWhitelist.reason,
+				chatType: proactiveWhitelist.chatType,
+				groupId: proactiveWhitelist.groupId ?? null,
+				userId: proactiveWhitelist.userId ?? null,
+				conversationKey: candidate?.conversationKey || null
+			});
+		}
+		return;
+	}
+
+	try {
+		candidate._proactiveWhitelistChecked = true;
+	} catch {}
+
 	proactiveQueue.push(candidate);
 	processProactiveQueue().catch((e) => {
 		logger.warn('主动回复入队执行失败', { err: String(e) });
@@ -352,6 +379,25 @@ async function runProactiveReply(candidate) {
   const userid = String(lastMsg?.sender_id ?? '');
   const groupIdKey = lastMsg?.group_id ? `G:${lastMsg.group_id}` : `U:${userid}`;
   const isFirstAfterUser = !!candidate.isFirstAfterUser;
+
+  const proactiveWhitelist = checkProactiveWhitelistTarget({
+    chatType: lastMsg.type === 'private' ? 'private' : 'group',
+    groupId: lastMsg?.group_id ? `G:${lastMsg.group_id}` : null,
+    userId: userid || null
+  });
+  if (!proactiveWhitelist.allowed) {
+    if (proactiveWhitelist.logFiltered) {
+      logger.info('主动回复白名单拦截: 出队执行时阻断', {
+        reason: proactiveWhitelist.reason,
+        chatType: proactiveWhitelist.chatType,
+        groupId: proactiveWhitelist.groupId ?? null,
+        userId: proactiveWhitelist.userId ?? null,
+        conversationKey: candidate?.conversationKey || null,
+        checkedAtEnqueue: !!candidate?._proactiveWhitelistChecked
+      });
+    }
+    return;
+  }
 
   try {
 	resetReplyGateForSender(userid);
@@ -727,6 +773,24 @@ if (DESIRE_ENABLED && desireManager) {
               chatType: c?.chatType || null
             }
           );
+          continue;
+        }
+
+        const proactiveWhitelist = checkProactiveWhitelistTarget({
+          chatType: lastMsg && lastMsg.type === 'private' ? 'private' : 'group',
+          groupId: lastMsg && lastMsg.group_id ? `G:${lastMsg.group_id}` : null,
+          userId: senderId || null
+        });
+        if (!proactiveWhitelist.allowed) {
+          if (proactiveWhitelist.logFiltered) {
+            logger.info('主动回复白名单拦截: 候选入队前过滤', {
+              reason: proactiveWhitelist.reason,
+              chatType: proactiveWhitelist.chatType,
+              groupId: proactiveWhitelist.groupId ?? null,
+              userId: proactiveWhitelist.userId ?? null,
+              conversationKey: c?.conversationKey || null
+            });
+          }
           continue;
         }
 

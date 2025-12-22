@@ -165,10 +165,17 @@ function App() {
   const presetsState = usePresetsEditor(addToast, isAuthenticated);
   // 开发中心默认不打开，由 Dock / 启动台显式唤起
   const [devCenterOpen, setDevCenterOpen] = useState(false);
+  const [devCenterMinimized, setDevCenterMinimized] = useState(false);
   const [deepWikiOpen, setDeepWikiOpen] = useState(false);
+  const [deepWikiMinimized, setDeepWikiMinimized] = useState(false);
   const [presetsEditorOpen, setPresetsEditorOpen] = useState(false);
+  const [presetsEditorMinimized, setPresetsEditorMinimized] = useState(false);
   const [iosPresetsEditorOpen, setIosPresetsEditorOpen] = useState(false);
+  const [presetImporterOpen, setPresetImporterOpen] = useState(false);
+  const [presetImporterMinimized, setPresetImporterMinimized] = useState(false);
+  const [iosPresetImporterOpen, setIosPresetImporterOpen] = useState(false);
   const [fileManagerOpen, setFileManagerOpen] = useState(false);
+  const [fileManagerMinimized, setFileManagerMinimized] = useState(false);
   const [iosFileManagerOpen, setIosFileManagerOpen] = useState(false);
 
   // Redis Editor State via hook
@@ -179,6 +186,7 @@ function App() {
       setIosPresetsEditorOpen(true);
     } else {
       setPresetsEditorOpen(true);
+      setPresetsEditorMinimized(false);
       bringToFront('presets-editor');
     }
   };
@@ -188,13 +196,25 @@ function App() {
       setIosFileManagerOpen(true);
     } else {
       setFileManagerOpen(true);
+      setFileManagerMinimized(false);
       bringToFront('file-manager');
     }
   };
 
   const handleOpenRedis = () => {
     redisState.setRedisEditorOpen(true);
+    redisState.setMinimized(false);
     bringToFront('redis-editor'); // We'll need to handle z-index for this manually or via hook
+  };
+
+  const handleOpenPresetImporter = () => {
+    if (isMobile || isTablet) {
+      setIosPresetImporterOpen(true);
+    } else {
+      setPresetImporterOpen(true);
+      setPresetImporterMinimized(false);
+      bringToFront('preset-importer');
+    }
   };
 
   // terminal run handlers now provided by useTerminals
@@ -218,7 +238,11 @@ function App() {
     handleOpenPresets,
     handleOpenFileManager,
     handleOpenRedis,
-    () => setDevCenterOpen(true),
+    () => {
+      setDevCenterOpen(true);
+      setDevCenterMinimized(false);
+    },
+    handleOpenPresetImporter,
   );
 
   // Desktop folders (for desktop view)
@@ -370,28 +394,62 @@ function App() {
       onClick: () => setLaunchpadOpen(true)
     },
     {
+      id: 'file-manager-app',
+      name: '文件管理',
+      icon: getIconForType('file-manager', 'module'),
+      isOpen: fileManagerOpen,
+      onClick: handleOpenFileManager,
+      onClose: () => {
+        setFileManagerOpen(false);
+        setFileManagerMinimized(false);
+      }
+    },
+    {
       id: 'presets-app',
       name: '预设撰写',
       icon: getIconForType('agent-presets', 'module'),
       isOpen: presetsEditorOpen,
       onClick: handleOpenPresets,
-      onClose: () => setPresetsEditorOpen(false)
+      onClose: () => {
+        setPresetsEditorOpen(false);
+        setPresetsEditorMinimized(false);
+      }
+    },
+    {
+      id: 'preset-importer-app',
+      name: '预设导入',
+      icon: getIconForType('preset-importer', 'module'),
+      isOpen: presetImporterOpen,
+      onClick: handleOpenPresetImporter,
+      onClose: () => {
+        setPresetImporterOpen(false);
+        setPresetImporterMinimized(false);
+      }
     },
     {
       id: 'redis-app',
       name: 'Redis编辑器',
-      icon: getIconForType('redis', 'module'),
+      icon: getIconForType('redis-editor', 'module'),
       isOpen: redisState.redisEditorOpen,
       onClick: handleOpenRedis,
-      onClose: () => redisState.setRedisEditorOpen(false)
+      onClose: () => {
+        redisState.setRedisEditorOpen(false);
+        redisState.setMinimized(false);
+      }
     },
     {
       id: 'dev-center-app',
       name: '开发中心',
       icon: getIconForType('dev-center', 'module'),
       isOpen: devCenterOpen,
-      onClick: () => setDevCenterOpen(true),
-      onClose: () => setDevCenterOpen(false)
+      onClick: () => {
+        setDevCenterOpen(true);
+        setDevCenterMinimized(false);
+      },
+      onClose: () => {
+        setDevCenterOpen(false);
+        setDevCenterMinimized(false);
+      }
     },
     ...dockFavorites.map(favId => {
       const item = allItems.find(i => `${i.type}-${i.name}` === favId);
@@ -486,6 +544,8 @@ function App() {
           usageCounts={usageCounts}
           recordUsage={recordUsage}
           desktopIcons={desktopIcons}
+          desktopFolders={desktopFolders}
+          theme={theme}
           launchpadOpen={launchpadOpen}
           setLaunchpadOpen={setLaunchpadOpen}
           handleIOSOpenWindow={openIOSWindow}
@@ -503,9 +563,10 @@ function App() {
           terminalWindows={terminalWindows}
           handleMinimizeTerminal={handleMinimizeTerminal}
           handleCloseTerminal={handleCloseTerminal}
-          desktopFolders={desktopFolders}
           iosPresetsEditorOpen={iosPresetsEditorOpen}
           setIosPresetsEditorOpen={setIosPresetsEditorOpen}
+          iosPresetImporterOpen={iosPresetImporterOpen}
+          setIosPresetImporterOpen={setIosPresetImporterOpen}
           iosFileManagerOpen={iosFileManagerOpen}
           setIosFileManagerOpen={setIosFileManagerOpen}
           addToast={addToast}
@@ -529,6 +590,7 @@ function App() {
         toggleTheme={toggleTheme}
         showDock={showDock}
         toggleDock={toggleDock}
+
         openWindows={openWindows}
         setOpenWindows={setOpenWindows}
         activeWinId={activeWinId}
@@ -541,14 +603,17 @@ function App() {
         handleDeleteVar={handleDeleteVar}
         handleRestore={handleRestore}
         saving={saving}
+
         desktopIcons={desktopIcons}
         desktopFolders={desktopFolders}
+
         terminalWindows={terminalWindows}
         setTerminalWindows={setTerminalWindows}
         activeTerminalId={activeTerminalId}
         bringTerminalToFront={bringTerminalToFront}
         handleCloseTerminal={handleCloseTerminal}
         handleMinimizeTerminal={handleMinimizeTerminal}
+
         launchpadOpen={launchpadOpen}
         setLaunchpadOpen={setLaunchpadOpen}
         allItems={allItems}
@@ -557,11 +622,14 @@ function App() {
         dockFavorites={dockFavorites}
         setDockFavorites={setDockFavorites}
         uniqueDockItems={uniqueDockItems}
+
         toasts={toasts}
         removeToast={removeToast}
+
         dialogOpen={dialogOpen}
         dialogConfig={dialogConfig}
         setDialogOpen={setDialogOpen}
+
         wallpapers={wallpapers}
         defaultWallpapers={DEFAULT_WALLPAPERS}
         BING_WALLPAPER={BING_WALLPAPER}
@@ -573,20 +641,39 @@ function App() {
         wallpaperInterval={wallpaperInterval}
         setWallpaperInterval={setWallpaperInterval}
         loadConfigs={loadConfigs}
+
         presetsEditorOpen={presetsEditorOpen}
         setPresetsEditorOpen={setPresetsEditorOpen}
+        presetsEditorMinimized={presetsEditorMinimized}
+        setPresetsEditorMinimized={setPresetsEditorMinimized}
+
+        presetImporterOpen={presetImporterOpen}
+        setPresetImporterOpen={setPresetImporterOpen}
+        presetImporterMinimized={presetImporterMinimized}
+        setPresetImporterMinimized={setPresetImporterMinimized}
+
         fileManagerOpen={fileManagerOpen}
         setFileManagerOpen={setFileManagerOpen}
+        fileManagerMinimized={fileManagerMinimized}
+        setFileManagerMinimized={setFileManagerMinimized}
+
+        addToast={addToast}
         presetsState={presetsState}
         redisState={redisState}
-        addToast={addToast}
+
         devCenterOpen={devCenterOpen}
         setDevCenterOpen={setDevCenterOpen}
+        devCenterMinimized={devCenterMinimized}
+        setDevCenterMinimized={setDevCenterMinimized}
+
         deepWikiOpen={deepWikiOpen}
         setDeepWikiOpen={setDeepWikiOpen}
+        deepWikiMinimized={deepWikiMinimized}
+        setDeepWikiMinimized={setDeepWikiMinimized}
       />
     </Suspense>
   );
+
 }
 
 export default App;

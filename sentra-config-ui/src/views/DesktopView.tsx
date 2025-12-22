@@ -1,4 +1,4 @@
-import { useState, Suspense, lazy, type Dispatch, type SetStateAction, type ReactNode } from 'react';
+import { useState, useCallback, Suspense, lazy, type Dispatch, type SetStateAction, type ReactNode } from 'react';
 import { MenuBar } from '../components/MenuBar';
 import { MacWindow } from '../components/MacWindow';
 import { EnvEditor } from '../components/EnvEditor';
@@ -6,6 +6,8 @@ import { EnvEditor } from '../components/EnvEditor';
 const PresetsEditor = lazy(() => import('../components/PresetsEditor').then(module => ({ default: module.PresetsEditor })));
 const FileManager = lazy(() => import('../components/FileManager').then(module => ({ default: module.FileManager })));
 const RedisEditor = lazy(() => import('../components/RedisEditor/RedisEditor').then(module => ({ default: module.RedisEditor })));
+const DeepWikiChat = lazy(() => import('../components/DeepWikiChat').then(module => ({ default: module.DeepWikiChat })));
+const PresetImporter = lazy(() => import('../components/PresetImporter').then(module => ({ default: module.PresetImporter })));
 
 import { Dock } from '../components/Dock';
 import { Launchpad } from '../components/Launchpad';
@@ -15,7 +17,7 @@ import { ToastContainer, ToastMessage } from '../components/Toast';
 import { Dialog } from '../components/Dialog';
 import { Menu, Item, Submenu, useContextMenu } from 'react-contexify';
 import { getDisplayName, getIconForType } from '../utils/icons';
-import { IoCubeOutline, IoTerminalOutline, IoFolderOpen, IoServer, IoBookOutline } from 'react-icons/io5';
+import { IoCubeOutline, IoTerminalOutline, IoBookOutline } from 'react-icons/io5';
 import type { DeskWindow, DesktopIcon, FileItem, TerminalWin, AppFolder } from '../types/ui';
 import { AppFolderModal } from '../components/AppFolderModal';
 import { DevCenterV2 } from '../components/DevCenterV2';
@@ -95,18 +97,31 @@ export type DesktopViewProps = {
   loadConfigs: () => void | Promise<void>;
   presetsEditorOpen: boolean;
   setPresetsEditorOpen: (open: boolean) => void;
+  presetsEditorMinimized: boolean;
+  setPresetsEditorMinimized: (min: boolean) => void;
+
+  presetImporterOpen: boolean;
+  setPresetImporterOpen: (open: boolean) => void;
+  presetImporterMinimized: boolean;
+  setPresetImporterMinimized: (min: boolean) => void;
   fileManagerOpen: boolean;
   setFileManagerOpen: (open: boolean) => void;
+  fileManagerMinimized: boolean;
+  setFileManagerMinimized: (min: boolean) => void;
   addToast: (type: 'success' | 'error' | 'info', title: string, message?: string) => void;
   presetsState: any; // Type will be refined in component
   redisState: any;
   devCenterOpen: boolean;
   setDevCenterOpen: (open: boolean) => void;
+  devCenterMinimized: boolean;
+  setDevCenterMinimized: (min: boolean) => void;
   deepWikiOpen: boolean;
   setDeepWikiOpen: (open: boolean) => void;
+  deepWikiMinimized: boolean;
+  setDeepWikiMinimized: (min: boolean) => void;
 };
 
-export function DesktopView(props: DesktopViewProps) {
+export const DesktopView: React.FC<DesktopViewProps> = (props) => {
   const {
     isSolidColor,
     currentWallpaper,
@@ -163,15 +178,27 @@ export function DesktopView(props: DesktopViewProps) {
     loadConfigs,
     presetsEditorOpen,
     setPresetsEditorOpen,
+    presetsEditorMinimized,
+    setPresetsEditorMinimized,
+    presetImporterOpen,
+    setPresetImporterOpen,
+    presetImporterMinimized,
+    setPresetImporterMinimized,
     fileManagerOpen,
     setFileManagerOpen,
+    fileManagerMinimized,
+    setFileManagerMinimized,
     presetsState,
     addToast,
     redisState,
     devCenterOpen,
     setDevCenterOpen,
+    devCenterMinimized,
+    setDevCenterMinimized,
     deepWikiOpen,
     setDeepWikiOpen,
+    deepWikiMinimized,
+    setDeepWikiMinimized,
   } = props;
 
   // Folder & window state
@@ -191,6 +218,47 @@ export function DesktopView(props: DesktopViewProps) {
 
   const hasMaximizedWindow = maximizedWindowIds.length > 0;
 
+  const renderTopTile = useCallback((key: string, label: string, icon: ReactNode, onClick: () => void) => {
+    return (
+      <div
+        key={key}
+        onClick={onClick}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          cursor: 'pointer',
+          padding: '8px',
+          borderRadius: '12px',
+          transition: 'all 0.2s',
+          width: 90,
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+          e.currentTarget.style.transform = 'translateY(-2px)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background = 'transparent';
+          e.currentTarget.style.transform = 'translateY(0)';
+        }}
+      >
+        <div style={{ width: 60, height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 8 }}>
+          <div style={{ width: 60, height: 60 }}>{icon}</div>
+        </div>
+        <div style={{
+          fontSize: 12,
+          color: 'white',
+          textShadow: '0 1px 3px rgba(0,0,0,0.8)',
+          fontWeight: 500,
+          textAlign: 'center',
+          lineHeight: 1.2,
+        }}>
+          {label}
+        </div>
+      </div>
+    );
+  }, []);
+
   const extraTabs: {
     id: string;
     title: string;
@@ -208,10 +276,12 @@ export function DesktopView(props: DesktopViewProps) {
       isActive: activeUtilityId === 'dev-center',
       onActivate: () => {
         setDevCenterOpen(true);
+        setDevCenterMinimized(false);
         setActiveUtilityId('dev-center');
       },
       onClose: () => {
         setDevCenterOpen(false);
+        setDevCenterMinimized(false);
         if (activeUtilityId === 'dev-center') {
           setActiveUtilityId(null);
         }
@@ -227,10 +297,12 @@ export function DesktopView(props: DesktopViewProps) {
       isActive: activeUtilityId === 'deepwiki',
       onActivate: () => {
         setDeepWikiOpen(true);
+        setDeepWikiMinimized(false);
         setActiveUtilityId('deepwiki');
       },
       onClose: () => {
         setDeepWikiOpen(false);
+        setDeepWikiMinimized(false);
         if (activeUtilityId === 'deepwiki') {
           setActiveUtilityId(null);
         }
@@ -246,10 +318,12 @@ export function DesktopView(props: DesktopViewProps) {
       isActive: activeUtilityId === 'presets-editor',
       onActivate: () => {
         setPresetsEditorOpen(true);
+        setPresetsEditorMinimized(false);
         setActiveUtilityId('presets-editor');
       },
       onClose: () => {
         setPresetsEditorOpen(false);
+        setPresetsEditorMinimized(false);
         if (activeUtilityId === 'presets-editor') {
           setActiveUtilityId(null);
         }
@@ -261,14 +335,16 @@ export function DesktopView(props: DesktopViewProps) {
     extraTabs.push({
       id: 'file-manager',
       title: '文件管理',
-      icon: <IoFolderOpen style={{ color: '#dcb67a' }} />,
+      icon: getIconForType('file-manager', 'module'),
       isActive: activeUtilityId === 'file-manager',
       onActivate: () => {
         setFileManagerOpen(true);
+        setFileManagerMinimized(false);
         setActiveUtilityId('file-manager');
       },
       onClose: () => {
         setFileManagerOpen(false);
+        setFileManagerMinimized(false);
         if (activeUtilityId === 'file-manager') {
           setActiveUtilityId(null);
         }
@@ -280,15 +356,38 @@ export function DesktopView(props: DesktopViewProps) {
     extraTabs.push({
       id: 'redis-editor',
       title: 'Redis 编辑器',
-      icon: <IoServer style={{ color: '#dd2476' }} />,
+      icon: getIconForType('redis-editor', 'module'),
       isActive: activeUtilityId === 'redis-editor',
       onActivate: () => {
         redisState.setRedisEditorOpen(true);
+        redisState.setMinimized(false);
         setActiveUtilityId('redis-editor');
       },
       onClose: () => {
         redisState.setRedisEditorOpen(false);
+        redisState.setMinimized(false);
         if (activeUtilityId === 'redis-editor') {
+          setActiveUtilityId(null);
+        }
+      },
+    });
+  }
+
+  if (presetImporterOpen) {
+    extraTabs.push({
+      id: 'preset-importer',
+      title: '预设导入',
+      icon: getIconForType('preset-importer', 'module'),
+      isActive: activeUtilityId === 'preset-importer',
+      onActivate: () => {
+        setPresetImporterOpen(true);
+        setPresetImporterMinimized(false);
+        setActiveUtilityId('preset-importer');
+      },
+      onClose: () => {
+        setPresetImporterOpen(false);
+        setPresetImporterMinimized(false);
+        if (activeUtilityId === 'preset-importer') {
           setActiveUtilityId(null);
         }
       },
@@ -309,6 +408,46 @@ export function DesktopView(props: DesktopViewProps) {
       onClick: () => {
         recordUsage('app:dev-center');
         setDevCenterOpen(true);
+      }
+    },
+    {
+      name: 'presets-editor',
+      type: 'module' as const,
+      onClick: () => {
+        recordUsage('app:presets');
+        setPresetsEditorOpen(true);
+        setPresetsEditorMinimized(false);
+        setActiveUtilityId('presets-editor');
+      }
+    },
+    {
+      name: 'preset-importer',
+      type: 'module' as const,
+      onClick: () => {
+        recordUsage('app:preset-importer');
+        setPresetImporterOpen(true);
+        setPresetImporterMinimized(false);
+        setActiveUtilityId('preset-importer');
+      }
+    },
+    {
+      name: 'file-manager',
+      type: 'module' as const,
+      onClick: () => {
+        recordUsage('app:filemanager');
+        setFileManagerOpen(true);
+        setFileManagerMinimized(false);
+        setActiveUtilityId('file-manager');
+      }
+    },
+    {
+      name: 'redis-editor',
+      type: 'module' as const,
+      onClick: () => {
+        recordUsage('app:redis');
+        redisState.setRedisEditorOpen(true);
+        redisState.setMinimized(false);
+        setActiveUtilityId('redis-editor');
       }
     },
     ...allItems.map(item => ({
@@ -369,6 +508,7 @@ export function DesktopView(props: DesktopViewProps) {
         onAppleClick={() => { }}
         onOpenDeepWiki={() => {
           setDeepWikiOpen(true);
+          setDeepWikiMinimized(false);
           setActiveUtilityId('deepwiki');
         }}
       />
@@ -434,16 +574,17 @@ export function DesktopView(props: DesktopViewProps) {
             icon={getIconForType('dev-center', 'module')}
             zIndex={80}
             isActive={!activeWinId}
-            isMinimized={false}
-            initialPos={{ x: 80, y: 70 }}
+            isMinimized={devCenterMinimized}
             initialSize={{ width: 960, height: 620 }}
             onClose={() => {
               handleWindowMaximize('dev-center', false);
               setDevCenterOpen(false);
+              setDevCenterMinimized(false);
             }}
             onMinimize={() => {
               handleWindowMaximize('dev-center', false);
-              setDevCenterOpen(false);
+              setDevCenterMinimized(true);
+              setActiveUtilityId(null);
             }}
             onMaximize={(isMax) => handleWindowMaximize('dev-center', isMax)}
             onFocus={() => { setActiveUtilityId('dev-center'); }}
@@ -457,6 +598,40 @@ export function DesktopView(props: DesktopViewProps) {
           </MacWindow>
         )}
 
+        {presetImporterOpen && (
+          <MacWindow
+            id="preset-importer"
+            title="预设导入"
+            icon={getIconForType('preset-importer', 'module')}
+            zIndex={103}
+            isActive={true}
+            isMinimized={presetImporterMinimized}
+            initialSize={{ width: 980, height: 620 }}
+            onClose={() => {
+              handleWindowMaximize('preset-importer', false);
+              setPresetImporterOpen(false);
+              setPresetImporterMinimized(false);
+            }}
+            onMinimize={() => {
+              handleWindowMaximize('preset-importer', false);
+              setPresetImporterMinimized(true);
+              setActiveUtilityId(null);
+            }}
+            onMaximize={(isMax) => handleWindowMaximize('preset-importer', isMax)}
+            onFocus={() => { setActiveUtilityId('preset-importer'); }}
+            onMove={() => { }}
+          >
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
+              <PresetImporter
+                onClose={() => setPresetImporterOpen(false)}
+                theme={theme}
+                addToast={addToast as any}
+                state={presetsState}
+              />
+            </Suspense>
+          </MacWindow>
+        )}
+
         {deepWikiOpen && (
           <MacWindow
             id="deepwiki"
@@ -464,28 +639,25 @@ export function DesktopView(props: DesktopViewProps) {
             icon={<IoBookOutline style={{ color: '#2563eb' }} />}
             zIndex={90}
             isActive={!activeWinId}
-            isMinimized={false}
-            initialPos={{ x: 120, y: 80 }}
+            isMinimized={deepWikiMinimized}
             initialSize={{ width: 960, height: 640 }}
             onClose={() => {
               handleWindowMaximize('deepwiki', false);
               setDeepWikiOpen(false);
+              setDeepWikiMinimized(false);
             }}
             onMinimize={() => {
               handleWindowMaximize('deepwiki', false);
-              setDeepWikiOpen(false);
+              setDeepWikiMinimized(true);
+              setActiveUtilityId(null);
             }}
             onMaximize={(isMax) => handleWindowMaximize('deepwiki', isMax)}
             onFocus={() => { setActiveUtilityId('deepwiki'); }}
             onMove={() => { }}
           >
-            <div style={{ width: '100%', height: '100%', background: '#ffffff' }}>
-              <iframe
-                src="https://github.com/JustForSO/Sentra-Agent"
-                title="DeepWiki - Sentra Agent"
-                style={{ border: 'none', width: '100%', height: '100%' }}
-              />
-            </div>
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载 DeepWiki 助手...</div>}>
+              <DeepWikiChat theme={theme} />
+            </Suspense>
           </MacWindow>
         )}
 
@@ -541,16 +713,17 @@ export function DesktopView(props: DesktopViewProps) {
             icon={getIconForType('agent-presets', 'module')}
             zIndex={100}
             isActive={true}
-            isMinimized={false}
-            initialPos={{ x: 100, y: 50 }}
+            isMinimized={presetsEditorMinimized}
             initialSize={{ width: 900, height: 600 }}
             onClose={() => {
               handleWindowMaximize('presets-editor', false);
               setPresetsEditorOpen(false);
+              setPresetsEditorMinimized(false);
             }}
             onMinimize={() => {
               handleWindowMaximize('presets-editor', false);
-              setPresetsEditorOpen(false);
+              setPresetsEditorMinimized(true);
+              setActiveUtilityId(null);
             }}
             onMaximize={(isMax) => handleWindowMaximize('presets-editor', isMax)}
             onFocus={() => { setActiveUtilityId('presets-editor'); }}
@@ -562,6 +735,11 @@ export function DesktopView(props: DesktopViewProps) {
                 theme={theme}
                 addToast={addToast}
                 state={presetsState}
+                onOpenPresetImporter={() => {
+                  setPresetImporterOpen(true);
+                  setPresetImporterMinimized(false);
+                  setActiveUtilityId('preset-importer');
+                }}
               />
             </Suspense>
           </MacWindow>
@@ -571,19 +749,20 @@ export function DesktopView(props: DesktopViewProps) {
           <MacWindow
             id="file-manager"
             title="文件管理"
-            icon={<IoFolderOpen style={{ color: '#dcb67a' }} />}
+            icon={getIconForType('file-manager', 'module')}
             zIndex={101}
             isActive={true}
-            isMinimized={false}
-            initialPos={{ x: 150, y: 80 }}
+            isMinimized={fileManagerMinimized}
             initialSize={{ width: 1000, height: 700 }}
             onClose={() => {
               handleWindowMaximize('file-manager', false);
               setFileManagerOpen(false);
+              setFileManagerMinimized(false);
             }}
             onMinimize={() => {
               handleWindowMaximize('file-manager', false);
-              setFileManagerOpen(false);
+              setFileManagerMinimized(true);
+              setActiveUtilityId(null);
             }}
             onMaximize={(isMax) => handleWindowMaximize('file-manager', isMax)}
             onFocus={() => { setActiveUtilityId('file-manager'); }}
@@ -603,19 +782,20 @@ export function DesktopView(props: DesktopViewProps) {
           <MacWindow
             id="redis-editor"
             title="Redis 连接编辑器"
-            icon={<IoServer style={{ color: '#dd2476' }} />}
+            icon={getIconForType('redis-editor', 'module')}
             zIndex={102}
             isActive={true}
-            isMinimized={false}
-            initialPos={{ x: 120, y: 60 }}
+            isMinimized={!!redisState.minimized}
             initialSize={{ width: 1000, height: 650 }}
             onClose={() => {
               handleWindowMaximize('redis-editor', false);
               redisState.setRedisEditorOpen(false);
+              redisState.setMinimized(false);
             }}
             onMinimize={() => {
               handleWindowMaximize('redis-editor', false);
-              redisState.setRedisEditorOpen(false);
+              redisState.setMinimized(true);
+              setActiveUtilityId(null);
             }}
             onMaximize={(isMax) => handleWindowMaximize('redis-editor', isMax)}
             onFocus={() => { setActiveUtilityId('redis-editor'); }}
@@ -641,200 +821,32 @@ export function DesktopView(props: DesktopViewProps) {
               }}
             >
               {desktopFolders.map(folder => (
-                <div
-                  key={folder.id}
-                  onClick={() => setOpenFolderId(folder.id)}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    cursor: 'pointer',
-                    padding: '8px',
-                    borderRadius: '12px',
-                    transition: 'all 0.2s',
-                    width: 90,
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                    e.currentTarget.style.transform = 'translateY(-2px)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'transparent';
-                    e.currentTarget.style.transform = 'translateY(0)';
-                  }}
-                >
-                  <div style={{ marginBottom: 8 }}>{folder.icon}</div>
-                  <div style={{
-                    fontSize: 12,
-                    color: 'white',
-                    textShadow: '0 1px 3px rgba(0,0,0,0.8)',
-                    fontWeight: 500,
-                    textAlign: 'center',
-                    lineHeight: 1.2,
-                  }}>
-                    {folder.name}
-                  </div>
-                </div>
+                renderTopTile(folder.id, folder.name, folder.icon, () => setOpenFolderId(folder.id))
               ))}
 
               {desktopIcons?.find(i => i.id === 'desktop-filemanager') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-filemanager')!;
-                return (
-                  <div
-                    key={icon.id}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      padding: '8px',
-                      borderRadius: '12px',
-                      transition: 'all 0.2s',
-                      width: 90,
-                    }}
-                    onClick={icon.onClick}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                      e.currentTarget.style.transform = 'translateY(-2px)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                      e.currentTarget.style.transform = 'translateY(0)';
-                    }}
-                  >
-                    <div style={{ marginBottom: 8 }}>{icon.icon}</div>
-                    <div style={{
-                      fontSize: 12,
-                      color: 'white',
-                      textShadow: '0 1px 3px rgba(0,0,0,0.8)',
-                      fontWeight: 500,
-                      textAlign: 'center',
-                      lineHeight: 1.2,
-                    }}>
-                      {icon.name}
-                    </div>
-                  </div>
-                );
+                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
+              })()}
+
+              {desktopIcons?.find(i => i.id === 'desktop-preset-importer') && (() => {
+                const icon = desktopIcons.find(i => i.id === 'desktop-preset-importer')!;
+                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
               })()}
 
               {desktopIcons?.find(i => i.id === 'desktop-redis') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-redis')!;
-                return (
-                  <div
-                    key={icon.id}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      padding: '8px',
-                      borderRadius: '12px',
-                      transition: 'all 0.2s',
-                      width: 90,
-                    }}
-                    onClick={icon.onClick}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                      e.currentTarget.style.transform = 'translateY(-2px)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                      e.currentTarget.style.transform = 'translateY(0)';
-                    }}
-                  >
-                    <div style={{ marginBottom: 8 }}>{icon.icon}</div>
-                    <div style={{
-                      fontSize: 12,
-                      color: 'white',
-                      textShadow: '0 1px 3px rgba(0,0,0,0.8)',
-                      fontWeight: 500,
-                      textAlign: 'center',
-                      lineHeight: 1.2,
-                    }}>
-                      {icon.name}
-                    </div>
-                  </div>
-                );
+                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
               })()}
 
               {desktopIcons?.find(i => i.id === 'desktop-dev-center') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-dev-center')!;
-                return (
-                  <div
-                    key={icon.id}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      padding: '8px',
-                      borderRadius: '12px',
-                      transition: 'all 0.2s',
-                      width: 90,
-                    }}
-                    onClick={icon.onClick}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                      e.currentTarget.style.transform = 'translateY(-2px)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                      e.currentTarget.style.transform = 'translateY(0)';
-                    }}
-                  >
-                    <div style={{ marginBottom: 8 }}>{icon.icon}</div>
-                    <div style={{
-                      fontSize: 12,
-                      color: 'white',
-                      textShadow: '0 1px 3px rgba(0,0,0,0.8)',
-                      fontWeight: 500,
-                      textAlign: 'center',
-                      lineHeight: 1.2,
-                    }}>
-                      {icon.name}
-                    </div>
-                  </div>
-                );
+                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
               })()}
 
               {desktopIcons?.find(i => i.id === 'desktop-presets') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-presets')!;
-                return (
-                  <div
-                    key={icon.id}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      padding: '8px',
-                      borderRadius: '12px',
-                      transition: 'all 0.2s',
-                      width: 90,
-                    }}
-                    onClick={icon.onClick}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
-                      e.currentTarget.style.transform = 'translateY(-2px)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                      e.currentTarget.style.transform = 'translateY(0)';
-                    }}
-                  >
-                    <div style={{ marginBottom: 8 }}>{icon.icon}</div>
-                    <div style={{
-                      fontSize: 12,
-                      color: 'white',
-                      textShadow: '0 1px 3px rgba(0,0,0,0.8)',
-                      fontWeight: 500,
-                      textAlign: 'center',
-                      lineHeight: 1.2,
-                    }}>
-                      {icon.name}
-                    </div>
-                  </div>
-                );
+                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
               })()}
             </div>
 

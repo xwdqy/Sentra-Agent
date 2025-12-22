@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { IoArrowForward, IoPower, IoRefresh, IoMoon } from 'react-icons/io5';
 import { useDevice } from '../hooks/useDevice';
+import { MacAlert } from './MacAlert';
 import styles from './LoginScreen.module.css';
 
 interface LoginScreenProps {
@@ -14,6 +15,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, wallpaper }) 
     const [loading, setLoading] = useState(false);
     const [shake, setShake] = useState(false);
     const [time, setTime] = useState(new Date());
+    const [sleeping, setSleeping] = useState(false);
+    const [showRestartAlert, setShowRestartAlert] = useState(false);
+    const [showShutdownAlert, setShowShutdownAlert] = useState(false);
+    const [restarting, setRestarting] = useState(false);
     const { isMobile } = useDevice();
 
     useEffect(() => {
@@ -47,6 +52,30 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, wallpaper }) 
         setToken('');
     };
 
+    const handleSleep = () => {
+        setSleeping(true);
+        setError(false);
+        setToken('');
+    };
+
+    const handleRestartConfirm = () => {
+        // 登录页仅需要刷新配置中心前端，不调用 /api/system/restart（未登录无法通过鉴权）
+        setRestarting(true);
+        setTimeout(() => {
+            window.location.reload();
+        }, 500);
+    };
+
+    const handleShutdownConfirm = () => {
+        try {
+            window.open('', '_self');
+            window.close();
+        } catch { }
+
+        // 某些浏览器不允许直接关闭窗口时，退回到空白页
+        window.location.href = 'about:blank';
+    };
+
     const formatTime = (date: Date) => {
         return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: false });
     };
@@ -64,6 +93,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, wallpaper }) 
         >
             {/* Optimized Overlay */}
             <div className={styles.overlay} />
+
+            {sleeping && (
+                <div className={styles.sleepOverlay} onClick={() => setSleeping(false)}>
+                    <div className={styles.sleepClock}>
+                        <IoMoon size={28} />
+                        <div className={styles.sleepHint}>已进入睡眠 · 点击任意位置唤醒</div>
+                    </div>
+                </div>
+            )}
 
             {/* Top Section: Clock */}
             <div className={styles.clockSection}>
@@ -129,24 +167,55 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, wallpaper }) 
             {/* Bottom Status Bar */}
             {!isMobile && (
                 <div className={styles.footer}>
-                    <div className={styles.footerAction}>
+                    <div className={styles.footerAction} onClick={handleSleep}>
                         <div className={styles.actionIcon}>
                             <IoMoon size={20} />
                         </div>
                         <span>睡眠</span>
                     </div>
-                    <div className={styles.footerAction}>
+                    <div className={styles.footerAction} onClick={() => setShowRestartAlert(true)}>
                         <div className={styles.actionIcon}>
                             <IoRefresh size={20} />
                         </div>
                         <span>重启</span>
                     </div>
-                    <div className={styles.footerAction}>
+                    <div className={styles.footerAction} onClick={() => setShowShutdownAlert(true)}>
                         <div className={styles.actionIcon}>
                             <IoPower size={20} />
                         </div>
                         <span>关机</span>
                     </div>
+                </div>
+            )}
+
+            {/* Mac-style Alerts for Restart & Shutdown */}
+            <MacAlert
+                isOpen={showRestartAlert}
+                title="重启配置中心"
+                message="确定要重启配置管理页面吗？这将重新连接后端服务。"
+                onClose={() => setShowRestartAlert(false)}
+                onConfirm={handleRestartConfirm}
+                confirmText="重启"
+                cancelText="取消"
+                isDanger={false}
+            />
+
+            <MacAlert
+                isOpen={showShutdownAlert}
+                title="关闭配置中心"
+                message="确定要关闭配置管理页面吗？要再次使用需重新打开本页面。"
+                onClose={() => setShowShutdownAlert(false)}
+                onConfirm={handleShutdownConfirm}
+                confirmText="关机"
+                cancelText="取消"
+                isDanger={true}
+            />
+
+            {restarting && (
+                <div className={styles.restartingOverlay}>
+                    <div className={styles.restartingSpinner} />
+                    <div className={styles.restartingText}>正在重启配置管理界面...</div>
+                    <div className={styles.restartingSubtext}>页面将自动刷新</div>
                 </div>
             )}
         </div>

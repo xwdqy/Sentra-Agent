@@ -16,6 +16,151 @@ function toBool(value) {
   return s === 'true' || s === '1' || s === 'yes' || s === 'y';
 }
 
+function parseIdList(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return new Set();
+  const items = s
+    .split(',')
+    .map((x) => String(x ?? '').trim())
+    .filter(Boolean);
+  const out = new Set();
+  for (const it of items) {
+    const normalized = String(it).replace(/^(G:|U:)/i, '').trim();
+    if (!normalized) continue;
+    const num = Number(normalized);
+    if (Number.isFinite(num) && num > 0) {
+      out.add(String(Math.trunc(num)));
+    } else {
+      const digits = normalized.replace(/\D+/g, '');
+      if (digits) out.add(digits);
+    }
+  }
+  return out;
+}
+
+let cachedProactiveWhitelistGroupsRaw = null;
+let cachedProactiveWhitelistUsersRaw = null;
+let cachedProactiveWhitelistGroups = new Set();
+let cachedProactiveWhitelistUsers = new Set();
+
+function getProactiveWhitelistGroups() {
+  const raw = getEnv('PROACTIVE_WHITELIST_GROUPS', '');
+  if (raw !== cachedProactiveWhitelistGroupsRaw) {
+    cachedProactiveWhitelistGroupsRaw = raw;
+    cachedProactiveWhitelistGroups = parseIdList(raw);
+  }
+  return cachedProactiveWhitelistGroups;
+}
+
+function getProactiveWhitelistUsers() {
+  const raw = getEnv('PROACTIVE_WHITELIST_USERS', '');
+  if (raw !== cachedProactiveWhitelistUsersRaw) {
+    cachedProactiveWhitelistUsersRaw = raw;
+    cachedProactiveWhitelistUsers = parseIdList(raw);
+  }
+  return cachedProactiveWhitelistUsers;
+}
+
+function getProactiveWhitelistLogFiltered() {
+  return toBool(getEnv('PROACTIVE_LOG_FILTERED', 'false'));
+}
+
+export function isProactiveWhitelistConfigured() {
+  const groups = getProactiveWhitelistGroups();
+  const users = getProactiveWhitelistUsers();
+  return groups.size > 0 || users.size > 0;
+}
+
+export function checkProactiveWhitelistTarget(payload = {}) {
+  const {
+    chatType = 'group',
+    groupId = null,
+    userId = null
+  } = payload || {};
+
+  const groups = getProactiveWhitelistGroups();
+  const users = getProactiveWhitelistUsers();
+  const logFiltered = getProactiveWhitelistLogFiltered();
+  const configured = groups.size > 0 || users.size > 0;
+
+  if (!configured) {
+    return {
+      allowed: false,
+      reason: 'proactive_whitelist_empty',
+      logFiltered,
+      chatType,
+      groupId,
+      userId
+    };
+  }
+
+  const ct = chatType === 'private' ? 'private' : 'group';
+
+  if (ct === 'private') {
+    const uid = userId != null ? String(userId).replace(/^(U:)/i, '').trim() : '';
+    const key = uid && Number.isFinite(Number(uid)) ? String(Math.trunc(Number(uid))) : uid;
+    if (!key) {
+      return {
+        allowed: false,
+        reason: 'missing_user_id',
+        logFiltered,
+        chatType: ct,
+        groupId,
+        userId
+      };
+    }
+    if (!users.has(key)) {
+      return {
+        allowed: false,
+        reason: 'user_not_in_proactive_whitelist',
+        logFiltered,
+        chatType: ct,
+        groupId,
+        userId: key
+      };
+    }
+    return {
+      allowed: true,
+      reason: 'ok',
+      logFiltered,
+      chatType: ct,
+      groupId,
+      userId: key
+    };
+  }
+
+  const gid = groupId != null ? String(groupId).replace(/^(G:)/i, '').trim() : '';
+  const gkey = gid && Number.isFinite(Number(gid)) ? String(Math.trunc(Number(gid))) : gid;
+  if (!gkey) {
+    return {
+      allowed: false,
+      reason: 'missing_group_id',
+      logFiltered,
+      chatType: ct,
+      groupId,
+      userId
+    };
+  }
+  if (!groups.has(gkey)) {
+    return {
+      allowed: false,
+      reason: 'group_not_in_proactive_whitelist',
+      logFiltered,
+      chatType: ct,
+      groupId: gkey,
+      userId
+    };
+  }
+  return {
+    allowed: true,
+    reason: 'ok',
+    logFiltered,
+    chatType: ct,
+    groupId: gkey,
+    userId
+  };
+}
+
 function getPlannerConfig() {
   const model = getEnv('PROACTIVE_DIRECTIVE_MODEL', 'gpt-4.1-mini');
   const maxTokens = getEnvInt('PROACTIVE_DIRECTIVE_MAX_TOKENS', 4096);

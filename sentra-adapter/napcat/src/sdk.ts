@@ -282,6 +282,9 @@ export function createSDK(init?: SDKInit): SdkInvoke {
           rpcRetryEnabled: next.streamRpcRetryEnabled,
           rpcRetryIntervalMs: next.streamRpcRetryIntervalMs,
           rpcRetryMaxAttempts: next.streamRpcRetryMaxAttempts,
+          whitelistGroups: next.whitelistGroups,
+          whitelistUsers: next.whitelistUsers,
+          logFiltered: next.logFiltered,
         });
       } catch {}
     }
@@ -953,6 +956,9 @@ export function createSDK(init?: SDKInit): SdkInvoke {
       rpcRetryEnabled: cfg.streamRpcRetryEnabled,
       rpcRetryIntervalMs: cfg.streamRpcRetryIntervalMs,
       rpcRetryMaxAttempts: cfg.streamRpcRetryMaxAttempts,
+      whitelistGroups: cfg.whitelistGroups,
+      whitelistUsers: cfg.whitelistUsers,
+      logFiltered: cfg.logFiltered,
     });
     
     // 设置群名称解析器

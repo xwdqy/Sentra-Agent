@@ -1,5 +1,5 @@
 import type { DesktopIcon, AppFolder } from '../types/ui';
-import { AppIconWrapper } from './icons';
+import { AppIconWrapper, getIconForType } from './icons';
 import {
     IoConstruct,
     IoPlayCircle,
@@ -7,12 +7,8 @@ import {
     IoRefreshCircle,
     IoSettings,
     IoPlay,
-    IoDocumentText,
     IoHappy,
-    IoServer,
-    IoApps
 } from 'react-icons/io5';
-import { IoFolderOpen } from 'react-icons/io5';
 
 // Helper to create folder icon with app thumbnails
 function createFolderIcon(apps: DesktopIcon[], bgColor: string) {
@@ -225,6 +221,7 @@ export function buildDesktopIcons(
     handleOpenFileManager: () => void,
     handleOpenRedis: () => void,
     handleOpenDevCenter: () => void,
+    handleOpenPresetImporter: () => void,
 ): DesktopIcon[] {
     const iconSize = 56;
     const gap = 100;
@@ -235,12 +232,7 @@ export function buildDesktopIcons(
         {
             id: 'desktop-filemanager',
             name: '文件管理',
-            icon: <AppIconWrapper
-                bg="linear-gradient(135deg, #f6d365 0%, #fda085 100%)"
-                shadow="0 8px 16px rgba(253, 160, 133, 0.4), inset 0 1px 2px rgba(255,255,255,0.3)"
-            >
-                <IoFolderOpen color="white" size={iconSize} />
-            </AppIconWrapper>,
+            icon: getIconForType('file-manager', 'module'),
             position: { x: startX, y: startY },
             onClick: () => {
                 recordUsage('app:filemanager');
@@ -248,15 +240,20 @@ export function buildDesktopIcons(
             }
         },
         {
+            id: 'desktop-preset-importer',
+            name: '预设导入',
+            icon: getIconForType('preset-importer', 'module'),
+            position: { x: startX + gap, y: startY },
+            onClick: () => {
+                recordUsage('app:preset-importer');
+                handleOpenPresetImporter();
+            }
+        },
+        {
             id: 'desktop-redis',
             name: 'Redis编辑器',
-            icon: <AppIconWrapper
-                bg="linear-gradient(135deg, #ff512f 0%, #dd2476 100%)"
-                shadow="0 8px 16px rgba(221, 36, 118, 0.4), inset 0 1px 2px rgba(255,255,255,0.3)"
-            >
-                <IoServer color="white" size={iconSize} />
-            </AppIconWrapper>,
-            position: { x: startX + gap, y: startY },
+            icon: getIconForType('redis-editor', 'module'),
+            position: { x: startX + gap * 2, y: startY },
             onClick: () => {
                 recordUsage('app:redis');
                 handleOpenRedis();
@@ -265,13 +262,8 @@ export function buildDesktopIcons(
         {
             id: 'desktop-dev-center',
             name: '开发中心',
-            icon: <AppIconWrapper
-                bg="linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%)"
-                shadow="0 8px 16px rgba(102, 126, 234, 0.4), inset 0 1px 2px rgba(255,255,255,0.3)"
-            >
-                <IoApps color="white" size={iconSize} />
-            </AppIconWrapper>,
-            position: { x: startX + gap * 2, y: startY },
+            icon: getIconForType('dev-center', 'module'),
+            position: { x: startX + gap * 4, y: startY },
             onClick: () => {
                 recordUsage('app:dev-center');
                 handleOpenDevCenter();
@@ -280,13 +272,8 @@ export function buildDesktopIcons(
         {
             id: 'desktop-presets',
             name: '预设撰写',
-            icon: <AppIconWrapper
-                bg="linear-gradient(135deg, #00b09b 0%, #96c93d 100%)"
-                shadow="0 8px 16px rgba(0, 176, 155, 0.4), inset 0 1px 2px rgba(255,255,255,0.3)"
-            >
-                <IoDocumentText color="white" size={iconSize} />
-            </AppIconWrapper>,
-            position: { x: startX + gap, y: startY },
+            icon: getIconForType('presets-editor', 'module'),
+            position: { x: startX + gap * 3, y: startY },
             onClick: () => {
                 recordUsage('app:presets');
                 handleOpenPresets();
@@ -301,7 +288,7 @@ export function buildDesktopIcons(
             >
                 <IoConstruct color="white" size={iconSize} />
             </AppIconWrapper>,
-            position: { x: startX, y: startY },
+            position: { x: startX, y: startY + gap },
             onClick: () => {
                 recordUsage('script:bootstrap');
                 handleRunBootstrap();
@@ -316,7 +303,7 @@ export function buildDesktopIcons(
             >
                 <IoPlayCircle color="white" size={iconSize} />
             </AppIconWrapper>,
-            position: { x: startX + gap, y: startY },
+            position: { x: startX + gap, y: startY + gap },
             onClick: () => {
                 recordUsage('script:start');
                 handleRunStart();
@@ -331,7 +318,7 @@ export function buildDesktopIcons(
             >
                 <IoCloudDownload color="white" size={iconSize} />
             </AppIconWrapper>,
-            position: { x: startX + gap * 2, y: startY },
+            position: { x: startX + gap * 2, y: startY + gap },
             onClick: () => {
                 recordUsage('script:update');
                 handleRunUpdate();
@@ -346,7 +333,7 @@ export function buildDesktopIcons(
             >
                 <IoRefreshCircle color="white" size={iconSize} />
             </AppIconWrapper>,
-            position: { x: startX + gap * 3, y: startY },
+            position: { x: startX + gap * 3, y: startY + gap },
             onClick: () => {
                 recordUsage('script:force-update');
                 handleRunForceUpdate();
@@ -361,7 +348,7 @@ export function buildDesktopIcons(
             >
                 <IoHappy color="white" size={iconSize} />
             </AppIconWrapper>,
-            position: { x: startX + gap * 4, y: startY },
+            position: { x: startX + gap * 4, y: startY + gap },
             onClick: () => {
                 recordUsage('script:sentiment');
                 handleRunSentiment();

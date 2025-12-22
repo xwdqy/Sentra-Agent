@@ -16,6 +16,12 @@ export default defineConfig(({ mode }) => {
           target: `http://localhost:${serverPort}`,
           changeOrigin: true,
         },
+        '/v1': {
+          target: `http://localhost:${serverPort}`,
+          changeOrigin: true,
+          timeout: 0,
+          proxyTimeout: 0,
+        },
       },
     },
     preview: {

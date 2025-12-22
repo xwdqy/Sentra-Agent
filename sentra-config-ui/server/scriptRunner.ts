@@ -15,6 +15,7 @@ interface ScriptProcess {
     startTime: Date;
     endTime: Date | null;
     emitter: EventEmitter;
+    isPm2Mode?: boolean;
 }
 
 function commandExists(cmd: string): boolean {
@@ -117,6 +118,19 @@ export class ScriptRunner {
             });
         }
 
+        const isPm2Mode = scriptName === 'start' && (() => {
+            const modeEq = args.find((a) => a.startsWith('--mode='));
+            if (modeEq) {
+                const value = modeEq.split('=')[1];
+                return value === 'pm2';
+            }
+            const modeIndex = args.indexOf('--mode');
+            if (modeIndex !== -1 && args[modeIndex + 1]) {
+                return args[modeIndex + 1] === 'pm2';
+            }
+            return false;
+        })();
+
         const scriptProcess: ScriptProcess = {
             id,
             name: scriptName,
@@ -126,6 +140,7 @@ export class ScriptRunner {
             startTime: new Date(),
             endTime: null,
             emitter,
+            isPm2Mode,
         };
 
         this.processes.set(id, scriptProcess);
@@ -189,7 +204,7 @@ export class ScriptRunner {
                 }
 
                 // If pm2 is installed, also delete any lingering PM2 process
-                if (commandExists('pm2')) {
+                if (record.isPm2Mode && commandExists('pm2')) {
                     try {
                         execSync('pm2 delete sentra-agent', { stdio: 'ignore' });
                         console.log('[ScriptRunner] Deleted PM2 process: sentra-agent');

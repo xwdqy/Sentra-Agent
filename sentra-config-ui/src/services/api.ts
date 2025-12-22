@@ -57,6 +57,212 @@ export async function fetchConfigs(): Promise<ConfigData> {
   return response.json();
 }
 
+export async function convertPresetTextStream(params: {
+  text: string;
+  fileName?: string;
+  apiBaseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  signal?: AbortSignal;
+  onToken?: (delta: string) => void;
+  onDebugEvent?: (evt: {
+    type: 'open' | 'chunk' | 'frame' | 'token' | 'done' | 'error';
+    at: number;
+    status?: number;
+    contentType?: string;
+    bytesReceived?: number;
+    framesReceived?: number;
+    tokensReceived?: number;
+    event?: string;
+    dataType?: string;
+    message?: string;
+  }) => void;
+}): Promise<{ presetXml: string; presetJson: any }> {
+  const body: any = {
+    text: params.text,
+    fileName: params.fileName,
+    apiBaseUrl: params.apiBaseUrl,
+    apiKey: params.apiKey,
+    model: params.model,
+    temperature: params.temperature,
+    stream: true,
+  };
+  if (typeof params.maxTokens === 'number') body.maxTokens = params.maxTokens;
+
+  const response = await fetch(`${API_BASE}/presets/convert`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(body),
+    signal: params.signal,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    if (params.onDebugEvent) {
+      params.onDebugEvent({
+        type: 'error',
+        at: Date.now(),
+        status: response.status,
+        contentType: response.headers.get('content-type') || undefined,
+        message: text || 'Failed to convert preset (stream)',
+      });
+    }
+    throw new Error(text || 'Failed to convert preset (stream)');
+  }
+
+  if (!response.body) {
+    if (params.onDebugEvent) {
+      params.onDebugEvent({
+        type: 'error',
+        at: Date.now(),
+        status: response.status,
+        contentType: response.headers.get('content-type') || undefined,
+        message: 'Missing response body (stream)',
+      });
+    }
+    throw new Error('Missing response body (stream)');
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (params.onDebugEvent) {
+    params.onDebugEvent({
+      type: 'open',
+      at: Date.now(),
+      status: response.status,
+      contentType,
+      bytesReceived: 0,
+      framesReceived: 0,
+      tokensReceived: 0,
+    });
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let bytesReceived = 0;
+  let framesReceived = 0;
+  let tokensReceived = 0;
+
+  const tryParseSseFrame = (frame: string) => {
+    const lines = frame.split(/\r?\n/);
+    let event: string | undefined;
+    const dataLines: string[] = [];
+    for (const l of lines) {
+      if (l.startsWith('event:')) event = l.slice(6).trim();
+      if (l.startsWith('data:')) dataLines.push(l.slice(5).trim());
+    }
+    if (dataLines.length === 0) return null;
+    const dataStr = dataLines.join('\n');
+    if (!dataStr) return null;
+    let data: any;
+    try {
+      data = JSON.parse(dataStr);
+    } catch {
+      return null;
+    }
+    return { event, data };
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    bytesReceived += value?.byteLength || 0;
+    if (params.onDebugEvent) {
+      params.onDebugEvent({
+        type: 'chunk',
+        at: Date.now(),
+        status: response.status,
+        contentType,
+        bytesReceived,
+        framesReceived,
+        tokensReceived,
+      });
+    }
+    buffer += decoder.decode(value, { stream: true });
+
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+
+      const parsed = tryParseSseFrame(frame);
+      if (!parsed) continue;
+      const { event, data } = parsed;
+
+      framesReceived += 1;
+      if (params.onDebugEvent) {
+        params.onDebugEvent({
+          type: 'frame',
+          at: Date.now(),
+          status: response.status,
+          contentType,
+          bytesReceived,
+          framesReceived,
+          tokensReceived,
+          event,
+          dataType: typeof data?.type === 'string' ? data.type : undefined,
+        });
+      }
+
+      if (data?.type === 'token') {
+        const delta = String(data.delta || '');
+        tokensReceived += 1;
+        if (delta && params.onToken) params.onToken(delta);
+        if (params.onDebugEvent) {
+          params.onDebugEvent({
+            type: 'token',
+            at: Date.now(),
+            status: response.status,
+            contentType,
+            bytesReceived,
+            framesReceived,
+            tokensReceived,
+          });
+        }
+      }
+
+      if (event === 'error' || data?.type === 'error') {
+        if (params.onDebugEvent) {
+          params.onDebugEvent({
+            type: 'error',
+            at: Date.now(),
+            status: response.status,
+            contentType,
+            bytesReceived,
+            framesReceived,
+            tokensReceived,
+            event,
+            dataType: typeof data?.type === 'string' ? data.type : undefined,
+            message: String(data?.message || 'Stream error'),
+          });
+        }
+        throw new Error(String(data?.message || 'Stream error'));
+      }
+
+      if (event === 'done' || data?.type === 'done') {
+        if (params.onDebugEvent) {
+          params.onDebugEvent({
+            type: 'done',
+            at: Date.now(),
+            status: response.status,
+            contentType,
+            bytesReceived,
+            framesReceived,
+            tokensReceived,
+            event,
+            dataType: typeof data?.type === 'string' ? data.type : undefined,
+          });
+        }
+        return { presetXml: data.presetXml || '', presetJson: data.presetJson };
+      }
+    }
+  }
+
+  throw new Error('Stream ended without done');
+}
+
 export async function saveModuleConfig(
   moduleName: string,
   variables: EnvVariable[]
@@ -149,4 +355,37 @@ export async function deletePresetFile(path: string): Promise<void> {
     }
   });
   if (!response.ok) throw new Error('Failed to delete preset file');
+}
+
+export async function convertPresetText(params: {
+  text: string;
+  fileName?: string;
+  apiBaseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+}): Promise<{ presetXml: string; presetJson: any }> {
+  const body: any = {
+    text: params.text,
+    fileName: params.fileName,
+    apiBaseUrl: params.apiBaseUrl,
+    apiKey: params.apiKey,
+    model: params.model,
+    temperature: params.temperature,
+  };
+  if (typeof params.maxTokens === 'number') body.maxTokens = params.maxTokens;
+
+  const response = await fetch(`${API_BASE}/presets/convert`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Failed to convert preset');
+  }
+
+  return response.json();
 }

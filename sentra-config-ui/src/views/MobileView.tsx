@@ -2,6 +2,7 @@ import React from 'react';
 import { IOSHomeScreen } from '../components/IOSHomeScreen';
 import { IOSEditor } from '../components/IOSEditor';
 import { IOSPresetsEditor } from '../components/IOSPresetsEditor';
+import { PresetImporter } from '../components/PresetImporter';
 import { Launchpad } from '../components/Launchpad';
 import { TerminalWindow } from '../components/TerminalWindow';
 import { ToastContainer, ToastMessage, ToastType } from '../components/Toast';
@@ -18,6 +19,7 @@ export type MobileViewProps = {
   recordUsage: (key: string) => void;
   desktopIcons: DesktopIcon[];
   desktopFolders: AppFolder[];
+  theme: 'light' | 'dark';
   launchpadOpen: boolean;
   setLaunchpadOpen: (open: boolean) => void;
   handleIOSOpenWindow: (file: FileItem) => void;
@@ -37,6 +39,8 @@ export type MobileViewProps = {
   handleCloseTerminal: (id: string) => void;
   iosPresetsEditorOpen: boolean;
   setIosPresetsEditorOpen: (open: boolean) => void;
+  iosPresetImporterOpen: boolean;
+  setIosPresetImporterOpen: (open: boolean) => void;
   iosFileManagerOpen: boolean;
   setIosFileManagerOpen: (open: boolean) => void;
   addToast: (type: ToastType, title: string, message?: string) => void;
@@ -52,6 +56,7 @@ export function MobileView(props: MobileViewProps) {
     recordUsage,
     desktopIcons,
     desktopFolders,
+    theme,
     launchpadOpen,
     setLaunchpadOpen,
     handleIOSOpenWindow,
@@ -71,6 +76,8 @@ export function MobileView(props: MobileViewProps) {
     handleCloseTerminal,
     iosPresetsEditorOpen,
     setIosPresetsEditorOpen,
+    iosPresetImporterOpen,
+    setIosPresetImporterOpen,
     iosFileManagerOpen,
     setIosFileManagerOpen,
     addToast,
@@ -107,6 +114,13 @@ export function MobileView(props: MobileViewProps) {
     name: '预设撰写',
     icon: getIconForType('agent-presets', 'module'),
     onClick: () => setIosPresetsEditorOpen(true)
+  });
+
+  iosDockExtra.push({
+    id: 'ios-preset-importer',
+    name: '预设导入',
+    icon: getIconForType('agent-presets', 'module'),
+    onClick: () => setIosPresetImporterOpen(true)
   });
 
   iosDockExtra.push({
@@ -154,16 +168,59 @@ export function MobileView(props: MobileViewProps) {
       <Launchpad
         isOpen={launchpadOpen}
         onClose={() => setLaunchpadOpen(false)}
-        items={allItems.map(item => ({
-          name: item.name,
-          type: item.type,
-          onClick: () => {
-            recordUsage(`${item.type}:${item.name}`);
-            setReturnToLaunchpad(true); // Set flag when opening from Launchpad
-            handleIOSOpenWindow(item);
-            setLaunchpadOpen(false);
-          }
-        }))}
+        items={[
+          {
+            name: 'presets-editor',
+            type: 'module' as const,
+            onClick: () => {
+              recordUsage('app:presets');
+              setReturnToLaunchpad(true);
+              setIosPresetsEditorOpen(true);
+              setLaunchpadOpen(false);
+            }
+          },
+          {
+            name: 'preset-importer',
+            type: 'module' as const,
+            onClick: () => {
+              recordUsage('app:preset-importer');
+              setReturnToLaunchpad(true);
+              setIosPresetImporterOpen(true);
+              setLaunchpadOpen(false);
+            }
+          },
+          {
+            name: 'file-manager',
+            type: 'module' as const,
+            onClick: () => {
+              recordUsage('app:filemanager');
+              setReturnToLaunchpad(true);
+              setIosFileManagerOpen(true);
+              setLaunchpadOpen(false);
+            }
+          },
+          {
+            name: 'redis-editor',
+            type: 'module' as const,
+            onClick: () => {
+              recordUsage('app:redis');
+              setReturnToLaunchpad(true);
+              redisState.setRedisEditorOpen(true);
+              redisState.setMinimized(false);
+              setLaunchpadOpen(false);
+            }
+          },
+          ...allItems.map(item => ({
+            name: item.name,
+            type: item.type,
+            onClick: () => {
+              recordUsage(`${item.type}:${item.name}`);
+              setReturnToLaunchpad(true); // Set flag when opening from Launchpad
+              handleIOSOpenWindow(item);
+              setLaunchpadOpen(false);
+            }
+          }))
+        ]}
       />
 
       {iosEditorWindows
@@ -201,6 +258,17 @@ export function MobileView(props: MobileViewProps) {
         </div>
       )}
 
+      {iosPresetImporterOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
+          <PresetImporter
+            onClose={() => setIosPresetImporterOpen(false)}
+            addToast={addToast as any}
+            state={presetsState}
+            theme={theme}
+          />
+        </div>
+      )}
+
       {iosFileManagerOpen && (
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
           <div className="ios-app-window" style={{ display: 'flex' }}>
@@ -217,7 +285,7 @@ export function MobileView(props: MobileViewProps) {
               <IOSFileManager
                 onClose={() => setIosFileManagerOpen(false)}
                 addToast={addToast}
-                theme="dark"
+                theme={theme}
               />
             </div>
           </div>

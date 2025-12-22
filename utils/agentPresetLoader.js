@@ -38,7 +38,7 @@ export function loadAgentPresetSync() {
     const content = fs.readFileSync(usedPath, 'utf8');
     logger.success(`成功加载 Agent 预设: ${usedFileName}${isDefaultFallback ? ' (fallback)' : ''}`);
 
-    const parsedJson = tryParsePresetJson(content);
+    const parsedJson = tryParsePresetJson(content, usedFileName);
 
     return {
       fileName: usedFileName,
@@ -60,8 +60,13 @@ export function loadAgentPresetSync() {
  * @param {string} text
  * @returns {any|null}
  */
-export function tryParsePresetJson(text) {
+export function tryParsePresetJson(text, fileName = '') {
   if (!text || typeof text !== 'string') return null;
+
+  const ext = String(fileName || '').toLowerCase();
+  if (!ext.endsWith('.json')) {
+    return null;
+  }
   const trimmed = text.trim();
   if (!trimmed) return null;
 

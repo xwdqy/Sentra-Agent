@@ -141,6 +141,9 @@ export class MessageStream {
   private rpcRetryIntervalMs: number;
   private rpcRetryMaxAttempts: number;
   private botName?: string;
+  private whitelistGroups: Set<number>;
+  private whitelistUsers: Set<number>;
+  private logFiltered: boolean;
 
   constructor(options: {
     /** WebSocket服务器端口 */
@@ -155,6 +158,12 @@ export class MessageStream {
     rpcRetryIntervalMs?: number;
     /** 最大重试次数，默认 60 次 */
     rpcRetryMaxAttempts?: number;
+    /** 群白名单（空数组表示不过滤） */
+    whitelistGroups?: number[];
+    /** 私聊用户白名单（空数组表示不过滤） */
+    whitelistUsers?: number[];
+    /** 对被过滤事件是否记录日志 */
+    logFiltered?: boolean;
   }) {
     this.port = options.port;
     this.includeRaw = options.includeRaw ?? false;
@@ -162,6 +171,61 @@ export class MessageStream {
     this.rpcRetryEnabled = options.rpcRetryEnabled ?? true;
     this.rpcRetryIntervalMs = options.rpcRetryIntervalMs ?? 10000;
     this.rpcRetryMaxAttempts = options.rpcRetryMaxAttempts ?? 60;
+    this.whitelistGroups = new Set(options.whitelistGroups ?? []);
+    this.whitelistUsers = new Set(options.whitelistUsers ?? []);
+    this.logFiltered = options.logFiltered ?? false;
+  }
+
+  private isAllowedGroup(groupId: number | undefined): boolean {
+    if (this.whitelistGroups.size === 0) return true;
+    if (!groupId) return false;
+    return this.whitelistGroups.has(groupId);
+  }
+
+  private isAllowedUser(userId: number | undefined): boolean {
+    if (this.whitelistUsers.size === 0) return true;
+    if (!userId) return false;
+    return this.whitelistUsers.has(userId);
+  }
+
+  private assertAllowedSdkCall(path: string, args: any[]): void {
+    // Send APIs (group)
+    if (path === 'send.group' || path === 'send.groupReply' || path === 'send.forwardGroup') {
+      const groupId = Number(args?.[0]);
+      if (!this.isAllowedGroup(Number.isFinite(groupId) ? groupId : undefined)) {
+        throw new Error('group_not_in_whitelist');
+      }
+      return;
+    }
+
+    // Send APIs (private)
+    if (path === 'send.private' || path === 'send.privateReply' || path === 'send.forwardPrivate') {
+      const userId = Number(args?.[0]);
+      if (!this.isAllowedUser(Number.isFinite(userId) ? userId : undefined)) {
+        throw new Error('user_not_in_whitelist');
+      }
+      return;
+    }
+  }
+
+  private assertAllowedInvoke(action: string, params: any): void {
+    const a = String(action || '');
+    // group send actions
+    if (a === 'send_group_msg' || a === 'send_group_forward_msg') {
+      const groupId = Number(params?.group_id);
+      if (!this.isAllowedGroup(Number.isFinite(groupId) ? groupId : undefined)) {
+        throw new Error('group_not_in_whitelist');
+      }
+      return;
+    }
+    // private send actions
+    if (a === 'send_private_msg' || a === 'send_private_forward_msg') {
+      const userId = Number(params?.user_id);
+      if (!this.isAllowedUser(Number.isFinite(userId) ? userId : undefined)) {
+        throw new Error('user_not_in_whitelist');
+      }
+      return;
+    }
   }
 
   private async getBotName(selfId?: number): Promise<string | undefined> {
@@ -382,6 +446,9 @@ export class MessageStream {
     rpcRetryEnabled?: boolean;
     rpcRetryIntervalMs?: number;
     rpcRetryMaxAttempts?: number;
+    whitelistGroups?: number[];
+    whitelistUsers?: number[];
+    logFiltered?: boolean;
   }) {
     if (options.includeRaw !== undefined) {
       this.includeRaw = options.includeRaw;
@@ -397,6 +464,16 @@ export class MessageStream {
     }
     if (options.rpcRetryMaxAttempts !== undefined) {
       this.rpcRetryMaxAttempts = options.rpcRetryMaxAttempts;
+    }
+
+    if (options.whitelistGroups !== undefined) {
+      this.whitelistGroups = new Set(options.whitelistGroups);
+    }
+    if (options.whitelistUsers !== undefined) {
+      this.whitelistUsers = new Set(options.whitelistUsers);
+    }
+    if (options.logFiltered !== undefined) {
+      this.logFiltered = options.logFiltered;
     }
   }
 
@@ -518,6 +595,7 @@ export class MessageStream {
                 const action = msg.action;
                 const params = msg.params;
                 try {
+                  this.assertAllowedInvoke(action, params);
                   const doCall = async () => {
                     if (call === 'data') return await this.invoker!.data(action, params);
                     else if (call === 'ok') return await this.invoker!.ok(action, params);
@@ -538,6 +616,7 @@ export class MessageStream {
                 const path = String(msg.path || '');
                 const args = Array.isArray(msg.args) ? msg.args : [];
                 try {
+                  this.assertAllowedSdkCall(path, args);
                   const doCall = async () => {
                     let target: any = this.invoker as any;
                     for (const key of path.split('.').filter(Boolean)) {
@@ -598,6 +677,23 @@ export class MessageStream {
    */
   async push(ev: MessageEvent, replyContext?: any) {
     try {
+      if ((ev as any).message_type === 'group') {
+        const gid = (ev as any).group_id as number | undefined;
+        if (!this.isAllowedGroup(gid)) {
+          if (this.logFiltered) {
+            log.info({ group_id: gid, message_id: (ev as any).message_id }, 'Filtered: message group not in whitelist (stream.push)');
+          }
+          return;
+        }
+      } else if ((ev as any).message_type === 'private') {
+        const uid = (ev as any).user_id as number | undefined;
+        if (!this.isAllowedUser(uid)) {
+          if (this.logFiltered) {
+            log.info({ user_id: uid, message_id: (ev as any).message_id }, 'Filtered: message user not in whitelist (stream.push)');
+          }
+          return;
+        }
+      }
       const formatted = await this.formatMessage(ev, replyContext);
       
       // 检查是否需要跳过动画表情
@@ -646,6 +742,24 @@ export class MessageStream {
       const sub = (ev as any).sub_type;
       if (nt !== 'notify' || sub !== 'poke') {
         return;
+      }
+
+      const groupId = (ev as any).group_id as number | undefined;
+      const userId = (ev as any).user_id as number | undefined;
+      if (groupId) {
+        if (!this.isAllowedGroup(groupId)) {
+          if (this.logFiltered) {
+            log.info({ group_id: groupId, user_id: userId }, 'Filtered: poke group not in whitelist');
+          }
+          return;
+        }
+      } else {
+        if (!this.isAllowedUser(userId)) {
+          if (this.logFiltered) {
+            log.info({ user_id: userId }, 'Filtered: poke user not in whitelist');
+          }
+          return;
+        }
       }
 
       const poke = await this.formatPoke(ev);
