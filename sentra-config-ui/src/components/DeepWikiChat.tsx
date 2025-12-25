@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './DeepWikiChat.module.css';
 import { getAuthHeaders } from '../services/api';
-import { fetchFileContent, fetchFileTree, type FileNode } from '../services/fileApi';
+import { createFile, fetchFileContent, fetchFileTree, grepFiles, searchSymbols, type FileNode, type GrepMatch, type SymbolMatch } from '../services/fileApi';
 import { IoAttachOutline, IoChevronDown, IoChevronForward, IoClose, IoDocumentText, IoFolder, IoFolderOpen, IoSearch } from 'react-icons/io5';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -308,6 +308,23 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
   const [refTreeRoot, setRefTreeRoot] = useState<FileNode[]>([]);
   const [refSelected, setRefSelected] = useState<Record<string, boolean>>({});
   const [refExpanded, setRefExpanded] = useState<Record<string, boolean>>({});
+
+  const [toolsModalOpen, setToolsModalOpen] = useState(false);
+  const [toolsTab, setToolsTab] = useState<'create' | 'files' | 'grep' | 'symbols'>('files');
+  const [toolsBusy, setToolsBusy] = useState(false);
+
+  const [createType, setCreateType] = useState<'file' | 'directory'>('file');
+  const [createPath, setCreatePath] = useState('');
+
+  const [fileKeyword, setFileKeyword] = useState('');
+
+  const [grepKeyword, setGrepKeyword] = useState('');
+  const [grepPathScope, setGrepPathScope] = useState('');
+  const [grepResults, setGrepResults] = useState<GrepMatch[]>([]);
+
+  const [symbolKeyword, setSymbolKeyword] = useState('');
+  const [symbolPathScope, setSymbolPathScope] = useState('');
+  const [symbolResults, setSymbolResults] = useState<SymbolMatch[]>([]);
 
   const [convModalOpen, setConvModalOpen] = useState(false);
   const [convLoading, setConvLoading] = useState(false);
@@ -684,6 +701,31 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
     return roots;
   };
 
+  const pushError = useCallback((text: string) => {
+    const msg: ChatMessage = {
+      id: `err_${Date.now()}`,
+      role: 'error',
+      content: text,
+      createdAt: nowLabel(),
+    };
+    setMessages(prev => [...prev, msg]);
+  }, []);
+
+  const ensureFileTreeLoaded = useCallback(async () => {
+    if (refFlatNodes.length > 0) return;
+    setRefLoading(true);
+    try {
+      const tree = await fetchFileTree();
+      setRefFlatNodes(tree);
+      setRefTreeRoot(buildTree(tree));
+      setRefExpanded((prev: Record<string, boolean>) => ({ ...prev }));
+    } catch {
+      pushError('读取项目文件列表失败，请先确认已登录且后端服务正常。');
+    } finally {
+      setRefLoading(false);
+    }
+  }, [buildTree, pushError, refFlatNodes.length]);
+
   const openRefModal = async () => {
     const init: Record<string, boolean> = {};
     for (const r of projectRefs) init[r.path] = true;
@@ -691,19 +733,75 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
     setRefSearch('');
     setRefModalOpen(true);
 
-    if (refFlatNodes.length > 0) return;
-    setRefLoading(true);
-    try {
-      const tree = await fetchFileTree();
-      setRefFlatNodes(tree);
-      setRefTreeRoot(buildTree(tree));
-      setRefExpanded(prev => ({ ...prev }));
-    } catch (e) {
-      handleErrorMessage('读取项目文件列表失败，请先确认已登录且后端服务正常。');
-    } finally {
-      setRefLoading(false);
-    }
+    await ensureFileTreeLoaded();
   };
+
+  const addProjectRefByPath = useCallback((path: string) => {
+    const p = String(path || '').trim();
+    if (!p) return;
+    const map = new Map(refFlatNodes.map(n => [n.path, n] as const));
+    const node = map.get(p);
+    const ref = node ? { path: node.path, name: node.name } : { path: p, name: p.split('/').pop() || p };
+    setProjectRefs(prev => {
+      if (prev.some(r => r.path === ref.path)) return prev;
+      return [...prev, ref];
+    });
+  }, [refFlatNodes]);
+
+  const openToolsModal = useCallback(async () => {
+    setToolsModalOpen(true);
+    await ensureFileTreeLoaded();
+  }, [ensureFileTreeLoaded]);
+
+  const handleCreateItem = useCallback(async () => {
+    const p = createPath.trim();
+    if (!p) return;
+    setToolsBusy(true);
+    try {
+      await createFile(p, createType);
+      setCreatePath('');
+      setRefFlatNodes([]);
+      setRefTreeRoot([]);
+      await ensureFileTreeLoaded();
+    } catch (e: any) {
+      pushError(e?.message ? `创建失败：${e.message}` : '创建失败');
+    } finally {
+      setToolsBusy(false);
+    }
+  }, [createPath, createType, ensureFileTreeLoaded, pushError]);
+
+  const handleRunGrep = useCallback(async () => {
+    const q = grepKeyword.trim();
+    if (!q) return;
+    setToolsBusy(true);
+    try {
+      const results = await grepFiles(q, {
+        path: grepPathScope.trim() || undefined,
+        maxResults: 200,
+        caseSensitive: false,
+      });
+      setGrepResults(results);
+    } catch (e: any) {
+      pushError(e?.message ? `检索失败：${e.message}` : '检索失败');
+    } finally {
+      setToolsBusy(false);
+    }
+  }, [grepKeyword, grepPathScope, pushError]);
+
+  const handleRunSymbolSearch = useCallback(async () => {
+    setToolsBusy(true);
+    try {
+      const results = await searchSymbols(symbolKeyword.trim() || undefined, {
+        path: symbolPathScope.trim() || undefined,
+        maxResults: 300,
+      });
+      setSymbolResults(results);
+    } catch (e: any) {
+      pushError(e?.message ? `检索失败：${e.message}` : '检索失败');
+    } finally {
+      setToolsBusy(false);
+    }
+  }, [pushError, symbolKeyword, symbolPathScope]);
 
   const refFiles = useMemo(() => refFlatNodes.filter(n => n.type === 'file'), [refFlatNodes]);
 
@@ -2297,6 +2395,14 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
                 </button>
                 <button
                   type="button"
+                  onClick={() => void openToolsModal()}
+                  className={`${styles.iconButton} ${styles.refButton}`}
+                  title="项目工具"
+                >
+                  <IoSearch size={16} />
+                </button>
+                <button
+                  type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className={`${styles.iconButton} ${styles.attachButton}`}
                   title="附加本地文件"
@@ -2404,6 +2510,173 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
                   确认引用
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toolsModalOpen && (
+        <div className={styles.refModalOverlay} onClick={() => setToolsModalOpen(false)}>
+          <div className={styles.refModal} onClick={e => e.stopPropagation()}>
+            <div className={styles.refModalHeader}>
+              <div className={styles.refModalTitle}>项目工具</div>
+              <button
+                type="button"
+                className={styles.refModalClose}
+                onClick={() => setToolsModalOpen(false)}
+                title="关闭"
+              >
+                <IoClose size={18} />
+              </button>
+            </div>
+
+            <div className={styles.toolsTabs}>
+              <button type="button" className={`${styles.toolsTab} ${toolsTab === 'create' ? styles.toolsTabActive : ''}`} onClick={() => setToolsTab('create')}>创建</button>
+              <button type="button" className={`${styles.toolsTab} ${toolsTab === 'files' ? styles.toolsTabActive : ''}`} onClick={() => setToolsTab('files')}>文件</button>
+              <button type="button" className={`${styles.toolsTab} ${toolsTab === 'grep' ? styles.toolsTabActive : ''}`} onClick={() => setToolsTab('grep')}>代码</button>
+              <button type="button" className={`${styles.toolsTab} ${toolsTab === 'symbols' ? styles.toolsTabActive : ''}`} onClick={() => setToolsTab('symbols')}>函数</button>
+            </div>
+
+            <div className={styles.toolsBody}>
+              {toolsTab === 'create' && (
+                <div className={styles.toolsSection}>
+                  <div className={styles.toolsFormRow}>
+                    <select className={styles.toolsSelect} value={createType} onChange={(e) => setCreateType(e.target.value as any)}>
+                      <option value="file">文件</option>
+                      <option value="directory">文件夹</option>
+                    </select>
+                    <input
+                      className={styles.toolsInput}
+                      value={createPath}
+                      onChange={(e) => setCreatePath(e.target.value)}
+                      placeholder="路径（相对 SENTRA_ROOT），例如 docs/new.md"
+                      spellCheck={false}
+                    />
+                    <button type="button" className={`${styles.refBtn} ${styles.refBtnPrimary}`} disabled={toolsBusy || !createPath.trim()} onClick={() => void handleCreateItem()}>
+                      {toolsBusy ? '处理中...' : '创建'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {toolsTab === 'files' && (
+                <div className={styles.toolsSection}>
+                  <div className={styles.toolsFormRow}>
+                    <input
+                      className={styles.toolsInput}
+                      value={fileKeyword}
+                      onChange={(e) => setFileKeyword(e.target.value)}
+                      placeholder="关键词（文件名/路径）"
+                      spellCheck={false}
+                    />
+                    <button type="button" className={styles.refBtn} onClick={() => { setFileKeyword(''); }}>
+                      清空
+                    </button>
+                  </div>
+
+                  <div className={styles.toolsList}>
+                    {refLoading ? (
+                      <div className={styles.refEmpty}>加载中...</div>
+                    ) : (
+                      (() => {
+                        const q = fileKeyword.trim().toLowerCase();
+                        const filesOnly = refFlatNodes.filter(n => n.type === 'file');
+                        const list = q
+                          ? filesOnly.filter(n => n.path.toLowerCase().includes(q) || n.name.toLowerCase().includes(q))
+                          : filesOnly;
+                        const limited = list.slice(0, 200);
+                        if (limited.length === 0) return <div className={styles.refEmpty}>未找到匹配文件</div>;
+                        return limited.map(n => (
+                          <div key={n.path} className={styles.toolsListItem}>
+                            <div className={styles.toolsListMain} title={n.path}>{n.path}</div>
+                            <button type="button" className={`${styles.refBtn} ${styles.refBtnPrimary}`} onClick={() => addProjectRefByPath(n.path)}>
+                              引用
+                            </button>
+                          </div>
+                        ));
+                      })()
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {toolsTab === 'grep' && (
+                <div className={styles.toolsSection}>
+                  <div className={styles.toolsFormRow}>
+                    <input
+                      className={styles.toolsInput}
+                      value={grepKeyword}
+                      onChange={(e) => setGrepKeyword(e.target.value)}
+                      placeholder="关键词（检索代码内容）"
+                      spellCheck={false}
+                    />
+                    <input
+                      className={styles.toolsInput}
+                      value={grepPathScope}
+                      onChange={(e) => setGrepPathScope(e.target.value)}
+                      placeholder="限定路径（可选）"
+                      spellCheck={false}
+                    />
+                    <button type="button" className={`${styles.refBtn} ${styles.refBtnPrimary}`} disabled={toolsBusy || !grepKeyword.trim()} onClick={() => void handleRunGrep()}>
+                      {toolsBusy ? '检索中...' : '检索'}
+                    </button>
+                  </div>
+
+                  <div className={styles.toolsList}>
+                    {grepResults.length === 0 ? (
+                      <div className={styles.refEmpty}>暂无结果</div>
+                    ) : (
+                      grepResults.map((m, idx) => (
+                        <div key={`${m.path}:${m.line}:${idx}`} className={styles.toolsListItem}>
+                          <div className={styles.toolsListMain} title={`${m.path}:${m.line}`}>{m.path}:{m.line}  {m.text}</div>
+                          <button type="button" className={styles.refBtn} onClick={() => addProjectRefByPath(m.path)}>
+                            引用文件
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {toolsTab === 'symbols' && (
+                <div className={styles.toolsSection}>
+                  <div className={styles.toolsFormRow}>
+                    <input
+                      className={styles.toolsInput}
+                      value={symbolKeyword}
+                      onChange={(e) => setSymbolKeyword(e.target.value)}
+                      placeholder="关键词（函数/类名，可选）"
+                      spellCheck={false}
+                    />
+                    <input
+                      className={styles.toolsInput}
+                      value={symbolPathScope}
+                      onChange={(e) => setSymbolPathScope(e.target.value)}
+                      placeholder="限定路径（可选）"
+                      spellCheck={false}
+                    />
+                    <button type="button" className={`${styles.refBtn} ${styles.refBtnPrimary}`} disabled={toolsBusy} onClick={() => void handleRunSymbolSearch()}>
+                      {toolsBusy ? '检索中...' : '检索'}
+                    </button>
+                  </div>
+
+                  <div className={styles.toolsList}>
+                    {symbolResults.length === 0 ? (
+                      <div className={styles.refEmpty}>暂无结果</div>
+                    ) : (
+                      symbolResults.map((m, idx) => (
+                        <div key={`${m.path}:${m.line}:${m.symbol}:${idx}`} className={styles.toolsListItem}>
+                          <div className={styles.toolsListMain} title={`${m.path}:${m.line}`}>[{m.kind}] {m.symbol}  —  {m.path}:{m.line}</div>
+                          <button type="button" className={styles.refBtn} onClick={() => addProjectRefByPath(m.path)}>
+                            引用文件
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -84,14 +84,14 @@ export function useDesktopWindows({ setSaving, addToast, loadConfigs, onLogout }
     return next;
   };
 
-  const openWindow = (file: FileItem) => {
+  const openWindow = (file: FileItem, opts?: { maximize?: boolean }) => {
     // Refresh configs to ensure we have the latest data
     loadConfigs(true); // silent mode
 
     const existing = openWindows.find(w => w.file.name === file.name && w.file.type === file.type);
     if (existing) {
-      if (existing.minimized) {
-        setOpenWindows(ws => ws.map(w => w.id === existing.id ? { ...w, minimized: false } : w));
+      if (existing.minimized || opts?.maximize) {
+        setOpenWindows(ws => ws.map(w => w.id === existing.id ? { ...w, minimized: false, maximized: opts?.maximize ? true : w.maximized } : w));
       }
       bringToFront(existing.id);
       return;
@@ -110,7 +110,8 @@ export function useDesktopWindows({ setSaving, addToast, loadConfigs, onLogout }
       z: (zNextRef.current = zNextRef.current + 1),
       minimized: false,
       editedVars: file.variables ? [...file.variables] : [],
-      pos: { x, y }
+      pos: { x, y },
+      maximized: !!opts?.maximize,
     };
     setOpenWindows(ws => [...ws, win]);
     setActiveWinId(id);

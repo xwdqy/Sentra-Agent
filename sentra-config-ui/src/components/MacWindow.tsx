@@ -9,10 +9,12 @@ interface MacWindowProps {
   icon?: React.ReactNode;
   initialPos?: { x: number; y: number };
   initialSize?: { width: number; height: number };
+  initialMaximized?: boolean;
   safeArea?: { top?: number; bottom?: number; left?: number; right?: number };
   zIndex: number;
   isActive: boolean;
   isMinimized: boolean;
+  performanceMode?: boolean;
   onClose: () => void;
   onMinimize: () => void;
   onMaximize: (isMaximized: boolean) => void;
@@ -26,10 +28,12 @@ export const MacWindow: React.FC<MacWindowProps> = ({
   icon,
   initialPos,
   initialSize = { width: 800, height: 500 },
+  initialMaximized = false,
   safeArea,
   zIndex,
   isActive,
   isMinimized,
+  performanceMode = false,
   onClose,
   onMinimize,
   onMaximize,
@@ -37,12 +41,14 @@ export const MacWindow: React.FC<MacWindowProps> = ({
   onMove,
   children
 }) => {
-  const [isMaximized, setIsMaximized] = useState(false);
+  const [isMaximized, setIsMaximized] = useState(!!initialMaximized);
+  const [isDragging, setIsDragging] = useState(false);
   const [size, setSize] = useState(initialSize);
   const nodeRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const dragRafRef = useRef<number | null>(null);
-  const onFocusRef = useRef(onFocus);
+  const resizeRafRef = useRef<number | null>(null);
+  const lastResizeRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
 
   const safeTop = safeArea?.top ?? 30;
   const safeBottom = safeArea?.bottom ?? 120;
@@ -61,27 +67,6 @@ export const MacWindow: React.FC<MacWindowProps> = ({
   });
 
   useEffect(() => {
-    onFocusRef.current = onFocus;
-  }, [onFocus]);
-
-  useEffect(() => {
-    const handler = (evt: PointerEvent) => {
-      const node = nodeRef.current;
-      if (!node) return;
-      const target = evt.target as Node | null;
-      if (!target) return;
-      if (node.contains(target)) {
-        onFocusRef.current();
-      }
-    };
-
-    window.addEventListener('pointerdown', handler, true);
-    return () => {
-      window.removeEventListener('pointerdown', handler, true);
-    };
-  }, []);
-
-  useEffect(() => {
     // If no initial position was provided, sync the calculated default position to parent
     if (!initialPos) {
       const next = clampPosition(defaultPos.x, defaultPos.y);
@@ -90,6 +75,12 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     const base = initialPos || defaultPos;
     setPos(clampPosition(base.x, base.y));
   }, []);
+
+  useEffect(() => {
+    if (initialMaximized) {
+      onMaximize(true);
+    }
+  }, [initialMaximized, onMaximize]);
 
   useEffect(() => {
     if (!pos) return;
@@ -143,6 +134,8 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     onFocus();
     e.preventDefault();
 
+    setIsDragging(true);
+
     const startPos = pos || defaultPos;
     const startX = e.clientX;
     const startY = e.clientY;
@@ -167,6 +160,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
         window.cancelAnimationFrame(dragRafRef.current);
         dragRafRef.current = null;
       }
+      setIsDragging(false);
       setPos(last);
       onMove(last.x, last.y);
     };
@@ -260,8 +254,18 @@ export const MacWindow: React.FC<MacWindowProps> = ({
       newH = maxAllowedH;
     }
 
-    setPos({ x: newX, y: newY });
-    setSize({ width: newW, height: newH });
+    lastResizeRef.current = { x: newX, y: newY, width: newW, height: newH };
+
+    if (resizeRafRef.current != null) return;
+    resizeRafRef.current = window.requestAnimationFrame(() => {
+      resizeRafRef.current = null;
+      const last = lastResizeRef.current;
+      const node = nodeRef.current;
+      if (!last || !node) return;
+      node.style.width = `${last.width}px`;
+      node.style.height = `${last.height}px`;
+      node.style.transform = `translate3d(${last.x}px, ${last.y}px, 0)`;
+    });
   };
 
   const clampPosition = (x: number, y: number) => {
@@ -285,7 +289,20 @@ export const MacWindow: React.FC<MacWindowProps> = ({
       window.removeEventListener('mouseup', onResizeEnd);
       window.removeEventListener('touchmove', onResizeMove as any);
       window.removeEventListener('touchend', onResizeEnd);
-      if (pos) onMove(pos.x, pos.y);
+
+      if (resizeRafRef.current != null) {
+        window.cancelAnimationFrame(resizeRafRef.current);
+        resizeRafRef.current = null;
+      }
+
+      const last = lastResizeRef.current;
+      if (last) {
+        setPos({ x: last.x, y: last.y });
+        setSize({ width: last.width, height: last.height });
+        onMove(last.x, last.y);
+      } else if (pos) {
+        onMove(pos.x, pos.y);
+      }
     }
   };
 
@@ -313,7 +330,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
   const windowContent = (
     <motion.div
       ref={nodeRef}
-      className={`${styles.window} ${isActive ? styles.active : ''} ${isMaximized ? styles.maximized : ''}`}
+      className={`${styles.window} ${isActive ? styles.active : ''} ${isMaximized ? styles.maximized : ''} ${performanceMode ? styles.performance : ''} ${isDragging ? styles.dragging : ''}`}
       style={{
         width: isMaximized ? `calc(100vw - ${safeLeft + safeRight}px)` : size.width,
         height: isMaximized ? `calc(100vh - ${safeTop + safeBottom}px)` : size.height,
@@ -330,7 +347,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
       animate="visible"
       exit="exit"
       variants={variants}
-      transition={{ duration: 0.12 }}
+      transition={{ duration: performanceMode ? 0 : 0.12 }}
     >
       <div
         className={`${styles.titleBar} window-drag-handle`}

@@ -10,10 +10,11 @@ interface PresetsEditorProps {
     theme: 'light' | 'dark';
     addToast: (type: 'success' | 'error', title: string, message?: string) => void;
     state: PresetsEditorState;
+    performanceMode?: boolean;
     onOpenPresetImporter?: () => void;
 }
 
-export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, onOpenPresetImporter }) => {
+export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, performanceMode = false, onOpenPresetImporter }) => {
     const {
         folders,
         selectedFile,
@@ -192,11 +193,11 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, onOp
                                         onChange={(value) => setFileContent(value || '')}
                                         theme={theme === 'dark' ? 'vs-dark' : 'light'}
                                         options={{
-                                            minimap: { enabled: true },
+                                            minimap: { enabled: !performanceMode },
                                             fontSize: 13,
                                             fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
                                             scrollBeyondLastLine: false,
-                                            automaticLayout: true,
+                                            automaticLayout: !performanceMode,
                                         }}
                                     />
                                 </div>

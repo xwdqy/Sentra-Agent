@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getAuthHeaders } from '../services/api';
 
 export interface RedisConnectionInfo {
@@ -9,10 +9,57 @@ export interface RedisConnectionInfo {
 }
 
 export function useRedisEditor(addToast: (type: any, title: string, message?: string) => void) {
-    const [redisEditorOpen, setRedisEditorOpen] = useState(false);
+    const [redisEditorOpen, setRedisEditorOpen] = useState(() => {
+        try {
+            return localStorage.getItem('sentra_redis_editor_open') === 'true';
+        } catch {
+            return false;
+        }
+    });
     const [connections, setConnections] = useState<RedisConnectionInfo[]>([]);
-    const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
-    const [minimized, setMinimized] = useState(false);
+    const [activeConnectionId, setActiveConnectionId] = useState<string | null>(() => {
+        try {
+            const v = localStorage.getItem('sentra_redis_active_connection_id');
+            return v && v.trim() ? v : null;
+        } catch {
+            return null;
+        }
+    });
+    const [minimized, setMinimized] = useState(() => {
+        try {
+            return localStorage.getItem('sentra_redis_editor_minimized') === 'true';
+        } catch {
+            return false;
+        }
+    });
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('sentra_redis_editor_open', String(redisEditorOpen));
+        } catch {
+            // ignore
+        }
+    }, [redisEditorOpen]);
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('sentra_redis_editor_minimized', String(minimized));
+        } catch {
+            // ignore
+        }
+    }, [minimized]);
+
+    useEffect(() => {
+        try {
+            if (activeConnectionId) {
+                localStorage.setItem('sentra_redis_active_connection_id', activeConnectionId);
+            } else {
+                localStorage.removeItem('sentra_redis_active_connection_id');
+            }
+        } catch {
+            // ignore
+        }
+    }, [activeConnectionId]);
 
     const fetchConnections = async () => {
         try {

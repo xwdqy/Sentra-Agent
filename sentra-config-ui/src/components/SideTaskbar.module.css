@@ -7,6 +7,57 @@
   pointer-events: none;
 }
 
+.collapseHandleEdge {
+  position: absolute;
+  right: -14px;
+  top: 8px;
+  width: 34px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+  color: var(--side-handle-fg, rgba(15, 23, 42, 0.85));
+  background: transparent;
+}
+
+.collapseHandleEdge::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 14px;
+  height: 44px;
+  border-radius: 10px 0 0 10px;
+  background: var(--side-handle-bg, rgba(255, 255, 255, 0.78));
+  border: 1px solid var(--side-handle-border, rgba(0, 0, 0, 0.10));
+  border-right: none;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
+}
+
+.collapseHandleEdge::after {
+  content: '';
+  position: absolute;
+  right: 4px;
+  top: 11px;
+  bottom: 11px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--side-handle-accent, rgba(15, 23, 42, 0.18));
+}
+
+.collapseHandleEdge :global(svg) {
+  opacity: 0;
+  transform: translateX(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.collapseHandleEdge:hover :global(svg) {
+  opacity: 1;
+  transform: translateX(0);
+}
+
 .floatingToggle {
   position: fixed;
   left: 0;
@@ -16,6 +67,16 @@
   width: 34px;
   height: 44px;
   background: transparent;
+}
+
+.floatingTogglePerformance .collapseHandle::before {
+  box-shadow: none;
+}
+
+.floatingTogglePerformance .collapseHandle :global(svg) {
+  transition: none;
+  opacity: 1;
+  transform: none;
 }
 
 .collapseHandle {
@@ -84,12 +145,19 @@
   transition: width 0.16s ease;
 }
 
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 4px;
+.performance .inner {
+  box-shadow: none;
+  transition: none;
+}
+
+.performance .collapseHandleEdge::before {
+  box-shadow: none;
+}
+
+.performance .collapseHandleEdge :global(svg) {
+  transition: none;
+  opacity: 1;
+  transform: none;
 }
 
 .toggle {
@@ -137,6 +205,10 @@
   transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 
+.performance .tab {
+  transition: none;
+}
+
 .tab:hover {
   background: rgba(255, 255, 255, 0.5);
 }
@@ -144,6 +216,10 @@
 .tabActive {
   background: rgba(255, 255, 255, 0.85);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+}
+
+.performance .tabActive {
+  box-shadow: none;
 }
 
 .icon {

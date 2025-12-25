@@ -7,12 +7,12 @@ import styles from './DevCenter.module.css';
 export interface DevCenterProps {
   allItems: FileItem[];
   onOpenItem: (file: FileItem) => void;
-  addToast: (type: 'success' | 'error' | 'info', title: string, message?: string) => void;
+  onOpenDeepWiki?: () => void;
 }
 
 type TabKey = 'apps' | 'workers';
 
-export const DevCenterV2: React.FC<DevCenterProps> = ({ allItems, onOpenItem, addToast }) => {
+export const DevCenterV2: React.FC<DevCenterProps> = ({ allItems, onOpenItem, onOpenDeepWiki }) => {
   const [activeTab, setActiveTab] = useState<TabKey>('apps');
 
   const apps = useMemo(() => allItems.filter(i => i.type === 'module'), [allItems]);
@@ -24,14 +24,6 @@ export const DevCenterV2: React.FC<DevCenterProps> = ({ allItems, onOpenItem, ad
   };
 
   const currentList = sections[activeTab];
-
-  const handleCreateApp = () => {
-    addToast(
-      'info',
-      '即将支持',
-      '应用插件的可视化创建功能即将开放，请暂时通过 Git 仓库管理模块和插件。',
-    );
-  };
 
   const renderTabLabel = (key: TabKey) => {
     if (key === 'apps') return '应用模块';
@@ -55,11 +47,7 @@ export const DevCenterV2: React.FC<DevCenterProps> = ({ allItems, onOpenItem, ad
             统一管理 Sentra Agent 的应用模块与插件，一键跳转到对应的环境配置界面。
           </div>
         </div>
-        <div className={styles.topActions}>
-          <button className={styles.primaryBtn} onClick={handleCreateApp}>
-            新建应用（即将支持）
-          </button>
-        </div>
+        <div className={styles.topActions} />
       </div>
 
       <div className={styles.body}>
@@ -87,7 +75,10 @@ export const DevCenterV2: React.FC<DevCenterProps> = ({ allItems, onOpenItem, ad
             <div style={{ opacity: 0.8 }}>开发文档与指南</div>
             <div
               style={{ cursor: 'pointer', marginTop: 4, color: '#2563eb' }}
-              onClick={() => window.open('https://github.com/JustForSO/Sentra-Agent', '_blank')}
+              onClick={() => {
+                if (onOpenDeepWiki) return onOpenDeepWiki();
+                window.open('https://github.com/JustForSO/Sentra-Agent', '_blank');
+              }}
             >
               打开 DeepWiki · Sentra Agent
             </div>

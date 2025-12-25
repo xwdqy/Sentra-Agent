@@ -58,7 +58,7 @@ function parseEnvMeta(comment?: string): EnvFieldMeta | null {
 
     if (lower.startsWith('range:')) {
       const val = line.slice(line.indexOf(':') + 1).trim();
-      const m = val.match(/(-?\d+)\s*-\s*(-?\d+)/);
+      const m = val.match(/(-?\d+(?:\.\d+)?)\s*-\s*(-?\d+(?:\.\d+)?)/);
       if (m) {
         const min = Number(m[1]);
         const max = Number(m[2]);
@@ -88,6 +88,15 @@ function firstNonMetaLine(comment?: string): string {
     return line;
   }
   return '';
+}
+
+function inferNumberStep(range?: { min?: number; max?: number }): number {
+  if (!range) return 0.01;
+  const max = range.max;
+  if (typeof max !== 'number' || Number.isNaN(max)) return 0.01;
+  if (max > 5) return 1;
+  if (max >= 2) return 0.1;
+  return 0.01;
 }
 
 interface EnvEditorProps {
@@ -295,6 +304,7 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
                     : styles.inlineEditorBody;
 
                 const isEnumOpen = openEnumIndex === v.originalIndex;
+                const numberStep = type === 'number' ? inferNumberStep(meta?.range) : undefined;
 
                 return (
                   <div key={v.originalIndex} className={styles.settingsRow}>
@@ -406,6 +416,7 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
                           spellCheck={false}
                           min={type === 'number' && meta?.range?.min !== undefined ? meta.range.min : undefined}
                           max={type === 'number' && meta?.range?.max !== undefined ? meta.range.max : undefined}
+                          step={numberStep}
                         />
                       )}
                     </div>

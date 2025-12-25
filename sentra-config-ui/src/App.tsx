@@ -40,6 +40,16 @@ function App() {
   const [configData, setConfigData] = useState<ConfigData | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const readBool = (key: string, fallback = false) => {
+    try {
+      const v = localStorage.getItem(key);
+      if (v == null) return fallback;
+      return v === 'true';
+    } catch {
+      return fallback;
+    }
+  };
+
   // Toasts first (used by hooks below)
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const addToast = useCallback((type: ToastMessage['type'], title: string, message?: string) => {
@@ -173,19 +183,47 @@ function App() {
   // Presets Editor State via hook
   const presetsState = usePresetsEditor(addToast, isAuthenticated);
   // 开发中心默认不打开，由 Dock / 启动台显式唤起
-  const [devCenterOpen, setDevCenterOpen] = useState(false);
-  const [devCenterMinimized, setDevCenterMinimized] = useState(false);
-  const [deepWikiOpen, setDeepWikiOpen] = useState(false);
-  const [deepWikiMinimized, setDeepWikiMinimized] = useState(false);
-  const [presetsEditorOpen, setPresetsEditorOpen] = useState(false);
-  const [presetsEditorMinimized, setPresetsEditorMinimized] = useState(false);
+  const [devCenterOpen, setDevCenterOpen] = useState(() => readBool('sentra_dev_center_open', false));
+  const [devCenterMinimized, setDevCenterMinimized] = useState(() => readBool('sentra_dev_center_minimized', false));
+  const [deepWikiOpen, setDeepWikiOpen] = useState(() => readBool('sentra_deepwiki_open', false));
+  const [deepWikiMinimized, setDeepWikiMinimized] = useState(() => readBool('sentra_deepwiki_minimized', false));
+  const [presetsEditorOpen, setPresetsEditorOpen] = useState(() => readBool('sentra_presets_editor_open', false));
+  const [presetsEditorMinimized, setPresetsEditorMinimized] = useState(() => readBool('sentra_presets_editor_minimized', false));
   const [iosPresetsEditorOpen, setIosPresetsEditorOpen] = useState(false);
-  const [presetImporterOpen, setPresetImporterOpen] = useState(false);
-  const [presetImporterMinimized, setPresetImporterMinimized] = useState(false);
+  const [presetImporterOpen, setPresetImporterOpen] = useState(() => readBool('sentra_preset_importer_open', false));
+  const [presetImporterMinimized, setPresetImporterMinimized] = useState(() => readBool('sentra_preset_importer_minimized', false));
   const [iosPresetImporterOpen, setIosPresetImporterOpen] = useState(false);
-  const [fileManagerOpen, setFileManagerOpen] = useState(false);
-  const [fileManagerMinimized, setFileManagerMinimized] = useState(false);
+  const [fileManagerOpen, setFileManagerOpen] = useState(() => readBool('sentra_file_manager_open', false));
+  const [fileManagerMinimized, setFileManagerMinimized] = useState(() => readBool('sentra_file_manager_minimized', false));
   const [iosFileManagerOpen, setIosFileManagerOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('sentra_dev_center_open', String(devCenterOpen));
+      localStorage.setItem('sentra_dev_center_minimized', String(devCenterMinimized));
+      localStorage.setItem('sentra_deepwiki_open', String(deepWikiOpen));
+      localStorage.setItem('sentra_deepwiki_minimized', String(deepWikiMinimized));
+      localStorage.setItem('sentra_presets_editor_open', String(presetsEditorOpen));
+      localStorage.setItem('sentra_presets_editor_minimized', String(presetsEditorMinimized));
+      localStorage.setItem('sentra_preset_importer_open', String(presetImporterOpen));
+      localStorage.setItem('sentra_preset_importer_minimized', String(presetImporterMinimized));
+      localStorage.setItem('sentra_file_manager_open', String(fileManagerOpen));
+      localStorage.setItem('sentra_file_manager_minimized', String(fileManagerMinimized));
+    } catch {
+      // ignore
+    }
+  }, [
+    devCenterOpen,
+    devCenterMinimized,
+    deepWikiOpen,
+    deepWikiMinimized,
+    presetsEditorOpen,
+    presetsEditorMinimized,
+    presetImporterOpen,
+    presetImporterMinimized,
+    fileManagerOpen,
+    fileManagerMinimized,
+  ]);
 
   // Redis Editor State via hook
   const redisState = useRedisEditor(addToast);
@@ -196,7 +234,6 @@ function App() {
     } else {
       setPresetsEditorOpen(true);
       setPresetsEditorMinimized(false);
-      bringToFront('presets-editor');
     }
   };
 
@@ -206,14 +243,12 @@ function App() {
     } else {
       setFileManagerOpen(true);
       setFileManagerMinimized(false);
-      bringToFront('file-manager');
     }
   };
 
   const handleOpenRedis = () => {
     redisState.setRedisEditorOpen(true);
     redisState.setMinimized(false);
-    bringToFront('redis-editor'); // We'll need to handle z-index for this manually or via hook
   };
 
   const handleOpenPresetImporter = () => {
@@ -222,7 +257,6 @@ function App() {
     } else {
       setPresetImporterOpen(true);
       setPresetImporterMinimized(false);
-      bringToFront('preset-importer');
     }
   };
 
@@ -605,6 +639,7 @@ function App() {
         activeWinId={activeWinId}
         setActiveWinId={setActiveWinId}
         bringToFront={bringToFront}
+        allocateZ={allocateZ}
         handleClose={handleClose}
         handleSave={handleSave}
         handleVarChange={handleVarChange}

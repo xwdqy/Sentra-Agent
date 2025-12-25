@@ -1,9 +1,11 @@
-import React, { useRef } from 'react';
+import React, { memo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, useMotionValue, useSpring, useTransform, MotionValue } from 'framer-motion';
 import { Menu, Item, useContextMenu } from 'react-contexify';
 import 'react-contexify/dist/ReactContexify.css';
 import styles from './Dock.module.css';
+
+const DOCK_MENU_ID = 'sentra-dock-menu';
 
 interface DockItem {
   id: string;
@@ -23,12 +25,40 @@ interface DockProps {
 export const Dock: React.FC<DockProps> = ({ items, performanceMode = false }) => {
   const mouseX = useMotionValue<number>(Infinity);
 
+  const activeItemRef = useRef<DockItem | null>(null);
+  const { show } = useContextMenu({ id: DOCK_MENU_ID });
+
+  const handleRequestContextMenu = useCallback((e: React.MouseEvent, item: DockItem) => {
+    e.preventDefault();
+    e.stopPropagation();
+    activeItemRef.current = item;
+    show({ event: e });
+  }, [show]);
+
+  const handleMenuOpen = useCallback(() => {
+    activeItemRef.current?.onClick();
+  }, []);
+
+  const handleMenuClose = useCallback(() => {
+    activeItemRef.current?.onClose?.();
+  }, []);
+
+  const handleMenuRemove = useCallback(() => {
+    activeItemRef.current?.onRemove?.();
+  }, []);
+
   return (
     <div className={styles.dockContainer}>
       {performanceMode ? (
         <div className={`${styles.dock} ${styles.performanceMode}`}>
           {items.map((item) => (
-            <DockIcon key={item.id} mouseX={mouseX} item={item} performanceMode={true} />
+            <DockIcon
+              key={item.id}
+              mouseX={mouseX}
+              item={item}
+              performanceMode={true}
+              onRequestContextMenu={handleRequestContextMenu}
+            />
           ))}
         </div>
       ) : (
@@ -38,17 +68,42 @@ export const Dock: React.FC<DockProps> = ({ items, performanceMode = false }) =>
           onMouseLeave={() => mouseX.set(Infinity)}
         >
           {items.map((item) => (
-            <DockIcon key={item.id} mouseX={mouseX} item={item} performanceMode={false} />
+            <DockIcon
+              key={item.id}
+              mouseX={mouseX}
+              item={item}
+              performanceMode={false}
+              onRequestContextMenu={handleRequestContextMenu}
+            />
           ))}
         </motion.div>
+      )}
+
+      {createPortal(
+        <Menu id={DOCK_MENU_ID} theme="light" animation="scale">
+          <Item onClick={handleMenuOpen}>打开</Item>
+          <Item onClick={handleMenuClose}>退出</Item>
+          <Item onClick={handleMenuRemove}>从 Dock 中移除</Item>
+          <Item disabled>选项...</Item>
+        </Menu>,
+        document.body
       )}
     </div>
   );
 };
 
-function DockIcon({ mouseX, item, performanceMode }: { mouseX: MotionValue<number>; item: DockItem; performanceMode: boolean }) {
+const DockIcon = memo(function DockIcon({
+  mouseX,
+  item,
+  performanceMode,
+  onRequestContextMenu,
+}: {
+  mouseX: MotionValue<number>;
+  item: DockItem;
+  performanceMode: boolean;
+  onRequestContextMenu: (e: React.MouseEvent, item: DockItem) => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  const { show } = useContextMenu({ id: `dock-menu-${item.id}` });
 
   const distance = useTransform(mouseX, (val) => {
     const bounds = ref.current?.getBoundingClientRect() ?? { x: 0, width: 0 };
@@ -58,11 +113,7 @@ function DockIcon({ mouseX, item, performanceMode }: { mouseX: MotionValue<numbe
   const widthSync = useTransform(distance, [-150, 0, 150], [50, 100, 50]);
   const width = useSpring(widthSync, { mass: 0.1, stiffness: 150, damping: 12 });
 
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    show({ event: e });
-  };
+  const handleContextMenu = (e: React.MouseEvent) => onRequestContextMenu(e, item);
 
   return (
     <>
@@ -99,16 +150,6 @@ function DockIcon({ mouseX, item, performanceMode }: { mouseX: MotionValue<numbe
           {item.isOpen && <div className={styles.dot} />}
         </motion.div>
       )}
-
-      {createPortal(
-        <Menu id={`dock-menu-${item.id}`} theme="light" animation="scale">
-          <Item onClick={item.onClick}>打开</Item>
-          {item.onClose && <Item onClick={item.onClose}>退出</Item>}
-          {item.onRemove && <Item onClick={item.onRemove}>从 Dock 中移除</Item>}
-          <Item disabled>选项...</Item>
-        </Menu>,
-        document.body
-      )}
     </>
   );
-}
+});

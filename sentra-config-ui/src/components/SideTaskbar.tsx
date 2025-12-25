@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { memo, useMemo } from 'react';
 import { IoClose, IoTerminal, IoChevronBackOutline, IoChevronForwardOutline } from 'react-icons/io5';
 import type { DeskWindow, TerminalWin } from '../types/ui';
 import { getDisplayName, getIconForType } from '../utils/icons';
@@ -28,9 +28,10 @@ interface SideTaskbarProps {
   topOffset?: number;
   expandedWidth?: number;
   collapsedWidth?: number;
+  performanceMode?: boolean;
 }
 
-export const SideTaskbar: React.FC<SideTaskbarProps> = ({
+export const SideTaskbar: React.FC<SideTaskbarProps> = memo(({
   openWindows,
   terminalWindows,
   activeWinId,
@@ -45,6 +46,7 @@ export const SideTaskbar: React.FC<SideTaskbarProps> = ({
   topOffset = 30,
   expandedWidth = 220,
   collapsedWidth = 44,
+  performanceMode = false,
 }) => {
   const hasTabs = openWindows.length + terminalWindows.length + extraTabs.length > 0;
   if (!hasTabs) return null;
@@ -54,7 +56,7 @@ export const SideTaskbar: React.FC<SideTaskbarProps> = ({
   if (collapsed) {
     return (
       <div
-        className={styles.floatingToggle}
+        className={`${styles.floatingToggle} ${performanceMode ? styles.floatingTogglePerformance : ''}`}
         style={{
           ['--side-taskbar-top' as any]: `${topOffset}px`,
         }}
@@ -107,26 +109,24 @@ export const SideTaskbar: React.FC<SideTaskbarProps> = ({
 
   return (
     <div
-      className={styles.sidebar}
+      className={`${styles.sidebar} ${performanceMode ? styles.performance : ''}`}
       style={{
         ['--side-taskbar-top' as any]: `${topOffset}px`,
         ['--side-taskbar-width' as any]: `${width}px`,
       }}
     >
-      <div className={styles.inner}>
-        <div className={styles.header}>
-          <div
-            className={`${styles.collapseHandle} ${styles.collapseHandleBack}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onCollapsedChange(!collapsed);
-            }}
-            title={collapsed ? '展开标签栏' : '收起标签栏'}
-          >
-            <IoChevronBackOutline size={16} />
-          </div>
-        </div>
+      <div
+        className={styles.collapseHandleEdge}
+        onClick={(e) => {
+          e.stopPropagation();
+          onCollapsedChange(true);
+        }}
+        title="收起标签栏"
+      >
+        <IoChevronBackOutline size={16} />
+      </div>
 
+      <div className={styles.inner}>
         <div className={styles.tabs}>
           {allTabs.map(tab => (
             <div
@@ -155,4 +155,4 @@ export const SideTaskbar: React.FC<SideTaskbarProps> = ({
       </div>
     </div>
   );
-};
+});

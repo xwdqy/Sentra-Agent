@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, Suspense, lazy, type Dispatch, type SetStateAction, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useMemo, Suspense, lazy, memo, type Dispatch, type SetStateAction, type ReactNode } from 'react';
 import { MenuBar } from '../components/MenuBar';
 import { MacWindow } from '../components/MacWindow';
 import { EnvEditor } from '../components/EnvEditor';
@@ -39,6 +39,7 @@ export type DesktopViewProps = {
   activeWinId: string | null;
   setActiveWinId: (id: string | null) => void;
   bringToFront: (id: string) => void;
+  allocateZ: () => number;
   handleClose: (id: string) => void;
   handleSave: (id: string) => void | Promise<void>;
   handleVarChange: (id: string, index: number, field: 'key' | 'value' | 'comment', val: string) => void;
@@ -64,7 +65,7 @@ export type DesktopViewProps = {
   setLaunchpadOpen: (open: boolean) => void;
   allItems: FileItem[];
   recordUsage: (key: string) => void;
-  openWindow: (file: FileItem) => void;
+  openWindow: (file: FileItem, opts?: { maximize?: boolean }) => void;
   dockFavorites: string[];
   setDockFavorites: Dispatch<SetStateAction<string[]>>;
   uniqueDockItems: any[];
@@ -121,6 +122,124 @@ export type DesktopViewProps = {
   setDeepWikiMinimized: (min: boolean) => void;
 };
 
+type EnvWindowItemProps = {
+  w: DeskWindow;
+  desktopSafeArea: { top: number; bottom: number; left: number; right: number };
+  theme: 'light' | 'dark';
+  saving: boolean;
+  performanceMode: boolean;
+  activeWinId: string | null;
+  bringToFront: (id: string) => void;
+  setActiveWinId: (id: string | null) => void;
+  setActiveUtilityId: (id: string | null) => void;
+  setOpenWindows: Dispatch<SetStateAction<DeskWindow[]>>;
+  handleClose: (id: string) => void;
+  handleSave: (id: string) => void | Promise<void>;
+  handleVarChange: (id: string, index: number, field: 'key' | 'value' | 'comment', val: string) => void;
+  handleAddVar: (id: string) => void;
+  handleDeleteVar: (id: string, index: number) => void;
+  handleRestore: (id: string) => void;
+  handleWindowMaximize: (id: string, isMaximized: boolean) => void;
+};
+
+const EnvWindowItem = memo(({
+  w,
+  desktopSafeArea,
+  theme,
+  saving,
+  performanceMode,
+  activeWinId,
+  bringToFront,
+  setActiveWinId,
+  setActiveUtilityId,
+  setOpenWindows,
+  handleClose,
+  handleSave,
+  handleVarChange,
+  handleAddVar,
+  handleDeleteVar,
+  handleRestore,
+  handleWindowMaximize,
+}: EnvWindowItemProps) => {
+  const handleCloseWin = useCallback(() => {
+    handleWindowMaximize(w.id, false);
+    handleClose(w.id);
+  }, [handleClose, handleWindowMaximize, w.id]);
+
+  const handleMinimizeWin = useCallback(() => {
+    setOpenWindows(ws => ws.map(x => x.id === w.id ? { ...x, minimized: true } : x));
+    setActiveWinId(null);
+    handleWindowMaximize(w.id, false);
+  }, [handleWindowMaximize, setActiveWinId, setOpenWindows, w.id]);
+
+  const handleFocusWin = useCallback(() => {
+    bringToFront(w.id);
+    setActiveUtilityId(null);
+  }, [bringToFront, setActiveUtilityId, w.id]);
+
+  const handleMoveWin = useCallback((x: number, y: number) => {
+    setOpenWindows(ws => ws.map(win => win.id === w.id ? { ...win, pos: { x, y } } : win));
+  }, [setOpenWindows, w.id]);
+
+  const handleUpdateVar = useCallback((idx: number, field: 'key' | 'value' | 'comment', val: string) => {
+    handleVarChange(w.id, idx, field, val);
+  }, [handleVarChange, w.id]);
+
+  const handleAddVarWin = useCallback(() => {
+    handleAddVar(w.id);
+  }, [handleAddVar, w.id]);
+
+  const handleDeleteVarWin = useCallback((idx: number) => {
+    handleDeleteVar(w.id, idx);
+  }, [handleDeleteVar, w.id]);
+
+  const handleSaveWin = useCallback(() => {
+    handleSave(w.id);
+  }, [handleSave, w.id]);
+
+  const handleRestoreWin = useCallback(() => {
+    handleRestore(w.id);
+  }, [handleRestore, w.id]);
+
+  const handleMaximizeWin = useCallback((isMax: boolean) => {
+    handleWindowMaximize(w.id, isMax);
+    setOpenWindows(ws => ws.map(win => win.id === w.id ? { ...win, maximized: isMax } : win));
+  }, [handleWindowMaximize, setOpenWindows, w.id]);
+
+  return (
+    <MacWindow
+      id={w.id}
+      title={`${getDisplayName(w.file.name)}`}
+      icon={getIconForType(w.file.name, w.file.type)}
+      safeArea={desktopSafeArea}
+      zIndex={w.z}
+      isActive={activeWinId === w.id}
+      isMinimized={w.minimized}
+      performanceMode={performanceMode}
+      initialPos={w.pos}
+      initialMaximized={!!w.maximized}
+      onClose={handleCloseWin}
+      onMinimize={handleMinimizeWin}
+      onMaximize={handleMaximizeWin}
+      onFocus={handleFocusWin}
+      onMove={handleMoveWin}
+    >
+      <EnvEditor
+        appName={getDisplayName(w.file.name)}
+        vars={w.editedVars}
+        onUpdate={handleUpdateVar}
+        onAdd={handleAddVarWin}
+        onDelete={handleDeleteVarWin}
+        onSave={handleSaveWin}
+        onRestore={handleRestoreWin}
+        saving={saving}
+        isExample={!w.file.hasEnv && w.file.hasExample}
+        theme={theme}
+      />
+    </MacWindow>
+  );
+});
+
 export const DesktopView: React.FC<DesktopViewProps> = (props) => {
   const {
     isSolidColor,
@@ -137,6 +256,7 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
     activeWinId,
     setActiveWinId,
     bringToFront,
+    allocateZ,
     handleClose,
     handleSave,
     handleVarChange,
@@ -202,11 +322,13 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
   } = props;
 
   // Folder & window state
-  const [openFolderId, setOpenFolderId] = useState<string | null>(null);
+  const [openFolder, setOpenFolder] = useState<{
+    id: string;
+    anchorRect?: { left: number; top: number; width: number; height: number };
+  } | null>(null);
   const [activeUtilityId, setActiveUtilityId] = useState<string | null>(null);
   const [maximizedWindowIds, setMaximizedWindowIds] = useState<string[]>([]);
   const [utilityZMap, setUtilityZMap] = useState<Record<string, number>>({});
-  const utilityZNextRef = useRef(9850);
 
   const [sideTabsCollapsed, setSideTabsCollapsed] = useState(() => {
     try {
@@ -231,12 +353,12 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
     }
   }, []);
 
-  const desktopSafeArea = {
+  const desktopSafeArea = useMemo(() => ({
     top: MENU_BAR_HEIGHT,
     bottom: BOTTOM_SAFE,
-    left: 0,
+    left: sideTabsCollapsed ? 0 : SIDE_TABS_EXPANDED_WIDTH,
     right: 0,
-  };
+  }), [BOTTOM_SAFE, MENU_BAR_HEIGHT, SIDE_TABS_EXPANDED_WIDTH, sideTabsCollapsed]);
 
   const handleWindowMaximize = (id: string, isMaximized: boolean) => {
     setMaximizedWindowIds(prev => {
@@ -248,18 +370,91 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
     });
   };
 
-  const performanceMode = maximizedWindowIds.length > 0;
+  const openUtilityCount =
+    (devCenterOpen ? 1 : 0) +
+    (deepWikiOpen ? 1 : 0) +
+    (presetsEditorOpen ? 1 : 0) +
+    (presetImporterOpen ? 1 : 0) +
+    (fileManagerOpen ? 1 : 0) +
+    (redisState.redisEditorOpen ? 1 : 0);
+
+  const dockPerformanceMode = (openWindows.length + terminalWindows.length + openUtilityCount) > 3;
+
+  const performanceMode =
+    maximizedWindowIds.length > 0 ||
+    (openWindows.length + terminalWindows.length + openUtilityCount) >= 4;
+
+  const handleActivateWindowFromSide = useCallback((id: string) => {
+    bringToFront(id);
+    setActiveUtilityId(null);
+  }, [bringToFront]);
+
+  const handleActivateTerminalFromSide = useCallback((id: string) => {
+    bringTerminalToFront(id);
+    setActiveUtilityId(null);
+  }, [bringTerminalToFront]);
+
+  const handleCloseWindowFromSide = useCallback((id: string) => {
+    handleWindowMaximize(id, false);
+    handleClose(id);
+  }, [handleClose]);
+
+  const handleCloseTerminalFromSide = useCallback((id: string) => {
+    handleWindowMaximize(id, false);
+    handleCloseTerminal(id);
+  }, [handleCloseTerminal]);
 
   const bringUtilityToFront = useCallback((id: string) => {
-    const base = utilityZNextRef.current;
-    const next = base + 1;
-    utilityZNextRef.current = next >= 9940 ? 9850 : next;
+    const next = allocateZ();
     setUtilityZMap(prev => ({ ...prev, [id]: next }));
     setActiveUtilityId(id);
     setActiveWinId(null);
-  }, [setActiveWinId]);
+  }, [allocateZ, setActiveWinId]);
 
-  const renderTopTile = useCallback((key: string, label: string, icon: ReactNode, onClick: () => void) => {
+  const handleOpenDeepWiki = useCallback(() => {
+    setDeepWikiOpen(true);
+    setDeepWikiMinimized(false);
+    bringUtilityToFront('deepwiki');
+  }, [bringUtilityToFront, setDeepWikiMinimized, setDeepWikiOpen]);
+
+  // Ensure utility windows always get a global zIndex on open (unified with desktop windows)
+  useEffect(() => {
+    if (devCenterOpen && utilityZMap['dev-center'] == null) {
+      bringUtilityToFront('dev-center');
+    }
+  }, [devCenterOpen, utilityZMap, bringUtilityToFront]);
+
+  useEffect(() => {
+    if (deepWikiOpen && utilityZMap['deepwiki'] == null) {
+      bringUtilityToFront('deepwiki');
+    }
+  }, [deepWikiOpen, utilityZMap, bringUtilityToFront]);
+
+  useEffect(() => {
+    if (presetsEditorOpen && utilityZMap['presets-editor'] == null) {
+      bringUtilityToFront('presets-editor');
+    }
+  }, [presetsEditorOpen, utilityZMap, bringUtilityToFront]);
+
+  useEffect(() => {
+    if (presetImporterOpen && utilityZMap['preset-importer'] == null) {
+      bringUtilityToFront('preset-importer');
+    }
+  }, [presetImporterOpen, utilityZMap, bringUtilityToFront]);
+
+  useEffect(() => {
+    if (fileManagerOpen && utilityZMap['file-manager'] == null) {
+      bringUtilityToFront('file-manager');
+    }
+  }, [fileManagerOpen, utilityZMap, bringUtilityToFront]);
+
+  useEffect(() => {
+    if (redisState.redisEditorOpen && utilityZMap['redis-editor'] == null) {
+      bringUtilityToFront('redis-editor');
+    }
+  }, [redisState.redisEditorOpen, utilityZMap, bringUtilityToFront]);
+
+  const renderTopTile = useCallback((key: string, label: string, icon: ReactNode, onClick: (e: React.MouseEvent) => void) => {
     return (
       <div
         key={key}
@@ -562,28 +757,17 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
         terminalWindows={terminalWindows}
         activeWinId={activeWinId}
         activeTerminalId={activeTerminalId}
-        onActivateWindow={(id) => {
-          bringToFront(id);
-          setActiveUtilityId(null);
-        }}
-        onActivateTerminal={(id) => {
-          bringTerminalToFront(id);
-          setActiveUtilityId(null);
-        }}
-        onCloseWindow={(id) => {
-          handleWindowMaximize(id, false);
-          handleClose(id);
-        }}
-        onCloseTerminal={(id) => {
-          handleWindowMaximize(id, false);
-          handleCloseTerminal(id);
-        }}
+        onActivateWindow={handleActivateWindowFromSide}
+        onActivateTerminal={handleActivateTerminalFromSide}
+        onCloseWindow={handleCloseWindowFromSide}
+        onCloseTerminal={handleCloseTerminalFromSide}
         extraTabs={extraTabs}
         collapsed={sideTabsCollapsed}
         onCollapsedChange={handleSideTabsCollapsedChange}
         topOffset={MENU_BAR_HEIGHT}
         expandedWidth={SIDE_TABS_EXPANDED_WIDTH}
         collapsedWidth={SIDE_TABS_COLLAPSED_WIDTH}
+        performanceMode={performanceMode}
       />
 
       {/* 桌面主区域：壁纸 + Dev Center 主窗口 + 所有 MacWindow / Dock / Launchpad 等 */}
@@ -622,7 +806,8 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
             zIndex={utilityZMap['dev-center'] ?? 2000}
             isActive={activeUtilityId === 'dev-center'}
             isMinimized={devCenterMinimized}
-            initialSize={{ width: 960, height: 620 }}
+            performanceMode={performanceMode}
+            initialSize={{ width: 940, height: 620 }}
             onClose={() => {
               handleWindowMaximize('dev-center', false);
               setDevCenterOpen(false);
@@ -639,8 +824,8 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
           >
             <DevCenterV2
               allItems={allItems}
-              onOpenItem={openWindow}
-              addToast={addToast}
+              onOpenItem={(file) => openWindow(file, { maximize: true })}
+              onOpenDeepWiki={handleOpenDeepWiki}
             />
           </MacWindow>
         )}
@@ -654,7 +839,8 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
             zIndex={utilityZMap['preset-importer'] ?? 2003}
             isActive={activeUtilityId === 'preset-importer'}
             isMinimized={presetImporterMinimized}
-            initialSize={{ width: 980, height: 620 }}
+            performanceMode={performanceMode}
+            initialSize={{ width: 880, height: 600 }}
             onClose={() => {
               handleWindowMaximize('preset-importer', false);
               setPresetImporterOpen(false);
@@ -689,6 +875,7 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
             zIndex={utilityZMap['deepwiki'] ?? 2001}
             isActive={activeUtilityId === 'deepwiki'}
             isMinimized={deepWikiMinimized}
+            performanceMode={performanceMode}
             initialSize={{ width: 960, height: 640 }}
             onClose={() => {
               handleWindowMaximize('deepwiki', false);
@@ -712,47 +899,26 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
 
         {/* 环境变量编辑窗口 */}
         {openWindows.map(w => (
-          <MacWindow
+          <EnvWindowItem
             key={w.id}
-            id={w.id}
-            title={`${getDisplayName(w.file.name)}`}
-            icon={getIconForType(w.file.name, w.file.type)}
-            safeArea={desktopSafeArea}
-            zIndex={w.z}
-            isActive={activeWinId === w.id}
-            isMinimized={w.minimized}
-            initialPos={w.pos}
-            onClose={() => {
-              handleWindowMaximize(w.id, false);
-              handleClose(w.id);
-            }}
-            onMinimize={() => {
-              setOpenWindows(ws => ws.map(x => x.id === w.id ? { ...x, minimized: true } : x));
-              setActiveWinId(null);
-              handleWindowMaximize(w.id, false);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize(w.id, isMax)}
-            onFocus={() => {
-              bringToFront(w.id);
-              setActiveUtilityId(null);
-            }}
-            onMove={(x, y) => {
-              setOpenWindows(ws => ws.map(win => win.id === w.id ? { ...win, pos: { x, y } } : win));
-            }}
-          >
-            <EnvEditor
-              appName={getDisplayName(w.file.name)}
-              vars={w.editedVars}
-              onUpdate={(idx, field, val) => handleVarChange(w.id, idx, field, val)}
-              onAdd={() => handleAddVar(w.id)}
-              onDelete={(idx) => handleDeleteVar(w.id, idx)}
-              onSave={() => handleSave(w.id)}
-              onRestore={() => handleRestore(w.id)}
-              saving={saving}
-              isExample={!w.file.hasEnv && w.file.hasExample}
-              theme={theme}
-            />
-          </MacWindow>
+            w={w}
+            desktopSafeArea={desktopSafeArea}
+            theme={theme}
+            saving={saving}
+            performanceMode={performanceMode}
+            activeWinId={activeWinId}
+            bringToFront={bringToFront}
+            setActiveWinId={setActiveWinId}
+            setActiveUtilityId={setActiveUtilityId}
+            setOpenWindows={setOpenWindows}
+            handleClose={handleClose}
+            handleSave={handleSave}
+            handleVarChange={handleVarChange}
+            handleAddVar={handleAddVar}
+            handleDeleteVar={handleDeleteVar}
+            handleRestore={handleRestore}
+            handleWindowMaximize={handleWindowMaximize}
+          />
         ))}
 
         {/* 预设、文件管理、Redis 编辑器等独立工具窗口 */}
@@ -765,6 +931,7 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
             zIndex={utilityZMap['presets-editor'] ?? 2002}
             isActive={activeUtilityId === 'presets-editor'}
             isMinimized={presetsEditorMinimized}
+            performanceMode={performanceMode}
             initialSize={{ width: 900, height: 600 }}
             onClose={() => {
               handleWindowMaximize('presets-editor', false);
@@ -786,10 +953,11 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
                 theme={theme}
                 addToast={addToast}
                 state={presetsState}
+                performanceMode={performanceMode}
                 onOpenPresetImporter={() => {
                   setPresetImporterOpen(true);
                   setPresetImporterMinimized(false);
-                  setActiveUtilityId('preset-importer');
+                  bringUtilityToFront('preset-importer');
                 }}
               />
             </Suspense>
@@ -805,6 +973,7 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
             zIndex={utilityZMap['file-manager'] ?? 2004}
             isActive={activeUtilityId === 'file-manager'}
             isMinimized={fileManagerMinimized}
+            performanceMode={performanceMode}
             initialSize={{ width: 1000, height: 700 }}
             onClose={() => {
               handleWindowMaximize('file-manager', false);
@@ -825,6 +994,7 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
                 onClose={() => setFileManagerOpen(false)}
                 theme={theme}
                 addToast={addToast}
+                performanceMode={performanceMode}
               />
             </Suspense>
           </MacWindow>
@@ -839,6 +1009,7 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
             zIndex={utilityZMap['redis-editor'] ?? 2005}
             isActive={activeUtilityId === 'redis-editor'}
             isMinimized={!!redisState.minimized}
+            performanceMode={performanceMode}
             initialSize={{ width: 1000, height: 650 }}
             onClose={() => {
               handleWindowMaximize('redis-editor', false);
@@ -874,41 +1045,64 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
               }}
             >
               {desktopFolders.map(folder => (
-                renderTopTile(folder.id, folder.name, folder.icon, () => setOpenFolderId(folder.id))
+                renderTopTile(folder.id, folder.name, folder.icon, (e) => {
+                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  setOpenFolder({
+                    id: folder.id,
+                    anchorRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+                  });
+                })
               ))}
 
               {desktopIcons?.find(i => i.id === 'desktop-filemanager') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-filemanager')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
+                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
+                  e.stopPropagation();
+                  icon.onClick();
+                });
               })()}
 
               {desktopIcons?.find(i => i.id === 'desktop-preset-importer') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-preset-importer')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
+                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
+                  e.stopPropagation();
+                  icon.onClick();
+                });
               })()}
 
               {desktopIcons?.find(i => i.id === 'desktop-redis') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-redis')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
+                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
+                  e.stopPropagation();
+                  icon.onClick();
+                });
               })()}
 
               {desktopIcons?.find(i => i.id === 'desktop-dev-center') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-dev-center')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
+                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
+                  e.stopPropagation();
+                  icon.onClick();
+                });
               })()}
 
               {desktopIcons?.find(i => i.id === 'desktop-presets') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-presets')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, icon.onClick);
+                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
+                  e.stopPropagation();
+                  icon.onClick();
+                });
               })()}
             </div>
 
             {/* Folder Modal */}
-            {openFolderId && (
+            {openFolder && (
               <AppFolderModal
-                folder={desktopFolders.find(f => f.id === openFolderId)!}
+                folder={desktopFolders.find(f => f.id === openFolder.id)!}
+                anchorRect={openFolder.anchorRect}
+                theme={theme}
                 onAppClick={(_, onClick) => onClick()}
-                onClose={() => setOpenFolderId(null)}
+                onClose={() => setOpenFolder(null)}
               />
             )}
           </>
@@ -961,6 +1155,7 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
             zIndex={terminal.z}
             isActive={activeTerminalId === terminal.id}
             isMinimized={terminal.minimized}
+            performanceMode={performanceMode}
             onClose={() => {
               handleWindowMaximize(terminal.id, false);
               handleCloseTerminal(terminal.id);
@@ -988,7 +1183,9 @@ export const DesktopView: React.FC<DesktopViewProps> = (props) => {
           items={launchpadItems}
         />
 
-        {showDock && <Dock performanceMode={performanceMode} items={uniqueDockItems.slice(0, 16)} />}
+        <div style={{ display: showDock ? 'block' : 'none' }}>
+          <Dock performanceMode={dockPerformanceMode} items={uniqueDockItems.slice(0, 16)} />
+        </div>
 
         <ToastContainer toasts={toasts} removeToast={removeToast} />
 

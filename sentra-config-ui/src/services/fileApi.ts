@@ -16,6 +16,19 @@ export interface FileContent {
     isBinary: boolean;
 }
 
+export interface GrepMatch {
+    path: string;
+    line: number;
+    text: string;
+}
+
+export interface SymbolMatch {
+    path: string;
+    line: number;
+    kind: string;
+    symbol: string;
+}
+
 export async function fetchFileTree(path: string = ''): Promise<FileNode[]> {
     const headers = getAuthHeaders();
     const res = await fetch(`${API_BASE}/tree?path=${encodeURIComponent(path)}`, { headers });
@@ -48,6 +61,31 @@ export async function createFile(path: string, type: 'file' | 'directory'): Prom
         body: JSON.stringify({ path, type })
     });
     if (!res.ok) throw new Error('Failed to create item');
+}
+
+export async function grepFiles(q: string, opts?: { path?: string; maxResults?: number; caseSensitive?: boolean }): Promise<GrepMatch[]> {
+    const headers = getAuthHeaders();
+    const params = new URLSearchParams();
+    params.set('q', q);
+    if (opts?.path) params.set('path', opts.path);
+    if (opts?.maxResults != null) params.set('maxResults', String(opts.maxResults));
+    if (opts?.caseSensitive) params.set('caseSensitive', 'true');
+    const res = await fetch(`${API_BASE}/grep?${params.toString()}`, { headers });
+    if (!res.ok) throw new Error('Failed to grep files');
+    const data = await res.json();
+    return (data?.results || []) as GrepMatch[];
+}
+
+export async function searchSymbols(q?: string, opts?: { path?: string; maxResults?: number }): Promise<SymbolMatch[]> {
+    const headers = getAuthHeaders();
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (opts?.path) params.set('path', opts.path);
+    if (opts?.maxResults != null) params.set('maxResults', String(opts.maxResults));
+    const res = await fetch(`${API_BASE}/symbols?${params.toString()}`, { headers });
+    if (!res.ok) throw new Error('Failed to search symbols');
+    const data = await res.json();
+    return (data?.results || []) as SymbolMatch[];
 }
 
 export async function renameFile(oldPath: string, newPath: string): Promise<void> {

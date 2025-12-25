@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { PresetFile } from '../types/config';
 import { fetchPresets, fetchPresetFile, savePresetFile, deletePresetFile } from '../services/api';
 
@@ -66,7 +66,9 @@ export function usePresetsEditor(
     const [files, setFiles] = useState<PresetFile[]>([]);
     const [folders, setFolders] = useState<PresetFolder[]>([]);
     const [selectedFile, setSelectedFile] = useState<PresetFile | null>(null);
-    const [fileContent, setFileContent] = useState<string>('');
+    const [fileContent, setFileContentState] = useState<string>('');
+    const fileContentRef = useRef<string>('');
+    const fileContentDebounceRef = useRef<number | null>(null);
     const [searchTerm, setSearchTerm] = useState('');
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -101,10 +103,20 @@ export function usePresetsEditor(
         }
     }, [loadFiles, isAuthenticated]);
 
+    useEffect(() => {
+        return () => {
+            if (fileContentDebounceRef.current != null) {
+                window.clearTimeout(fileContentDebounceRef.current);
+                fileContentDebounceRef.current = null;
+            }
+        };
+    }, []);
+
     const selectFile = useCallback(async (file: PresetFile | null) => {
         if (!file) {
             setSelectedFile(null);
-            setFileContent('');
+            fileContentRef.current = '';
+            setFileContentState('');
             return;
         }
         if (selectedFile?.path === file.path) return;
@@ -113,7 +125,8 @@ export function usePresetsEditor(
             setLoadingFile(true);
             setSelectedFile(file);
             const data = await fetchPresetFile(file.path);
-            setFileContent(data.content);
+            fileContentRef.current = data.content;
+            setFileContentState(data.content);
         } catch (error) {
             console.error('Failed to load file content:', error);
             addToast('error', '加载失败', `无法读取文件 ${file.name}`);
@@ -128,7 +141,7 @@ export function usePresetsEditor(
 
         try {
             setSaving(true);
-            await savePresetFile(selectedFile.path, fileContent);
+            await savePresetFile(selectedFile.path, fileContentRef.current);
             addToast('success', '保存成功', `文件 ${selectedFile.name} 已保存`);
             loadFiles(true);
         } catch (error) {
@@ -137,7 +150,18 @@ export function usePresetsEditor(
         } finally {
             setSaving(false);
         }
-    }, [selectedFile, fileContent, addToast, loadFiles]);
+    }, [selectedFile, addToast, loadFiles]);
+
+    const setFileContent = useCallback((content: string) => {
+        fileContentRef.current = content;
+        if (fileContentDebounceRef.current != null) {
+            window.clearTimeout(fileContentDebounceRef.current);
+        }
+        fileContentDebounceRef.current = window.setTimeout(() => {
+            fileContentDebounceRef.current = null;
+            setFileContentState(content);
+        }, 120);
+    }, []);
 
     const createFile = useCallback(async (filename: string) => {
         try {

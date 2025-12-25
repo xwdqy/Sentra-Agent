@@ -24,6 +24,7 @@ interface FileManagerProps {
     onClose: () => void;
     addToast: (type: ToastMessage['type'], title: string, message?: string) => void;
     theme: 'light' | 'dark';
+    performanceMode?: boolean;
 }
 
 // Icon Helper
@@ -135,13 +136,22 @@ interface OpenFile {
     preview: boolean;
 }
 
-export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => {
+type FileManagerPersistedState = {
+    version: 1;
+    openPaths: string[];
+    activePath: string | null;
+    previewByPath?: Record<string, boolean>;
+};
+
+export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme, performanceMode = false }) => {
     const [fileTree, setFileTree] = useState<FileNode[]>([]);
 
     // Multi-tab state
     const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
     const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
+
+    const restoreRequestedRef = React.useRef(false);
 
     // Race condition prevention
     const loadingPathRef = React.useRef<string | null>(null);
@@ -155,10 +165,28 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
     // Context Menu State
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, node: FileNode } | null>(null);
 
+    const activeFilePathRef = React.useRef<string | null>(null);
+    const latestContentRef = React.useRef<Record<string, string>>({});
+    const contentDebounceRef = React.useRef<number | null>(null);
+    const pendingUpdateRef = React.useRef<{ path: string; content: string } | null>(null);
+
     const activeFile = React.useMemo(() =>
         openFiles.find(f => f.node.path === activeFilePath) || null,
         [openFiles, activeFilePath]
     );
+
+    useEffect(() => {
+        activeFilePathRef.current = activeFilePath;
+    }, [activeFilePath]);
+
+    useEffect(() => {
+        return () => {
+            if (contentDebounceRef.current != null) {
+                window.clearTimeout(contentDebounceRef.current);
+                contentDebounceRef.current = null;
+            }
+        };
+    }, []);
 
     const loadTree = useCallback(async () => {
         try {
@@ -196,6 +224,92 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
         loadTree();
     }, [loadTree]);
 
+    // Restore persisted tabs/active file on first tree load
+    useEffect(() => {
+        if (restoreRequestedRef.current) return;
+        if (!fileTree || fileTree.length === 0) return;
+        restoreRequestedRef.current = true;
+
+        let persisted: FileManagerPersistedState | null = null;
+        try {
+            const raw = localStorage.getItem('sentra_file_manager_state');
+            if (raw) persisted = JSON.parse(raw);
+        } catch {
+            persisted = null;
+        }
+
+        if (!persisted || persisted.version !== 1 || !Array.isArray(persisted.openPaths) || persisted.openPaths.length === 0) {
+            return;
+        }
+
+        const findNodeByPath = (nodes: FileNode[], path: string): FileNode | null => {
+            for (const n of nodes) {
+                if (n.path === path) return n;
+                if (n.children && n.children.length) {
+                    const found = findNodeByPath(n.children, path);
+                    if (found) return found;
+                }
+            }
+            return null;
+        };
+
+        const previewByPath = persisted.previewByPath || {};
+
+        const restoreOne = async (path: string) => {
+            const node = findNodeByPath(fileTree, path);
+            if (!node || node.type !== 'file') return;
+            try {
+                const data = await fetchFileContent(node.path);
+                const restored: OpenFile = {
+                    node,
+                    content: data.content,
+                    originalContent: data.content,
+                    isBinary: data.isBinary,
+                    isDirty: false,
+                    preview: !!previewByPath[node.path],
+                };
+                latestContentRef.current[node.path] = data.content;
+                setOpenFiles(prev => {
+                    if (prev.some(f => f.node.path === node.path)) return prev;
+                    return [...prev, restored];
+                });
+            } catch {
+                // ignore restore failures
+            }
+        };
+
+        (async () => {
+            for (const p of persisted.openPaths.slice(0, 12)) {
+                // eslint-disable-next-line no-await-in-loop
+                await restoreOne(p);
+            }
+            if (persisted.activePath) {
+                setActiveFilePath(persisted.activePath);
+            } else if (persisted.openPaths.length > 0) {
+                setActiveFilePath(persisted.openPaths[0]);
+            }
+        })();
+    }, [fileTree]);
+
+    // Persist tabs/active selection (do not store file content)
+    useEffect(() => {
+        try {
+            const previewByPath: Record<string, boolean> = {};
+            for (const f of openFiles) {
+                if (f.preview) previewByPath[f.node.path] = true;
+            }
+            const snapshot: FileManagerPersistedState = {
+                version: 1,
+                openPaths: openFiles.map(f => f.node.path),
+                activePath: activeFilePath,
+                previewByPath,
+            };
+            localStorage.setItem('sentra_file_manager_state', JSON.stringify(snapshot));
+        } catch {
+            // ignore
+        }
+    }, [openFiles, activeFilePath]);
+
     const handleFileSelect = async (node: FileNode) => {
         if (node.type === 'directory') return;
 
@@ -223,6 +337,7 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
                     isDirty: false,
                     preview: false
                 };
+                latestContentRef.current[node.path] = data.content;
                 setOpenFiles(prev => {
                     // Double check prevent duplicate
                     if (prev.some(f => f.node.path === node.path)) return prev;
@@ -263,16 +378,28 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
     };
 
     const updateActiveFileContent = (newContent: string) => {
-        setOpenFiles(prev => prev.map(f => {
-            if (f.node.path === activeFilePath) {
+        const path = activeFilePathRef.current;
+        if (!path) return;
+        latestContentRef.current[path] = newContent;
+        pendingUpdateRef.current = { path, content: newContent };
+
+        if (contentDebounceRef.current != null) {
+            window.clearTimeout(contentDebounceRef.current);
+        }
+
+        contentDebounceRef.current = window.setTimeout(() => {
+            contentDebounceRef.current = null;
+            const pending = pendingUpdateRef.current;
+            if (!pending) return;
+            setOpenFiles(prev => prev.map(f => {
+                if (f.node.path !== pending.path) return f;
                 return {
                     ...f,
-                    content: newContent,
-                    isDirty: newContent !== f.originalContent
+                    content: pending.content,
+                    isDirty: pending.content !== f.originalContent
                 };
-            }
-            return f;
-        }));
+            }));
+        }, 120);
     };
 
     const togglePreview = () => {
@@ -288,17 +415,21 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
     const handleSaveFile = async () => {
         if (!activeFile) return;
         try {
-            await saveFileContent(activeFile.node.path, activeFile.content);
+            const latest = latestContentRef.current[activeFile.node.path];
+            const contentToSave = latest != null ? latest : activeFile.content;
+            await saveFileContent(activeFile.node.path, contentToSave);
             setOpenFiles(prev => prev.map(f => {
                 if (f.node.path === activeFilePath) {
                     return {
                         ...f,
-                        originalContent: f.content,
+                        content: contentToSave,
+                        originalContent: contentToSave,
                         isDirty: false
                     };
                 }
                 return f;
             }));
+            latestContentRef.current[activeFile.node.path] = contentToSave;
             addToast('success', '保存成功');
         } catch (e) {
             addToast('error', '保存失败');
@@ -491,10 +622,10 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme }) => 
                                 onChange={(val) => updateActiveFileContent(val || '')}
                                 theme={theme === 'dark' ? 'vs-dark' : 'light'}
                                 options={{
-                                    minimap: { enabled: true },
+                                    minimap: { enabled: !performanceMode },
                                     fontSize: 14,
                                     wordWrap: 'on',
-                                    automaticLayout: true,
+                                    automaticLayout: !performanceMode,
                                     contextmenu: true,
                                     find: {
                                         addExtraSpaceOnTop: true,

@@ -5,6 +5,8 @@
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
     box-shadow: var(--mac-window-shadow);
+    will-change: transform;
+    contain: layout paint;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -12,10 +14,25 @@
     /* Transition removed to avoid conflict with Draggable/Framer Motion */
 }
 
+.window.performance {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+    will-change: auto;
+}
+
+.window.dragging {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+}
+
 .window.maximized {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     box-shadow: none;
+    will-change: auto;
+    contain: none;
 }
 
 .window.maximized.active {
