@@ -20,7 +20,7 @@ class RedisService {
             host,
             port,
             password,
-            retryStrategy: (times) => {
+            retryStrategy: (times: number) => {
                 if (times > 3) {
                     return null; // Stop retrying after 3 attempts
                 }
