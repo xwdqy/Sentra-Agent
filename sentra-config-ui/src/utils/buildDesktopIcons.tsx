@@ -221,6 +221,7 @@ export function buildDesktopIcons(
     handleOpenFileManager: () => void,
     handleOpenDevCenter: () => void,
     handleOpenPresetImporter: () => void,
+    handleOpenRedisAdmin?: () => void,
 ): DesktopIcon[] {
     const iconSize = 56;
     const gap = 100;
@@ -228,6 +229,17 @@ export function buildDesktopIcons(
     const startY = 80;
 
     return [
+        {
+            id: 'desktop-redis-admin',
+            name: 'Redis 管理器',
+            icon: getIconForType('redis-admin', 'module'),
+            position: { x: startX + gap * 4, y: startY },
+            onClick: () => {
+                recordUsage('app:redis-admin');
+                if (handleOpenRedisAdmin) handleOpenRedisAdmin();
+                else handleOpenDevCenter();
+            }
+        },
         {
             id: 'desktop-filemanager',
             name: '文件管理',

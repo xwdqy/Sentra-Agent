@@ -1,10 +1,10 @@
 import fetch from 'node-fetch';
-import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { createLogger } from './utils/logger.js';
 import { preprocessPlainModelOutput } from './components/OutputPreprocessor.js';
+import { loadEnv, initEnvWatcher, onEnvReload } from './utils/envHotReloader.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,12 +29,13 @@ function previewData(data, limit = 1200) {
 class Agent {
   constructor(config = {}) {
     // 支持自定义环境变量路径
-    if (config.envPath) {
-      const envPath = path.resolve(config.envPath);
-      if (fs.existsSync(envPath)) {
-        dotenv.config({ path: envPath });
-      }
-    }
+    this._envPath = path.resolve(config.envPath || '.env');
+    this._lastEnvMtimeMs = 0;
+
+    try {
+      loadEnv(this._envPath);
+      initEnvWatcher(this._envPath);
+    } catch {}
     
     // 配置优先级：传入参数 > 环境变量 > 默认值
     const maxRetriesRaw =
@@ -55,7 +56,41 @@ class Agent {
       timeout: parseInt(config.timeout || process.env.TIMEOUT || '60000'),
       stream: config.stream !== undefined ? config.stream : false
     };
-    
+
+    this._configFromEnv = {
+      apiKey: config.apiKey === undefined,
+      apiBaseUrl: config.apiBaseUrl === undefined,
+      defaultModel: config.defaultModel === undefined,
+      temperature: config.temperature === undefined,
+      maxTokens: config.maxTokens === undefined,
+      maxRetries: config.maxRetries === undefined,
+      timeout: config.timeout === undefined
+    };
+
+    this._refreshConfigFromEnv = () => {
+      try {
+        if (this._configFromEnv.apiKey) this.config.apiKey = process.env.API_KEY;
+        if (this._configFromEnv.apiBaseUrl) this.config.apiBaseUrl = process.env.API_BASE_URL || 'https://yuanplus.chat/v1';
+        if (this._configFromEnv.defaultModel) this.config.defaultModel = process.env.MAIN_AI_MODEL || 'gpt-3.5-turbo';
+        if (this._configFromEnv.temperature) this.config.temperature = parseFloat(process.env.TEMPERATURE || '0.7');
+        if (this._configFromEnv.maxTokens) this.config.maxTokens = parseInt(process.env.MAX_TOKENS || '4096');
+        if (this._configFromEnv.timeout) this.config.timeout = parseInt(process.env.TIMEOUT || '60000');
+
+        if (this._configFromEnv.maxRetries) {
+          const mrRaw = process.env.MAX_RETRIES !== undefined ? process.env.MAX_RETRIES : '3';
+          let mr = parseInt(mrRaw, 10);
+          if (!Number.isFinite(mr) || mr < 0) mr = 1;
+          this.config.maxRetries = mr;
+        }
+      } catch {}
+    };
+
+    this._refreshConfigFromEnv();
+
+    this._disposeEnvReload = onEnvReload(() => {
+      this._refreshConfigFromEnv();
+    });
+
     if (!this.config.apiKey) {
       throw new Error('API_KEY is required. Please set API_KEY environment variable or pass it in config.');
     }
@@ -72,6 +107,21 @@ class Agent {
       });
     }
   }
+
+  _tryHotReloadEnvOnce() {
+    try {
+      const fullPath = this._envPath;
+      if (!fullPath) return;
+      if (!fs.existsSync(fullPath)) return;
+      const st = fs.statSync(fullPath);
+      const mtime = Number(st && st.mtimeMs ? st.mtimeMs : 0);
+      if (!Number.isFinite(mtime) || mtime <= 0) return;
+      if (mtime <= (this._lastEnvMtimeMs || 0)) return;
+      this._lastEnvMtimeMs = mtime;
+      loadEnv(fullPath);
+      this._refreshConfigFromEnv();
+    } catch {}
+  }
   
   /**
    * 发送聊天请求
@@ -80,6 +130,7 @@ class Agent {
    * @returns {Promise<String>} AI 回复内容
    */
   async chat(messages, modelOrOptions = {}) {
+    this._tryHotReloadEnvOnce();
     // 兼容旧版API：直接传模型名称
     const options = typeof modelOrOptions === 'string' 
       ? { model: modelOrOptions }
@@ -160,26 +211,28 @@ class Agent {
           });
         }
         
-        if (!message || typeof message.content !== 'string' || !message.content.trim()) {
-          logger.warn('Agent.chat: API返回空的 message.content', {
-            messagePreview: previewData(message),
-            responsePreview: previewData(data)
-          });
-        }
-        
+        const toolCalls = message && Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
         // 如果使用了 tools，优先返回 tool_calls 的参数（解析后的JSON对象）
-        if (message.tool_calls && message.tool_calls.length > 0) {
-          const toolCall = message.tool_calls[0];
-          if (toolCall.function && toolCall.function.arguments) {
+        // 注意：tool calling 模式下 message.content 可能为空/不存在，这是正常情况，不应告警。
+        if (toolCalls.length > 0) {
+          const toolCall = toolCalls[0];
+          if (toolCall && toolCall.function && toolCall.function.arguments) {
             try {
-              // 返回解析后的JSON对象
               return JSON.parse(toolCall.function.arguments);
             } catch (parseError) {
               logger.warn('解析 tool_calls 参数失败', parseError.message);
-              // 如果解析失败，返回原始字符串
               return toolCall.function.arguments;
             }
           }
+        }
+
+        if (!message || typeof message.content !== 'string' || !message.content.trim()) {
+          logger.warn('Agent.chat: API返回空的 message.content', {
+            messagePreview: previewData(message),
+            responsePreview: previewData(data),
+            hasTools: requestConfig.tools !== undefined || requestConfig.tool_choice !== undefined
+          });
         }
         
         // 否则返回普通的文本内容

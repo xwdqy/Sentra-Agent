@@ -68,9 +68,7 @@ function validateReplyGateDecisionToolsFormat(response) {
 
   return {
     valid: true,
-    normalized,
-    missingTarget,
-    targetConflict
+    normalized
   };
 }
 

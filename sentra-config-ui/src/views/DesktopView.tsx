@@ -20,6 +20,7 @@ import { IoCubeOutline, IoTerminalOutline, IoBookOutline } from 'react-icons/io5
 import type { DeskWindow, DesktopIcon, FileItem, TerminalWin, AppFolder } from '../types/ui';
 import { AppFolderModal } from '../components/AppFolderModal';
 import { DevCenterV2 } from '../components/DevCenterV2';
+import { RedisAdminManager } from '../components/RedisAdminManager/RedisAdminManager';
 
 export type DesktopViewProps = {
   isSolidColor: boolean;
@@ -118,6 +119,11 @@ export type DesktopViewProps = {
   setDeepWikiOpen: (open: boolean) => void;
   deepWikiMinimized: boolean;
   setDeepWikiMinimized: (min: boolean) => void;
+
+  redisAdminOpen: boolean;
+  setRedisAdminOpen: (open: boolean) => void;
+  redisAdminMinimized: boolean;
+  setRedisAdminMinimized: (min: boolean) => void;
 };
 
 type EnvWindowItemProps = {
@@ -316,6 +322,10 @@ export function DesktopView(props: DesktopViewProps) {
     setDeepWikiOpen,
     deepWikiMinimized,
     setDeepWikiMinimized,
+    redisAdminOpen,
+    setRedisAdminOpen,
+    redisAdminMinimized,
+    setRedisAdminMinimized,
   } = props;
 
   // Folder & window state
@@ -370,6 +380,7 @@ export function DesktopView(props: DesktopViewProps) {
   const openUtilityCount =
     (devCenterOpen ? 1 : 0) +
     (deepWikiOpen ? 1 : 0) +
+    (redisAdminOpen ? 1 : 0) +
     (presetsEditorOpen ? 1 : 0) +
     (presetImporterOpen ? 1 : 0) +
     (fileManagerOpen ? 1 : 0);
@@ -425,6 +436,12 @@ export function DesktopView(props: DesktopViewProps) {
       bringUtilityToFront('deepwiki');
     }
   }, [deepWikiOpen, utilityZMap, bringUtilityToFront]);
+
+  useEffect(() => {
+    if (redisAdminOpen && utilityZMap['redis-admin'] == null) {
+      bringUtilityToFront('redis-admin');
+    }
+  }, [redisAdminOpen, utilityZMap, bringUtilityToFront]);
 
   useEffect(() => {
     if (presetsEditorOpen && utilityZMap['presets-editor'] == null) {
@@ -519,7 +536,7 @@ export function DesktopView(props: DesktopViewProps) {
     extraTabs.push({
       id: 'deepwiki',
       title: 'DeepWiki',
-      icon: <IoBookOutline style={{ color: '#2563eb' }} />,
+      icon: <IoBookOutline style={{ color: '#2563eb' }} />, 
       isActive: activeUtilityId === 'deepwiki',
       onActivate: () => {
         setDeepWikiOpen(true);
@@ -530,6 +547,27 @@ export function DesktopView(props: DesktopViewProps) {
         setDeepWikiOpen(false);
         setDeepWikiMinimized(false);
         if (activeUtilityId === 'deepwiki') {
+          setActiveUtilityId(null);
+        }
+      },
+    });
+  }
+
+  if (redisAdminOpen) {
+    extraTabs.push({
+      id: 'redis-admin',
+      title: 'Redis 管理器',
+      icon: getIconForType('redis-admin', 'module'),
+      isActive: activeUtilityId === 'redis-admin',
+      onActivate: () => {
+        setRedisAdminOpen(true);
+        setRedisAdminMinimized(false);
+        bringUtilityToFront('redis-admin');
+      },
+      onClose: () => {
+        setRedisAdminOpen(false);
+        setRedisAdminMinimized(false);
+        if (activeUtilityId === 'redis-admin') {
           setActiveUtilityId(null);
         }
       },
@@ -645,6 +683,16 @@ export function DesktopView(props: DesktopViewProps) {
         setFileManagerOpen(true);
         setFileManagerMinimized(false);
         bringUtilityToFront('file-manager');
+      }
+    },
+    {
+      name: 'redis-admin',
+      type: 'module' as const,
+      onClick: () => {
+        recordUsage('app:redis-admin');
+        setRedisAdminOpen(true);
+        setRedisAdminMinimized(false);
+        bringUtilityToFront('redis-admin');
       }
     },
     ...allItems.map(item => ({
@@ -785,6 +833,16 @@ export function DesktopView(props: DesktopViewProps) {
               allItems={allItems}
               tools={[
                 {
+                  id: 'redis-admin',
+                  name: 'redis-admin',
+                  subtitle: 'Redis 管理器（可视化）',
+                  onOpen: () => {
+                    setRedisAdminOpen(true);
+                    setRedisAdminMinimized(false);
+                    bringUtilityToFront('redis-admin');
+                  },
+                },
+                {
                   id: 'presets-editor',
                   name: 'presets-editor',
                   subtitle: '预设撰写（内置工具）',
@@ -825,6 +883,35 @@ export function DesktopView(props: DesktopViewProps) {
               onOpenItem={(file) => openWindow(file, { maximize: true })}
               onOpenDeepWiki={handleOpenDeepWiki}
             />
+          </MacWindow>
+        )}
+
+        {redisAdminOpen && (
+          <MacWindow
+            id="redis-admin"
+            title="Redis 管理器"
+            icon={getIconForType('redis-admin', 'module')}
+            safeArea={desktopSafeArea}
+            zIndex={utilityZMap['redis-admin'] ?? 2006}
+            isActive={activeUtilityId === 'redis-admin'}
+            isMinimized={redisAdminMinimized}
+            performanceMode={performanceMode}
+            initialSize={{ width: 1120, height: 720 }}
+            onClose={() => {
+              handleWindowMaximize('redis-admin', false);
+              setRedisAdminOpen(false);
+              setRedisAdminMinimized(false);
+            }}
+            onMinimize={() => {
+              handleWindowMaximize('redis-admin', false);
+              setRedisAdminMinimized(true);
+              setActiveUtilityId(null);
+            }}
+            onMaximize={(isMax) => handleWindowMaximize('redis-admin', isMax)}
+            onFocus={() => { bringUtilityToFront('redis-admin'); }}
+            onMove={() => { }}
+          >
+            <RedisAdminManager addToast={addToast} />
           </MacWindow>
         )}
 
@@ -1039,6 +1126,14 @@ export function DesktopView(props: DesktopViewProps) {
 
               {desktopIcons?.find(i => i.id === 'desktop-dev-center') && (() => {
                 const icon = desktopIcons.find(i => i.id === 'desktop-dev-center')!;
+                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
+                  e.stopPropagation();
+                  icon.onClick();
+                });
+              })()}
+
+              {desktopIcons?.find(i => i.id === 'desktop-redis-admin') && (() => {
+                const icon = desktopIcons.find(i => i.id === 'desktop-redis-admin')!;
                 return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
                   e.stopPropagation();
                   icon.onClick();

@@ -186,6 +186,8 @@ function App() {
   const [devCenterMinimized, setDevCenterMinimized] = useState(() => readBool('sentra_dev_center_minimized', false));
   const [deepWikiOpen, setDeepWikiOpen] = useState(() => readBool('sentra_deepwiki_open', false));
   const [deepWikiMinimized, setDeepWikiMinimized] = useState(() => readBool('sentra_deepwiki_minimized', false));
+  const [redisAdminOpen, setRedisAdminOpen] = useState(() => readBool('sentra_redis_admin_open', false));
+  const [redisAdminMinimized, setRedisAdminMinimized] = useState(() => readBool('sentra_redis_admin_minimized', false));
   const [presetsEditorOpen, setPresetsEditorOpen] = useState(() => readBool('sentra_presets_editor_open', false));
   const [presetsEditorMinimized, setPresetsEditorMinimized] = useState(() => readBool('sentra_presets_editor_minimized', false));
   const [iosPresetsEditorOpen, setIosPresetsEditorOpen] = useState(false);
@@ -202,6 +204,8 @@ function App() {
       localStorage.setItem('sentra_dev_center_minimized', String(devCenterMinimized));
       localStorage.setItem('sentra_deepwiki_open', String(deepWikiOpen));
       localStorage.setItem('sentra_deepwiki_minimized', String(deepWikiMinimized));
+      localStorage.setItem('sentra_redis_admin_open', String(redisAdminOpen));
+      localStorage.setItem('sentra_redis_admin_minimized', String(redisAdminMinimized));
       localStorage.setItem('sentra_presets_editor_open', String(presetsEditorOpen));
       localStorage.setItem('sentra_presets_editor_minimized', String(presetsEditorMinimized));
       localStorage.setItem('sentra_preset_importer_open', String(presetImporterOpen));
@@ -216,6 +220,8 @@ function App() {
     devCenterMinimized,
     deepWikiOpen,
     deepWikiMinimized,
+    redisAdminOpen,
+    redisAdminMinimized,
     presetsEditorOpen,
     presetsEditorMinimized,
     presetImporterOpen,
@@ -251,6 +257,15 @@ function App() {
     }
   };
 
+  const handleOpenRedisAdmin = () => {
+    if (isMobile || isTablet) {
+      addToast('info', '暂不支持', '移动端暂未接入 Redis 管理器，请使用桌面端 WebUI。');
+      return;
+    }
+    setRedisAdminOpen(true);
+    setRedisAdminMinimized(false);
+  };
+
   // terminal run handlers now provided by useTerminals
 
   // close/minimize handled by useTerminals
@@ -276,6 +291,7 @@ function App() {
       setDevCenterMinimized(false);
     },
     handleOpenPresetImporter,
+    handleOpenRedisAdmin,
   );
 
   // Desktop folders (for desktop view)
@@ -678,6 +694,10 @@ function App() {
         setDeepWikiOpen={setDeepWikiOpen}
         deepWikiMinimized={deepWikiMinimized}
         setDeepWikiMinimized={setDeepWikiMinimized}
+        redisAdminOpen={redisAdminOpen}
+        setRedisAdminOpen={setRedisAdminOpen}
+        redisAdminMinimized={redisAdminMinimized}
+        setRedisAdminMinimized={setRedisAdminMinimized}
       />
     </Suspense>
   );
