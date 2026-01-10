@@ -1,8 +1,238 @@
 import fssync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
 import logger from '../../src/logger/index.js';
 import { httpClient } from '../../src/utils/http.js';
+import mime from 'mime-types';
+
+function normalizeBaseUrl(raw) {
+  const v = String(raw || '').trim();
+  if (!v) return '';
+  return v.endsWith('/') ? v.slice(0, -1) : v;
+}
+
+async function postJsonWithRetry(url, data, timeoutMs, retries, retryBaseMs, headers) {
+  let attempt = 0;
+  while (true) {
+    try {
+      const res = await httpClient.post(url, data, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(headers && typeof headers === 'object' ? headers : {}),
+        },
+        timeout: timeoutMs,
+        validateStatus: () => true,
+      });
+      const status = Number(res?.status);
+      if (!Number.isFinite(status) || status < 200 || status >= 300) {
+        const err = new Error(`HTTP ${Number.isFinite(status) ? status : 'unknown'}`);
+        err.response = res;
+        throw err;
+      }
+      return res;
+    } catch (e) {
+      attempt++;
+      if (attempt > retries || !shouldRetry(e)) throw e;
+      await sleep(retryBaseMs * Math.pow(2, attempt - 1));
+    }
+  }
+}
+
+function isHttpUrl(s) {
+  try { const u = new URL(String(s)); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
+}
+
+function isGeminiBaseUrl(baseUrl) {
+  try {
+    const u = new URL(String(baseUrl));
+    return String(u.hostname || '').includes('generativelanguage.googleapis.com');
+  } catch {
+    return false;
+  }
+}
+
+function normalizeWhisperMode(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (!v) return 'whisper';
+  if (['gemini', 'google', 'google_gemini'].includes(v)) return 'gemini';
+  if (['chat', 'chat_completions', 'chat-completions', 'completions'].includes(v)) return 'chat';
+  return 'whisper';
+}
+
+function guessAudioMimeByPath(p) {
+  const m = String(mime.lookup(String(p || '')) || '').trim();
+  if (m && (m.startsWith('audio/') || m.startsWith('video/'))) return m;
+  return 'audio/mpeg';
+}
+
+function guessInputAudioFormatByPath(p) {
+  const ext = String(path.extname(String(p || '')) || '').toLowerCase().replace(/^\./, '');
+  if (!ext) return 'mp3';
+  if (ext === 'mpeg' || ext === 'mpga') return 'mp3';
+  if (ext === 'mp4') return 'm4a';
+  return ext;
+}
+
+function buildGeminiGenerateContentUrl(baseUrl, model, apiKey) {
+  const safeBase = normalizeBaseUrl(baseUrl);
+  return `${safeBase}/models/${encodeURIComponent(String(model || '').trim())}:generateContent`;
+}
+
+function isGeminiUnsupportedAudio(mimeType, format) {
+  const mt = String(mimeType || '').toLowerCase();
+  const fmt = String(format || '').toLowerCase();
+  if (fmt === 'amr') return true;
+  if (mt === 'audio/amr' || mt.endsWith('/amr')) return true;
+  return false;
+}
+
+function isAmrAudio(mimeType, format, filePath) {
+  const mt = String(mimeType || '').toLowerCase();
+  const fmt = String(format || '').toLowerCase();
+  const ext = String(path.extname(String(filePath || '')) || '').toLowerCase();
+  return fmt === 'amr' || mt === 'audio/amr' || mt.endsWith('/amr') || ext === '.amr';
+}
+
+function shouldAttemptFfmpegForAmrMagic(magic) {
+  const m = String(magic || '').toUpperCase();
+  if (!m) return true;
+  if (m === 'AMR' || m === 'AMR-WB') return true;
+  return false;
+}
+
+function sniffAudioMagic(buf) {
+  try {
+    const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || []);
+    const s = b.slice(0, 16).toString('utf8');
+    if (s.startsWith('#!AMR-WB')) return 'AMR-WB';
+    if (s.startsWith('#!AMR')) return 'AMR';
+    if (s.startsWith('#!SILK_V3')) return 'SILK_V3';
+    if (b.length >= 4 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) return 'RIFF';
+    if (b.length >= 4 && b[0] === 0x4f && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return 'OGG';
+    if (b.length >= 4 && b[0] === 0x66 && b[1] === 0x4c && b[2] === 0x61 && b[3] === 0x43) return 'FLAC';
+    if (b.length >= 3 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return 'MP3_ID3';
+    if (b.length >= 2 && b[0] === 0xff && (b[1] & 0xe0) === 0xe0) return 'MP3';
+    if (b.length >= 8 && b.slice(4, 8).toString('utf8') === 'ftyp') return 'MP4';
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+const __ffmpegAvailCache = new Map();
+async function checkFfmpegAvailable(ffmpegBin = 'ffmpeg') {
+  const key = String(ffmpegBin || 'ffmpeg').trim() || 'ffmpeg';
+  if (__ffmpegAvailCache.has(key)) return __ffmpegAvailCache.get(key);
+  let ok = false;
+  let preview = '';
+  try {
+    await new Promise((resolve, reject) => {
+      const p = spawn(key, ['-version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const chunks = [];
+      const onData = (d) => {
+        if (chunks.length >= 3) return;
+        const s = String(d || '');
+        if (s) chunks.push(s);
+      };
+      p.stdout.on('data', onData);
+      p.stderr.on('data', onData);
+      p.on('error', reject);
+      p.on('exit', (code) => {
+        preview = chunks.join('').slice(0, 300);
+        (code === 0 ? resolve() : reject(new Error(`ffmpeg exit ${code}`)));
+      });
+    });
+    ok = true;
+  } catch {
+    ok = false;
+  }
+  __ffmpegAvailCache.set(key, ok);
+  return ok;
+}
+
+async function transcodeAudioToWavWithFfmpeg(inputPath, outputDir, timeoutMs, ffmpegBin = 'ffmpeg') {
+  const out = path.join(outputDir, `av_transcribe_${Date.now()}_${Math.random().toString(36).slice(2)}.wav`);
+  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', inputPath, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', out];
+  const startedAt = Date.now();
+  let stderr = '';
+  await new Promise((resolve, reject) => {
+    const p = spawn(ffmpegBin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const killTimer = setTimeout(() => {
+      try { p.kill('SIGKILL'); } catch {}
+      reject(new Error('ffmpeg timeout'));
+    }, Math.max(10000, Math.min(300000, timeoutMs || 60000)));
+    p.stderr.on('data', (d) => {
+      const chunk = String(d || '');
+      stderr = (stderr + chunk).slice(-4000);
+    });
+    p.on('error', (e) => {
+      clearTimeout(killTimer);
+      reject(e);
+    });
+    p.on('exit', (code) => {
+      clearTimeout(killTimer);
+      if (code === 0) resolve();
+      else {
+        const u = (Number(code) >>> 0);
+        const hex = '0x' + u.toString(16).padStart(8, '0');
+        const signed = (Number(code) | 0);
+        const cmdPreview = `${ffmpegBin} ${args.map((a) => (String(a).includes(' ') ? JSON.stringify(a) : a)).join(' ')}`;
+        reject(new Error(`ffmpeg failed (code=${code}, signed=${signed}, hex=${hex}) cmd=${cmdPreview} stderr=${stderr.slice(-800)}`));
+      }
+    });
+  });
+
+  return { outPath: out, elapsedMs: Date.now() - startedAt, stderrPreview: stderr.slice(0, 800) };
+}
+
+function pickGeminiText(resData) {
+  const parts = resData?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  const texts = parts.map((p) => (p && typeof p.text === 'string' ? p.text : '')).map((t) => t.trim()).filter(Boolean);
+  return texts.join('\n');
+}
+
+async function readAudioAsDataUri(src, { timeoutMs, headers }) {
+  let buf;
+  let type = '';
+  let format = '';
+  let magic = '';
+  if (isHttpUrl(src)) {
+    const res = await httpClient.get(String(src), {
+      responseType: 'arraybuffer',
+      timeout: timeoutMs,
+      maxBodyLength: Infinity,
+      headers,
+      validateStatus: () => true,
+    });
+    const status = Number(res?.status);
+    if (!Number.isFinite(status) || status < 200 || status >= 300) {
+      throw new Error(`fetch audio failed: HTTP ${Number.isFinite(status) ? status : 'unknown'}`);
+    }
+    buf = Buffer.from(res.data);
+    const ct = (res.headers?.['content-type'] || '').split(';')[0].trim();
+    if (ct && (ct.startsWith('audio/') || ct.startsWith('video/'))) type = ct;
+    if (!type) {
+      try { const u = new URL(String(src)); type = guessAudioMimeByPath(u.pathname); } catch {}
+    }
+    if (!format) {
+      try { const u = new URL(String(src)); format = guessInputAudioFormatByPath(u.pathname); } catch {}
+    }
+  } else {
+    const p = path.resolve(String(src));
+    if (!path.isAbsolute(p)) throw new Error('local audio path must be absolute');
+    buf = fssync.readFileSync(p);
+    type = guessAudioMimeByPath(p);
+    format = guessInputAudioFormatByPath(p);
+  }
+
+  if (!buf || !buf.length) throw new Error('empty audio file');
+  magic = sniffAudioMagic(buf);
+
+  const dataUri = `data:${type};base64,${buf.toString('base64')}`;
+  return { uri: dataUri, mime: type, size: buf.length, base64: buf.toString('base64'), format, magic };
+}
 
 function isTimeoutError(e) {
   const msg = String(e?.message || e || '').toLowerCase();
@@ -29,6 +259,18 @@ function buildAdvice(kind, ctx = {}) {
       context: ctx,
     };
   }
+  if (kind === 'NO_API_KEY') {
+    return {
+      suggested_reply: '我这边缺少语音转写服务的鉴权信息（API Key），所以暂时无法开始转写。你可以把 WHISPER_API_KEY 配置好后再试；如果你不方便配置，我也可以先按你的需求给出“整理/摘要/时间轴”的结构模板。\n\n（请结合你当前的预设/人设继续作答）',
+      next_steps: [
+        '在插件环境中配置 WHISPER_API_KEY（必填）',
+        '可选配置 WHISPER_BASE_URL 与 WHISPER_MODEL',
+        '如果文件较大，建议先截取关键片段或压缩码率',
+      ],
+      persona_hint: personaHint,
+      context: ctx,
+    };
+  }
   if (kind === 'FILE_NOT_FOUND') {
     return {
       suggested_reply: '我没有找到你提供的本地文件路径，所以没法开始转写。你确认一下路径是否存在、是否有权限读取，然后再试一次。\n\n（请结合你当前的预设/人设继续作答）',
@@ -48,6 +290,53 @@ function buildAdvice(kind, ctx = {}) {
         '稍后重试',
         '如果文件较大，建议先截取关键片段或压缩码率',
         '如果是 URL，建议先下载成本地文件再转写',
+      ],
+      persona_hint: personaHint,
+      context: ctx,
+    };
+  }
+  if (kind === 'SUSPECT') {
+    return {
+      suggested_reply: '我拿到了转写结果，但看起来像是占位/默认文本，并不像来自你这段语音本身（可能是接口未真正读取音频或音频格式不被该模式支持）。为了避免误导，我建议我们换一种方式再转写一次。\n\n（请结合你当前的预设/人设继续作答）',
+      next_steps: [
+        '把 WHISPER_MODE 切回 whisper（/audio/transcriptions）再试一次（更兼容音频格式）',
+        '把语音转成 wav/mp3/m4a 后再试（尤其是 amr 语音）',
+        '如果你有公网可访问的音频链接（http/https），也可以直接给链接',
+      ],
+      persona_hint: personaHint,
+      context: ctx,
+    };
+  }
+  if (kind === 'UNSUPPORTED_FORMAT') {
+    return {
+      suggested_reply: '这段语音的格式在当前模式下不被支持（常见是 QQ 语音 amr）。为了保证转写准确性，我建议换一种更兼容的转写方式。\n\n（请结合你当前的预设/人设继续作答）',
+      next_steps: [
+        '把 WHISPER_MODE 切回 whisper（/audio/transcriptions）再试一次',
+        '或先把 amr 转成 wav/mp3/m4a 再转写',
+      ],
+      persona_hint: personaHint,
+      context: ctx,
+    };
+  }
+  if (kind === 'FFMPEG') {
+    return {
+      suggested_reply: '我尝试用系统 ffmpeg 将音频转码后再转写，但 ffmpeg 执行失败了，所以这次没能继续。你可以先确认 ffmpeg 能在当前环境正常运行，然后我们再重试。\n\n（请结合你当前的预设/人设继续作答）',
+      next_steps: [
+        '在本机终端执行：ffmpeg -version（或用你配置的绝对路径执行）确认能输出版本信息',
+        '确认 FFMPEG_PATH 指向的就是 ffmpeg 可执行文件（Windows 建议写成 D:/ffmpeg.exe 或 C:/ffmpeg/bin/ffmpeg.exe）',
+        '如果 ffmpeg 本身能运行但转码失败，尝试把原始 amr 重新下载一次或换一条语音',
+      ],
+      persona_hint: personaHint,
+      context: ctx,
+    };
+  }
+  if (kind === 'INVALID_AUDIO') {
+    return {
+      suggested_reply: '我读取到的音频文件内容为空或格式异常（扩展名与真实格式可能不一致），所以无法转写。你可以先确认文件本身是可播放的音频，再重试。\n\n（请结合你当前的预设/人设继续作答）',
+      next_steps: [
+        '确认该文件不是 0 字节，并且可以在本机播放器里正常播放',
+        '如果文件扩展名是 .amr 但头部是 #!SILK_V3（QQ 语音常见），需要先用 QQ/微信导出为 mp3/m4a，或用 SILK 解码工具转换后再转写',
+        '如果是刚生成/刚下载的语音，稍等 1-2 秒再重试，避免文件还没写入完成',
       ],
       persona_hint: personaHint,
       context: ctx,
@@ -236,9 +525,19 @@ function normalizeTranscribeOutput(raw, extra = {}) {
     const text = String(raw.text || raw.transcript || raw.content || raw.result || '').trim();
     const langRaw = raw.language_name || raw.language || '';
     const langInfo = guessLanguageInfo(langRaw, extra.languageHint);
+    const segments = Array.isArray(raw.segments)
+      ? raw.segments
+          .map((s, idx) => ({
+            index: typeof s?.id === 'number' ? s.id : idx,
+            start: typeof s?.start === 'number' ? s.start : undefined,
+            end: typeof s?.end === 'number' ? s.end : undefined,
+            text: String(s?.text || '').trim(),
+          }))
+          .filter((s) => s.text)
+      : (text ? [{ index: 0, text }] : []);
     return {
       text,
-      segments: text ? [{ index: 0, text }] : [],
+      segments,
       language: langInfo,
       meta: { ...baseMeta, raw, rawType: 'object' },
     };
@@ -292,12 +591,16 @@ function shouldRetry(e) {
   return false;
 }
 
-async function postWithRetry(url, formData, timeoutMs, retries, retryBaseMs) {
+async function postWithRetry(url, formData, timeoutMs, retries, retryBaseMs, extraHeaders) {
   let attempt = 0;
   while (true) {
     try {
+      const mergedHeaders = {
+        ...(typeof formData?.getHeaders === 'function' ? formData.getHeaders() : {}),
+        ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}),
+      };
       const res = await httpClient.post(url, formData, {
-        headers: formData.getHeaders(),
+        headers: mergedHeaders,
         timeout: timeoutMs,
         maxBodyLength: Infinity,
         maxContentLength: Infinity,
@@ -327,9 +630,12 @@ export default async function handler(args = {}, options = {}) {
   }
   
   const penv = options?.pluginEnv || {};
-  const baseUrl = String(penv.OPENAI_BASE_URL || process.env.OPENAI_BASE_URL || 'https://yuanplus.chat/v1');
+  const baseUrl = normalizeBaseUrl(penv.WHISPER_BASE_URL || process.env.WHISPER_BASE_URL || 'https://api.openai.com/v1');
+  const apiKey = String(penv.WHISPER_API_KEY || process.env.WHISPER_API_KEY || '').trim();
+  const mode = normalizeWhisperMode(penv.WHISPER_MODE || process.env.WHISPER_MODE || 'whisper');
   const model = String(penv.WHISPER_MODEL || process.env.WHISPER_MODEL || 'whisper-1');
   const timeoutMs = Number(penv.WHISPER_TIMEOUT_MS || process.env.WHISPER_TIMEOUT_MS || 300000);
+  const ffmpegBin = String(penv.FFMPEG_PATH || process.env.FFMPEG_PATH || 'ffmpeg').trim() || 'ffmpeg';
   // Chunking config (env)
   const chunkEnabledRaw = String(penv.AV_CHUNK_ENABLED ?? '1').trim().toLowerCase();
   const chunkEnabled = !(chunkEnabledRaw === '0' || chunkEnabledRaw === 'false' || chunkEnabledRaw === 'off' || chunkEnabledRaw === 'no');
@@ -341,12 +647,197 @@ export default async function handler(args = {}, options = {}) {
   const retryBaseMs = Math.max(100, Number(penv.AV_RETRY_BASE_MS || 600));
   
   try {
+    if (!apiKey) {
+      return { success: false, code: 'NO_API_KEY', error: 'WHISPER_API_KEY is required', advice: buildAdvice('NO_API_KEY', { tool: 'av_transcribe' }) };
+    }
+
     logger.info?.('av_transcribe:start', {
       label: 'PLUGIN',
       file: filePath,
-      language: language || 'auto',
-      model
+      language: (mode === 'chat' || mode === 'gemini') ? null : (language || 'auto'),
+      model,
+      mode
     });
+
+    const baseTmpDir = resolveBaseDir(penv);
+
+    if (mode === 'chat' || mode === 'gemini') {
+      const fetchHeaders = buildFetchHeaders(penv, args);
+
+      const chatLanguage = null;
+      const chatPrompt = null;
+
+      const isUrlAudio = isHttpUrl(filePath);
+      let localAudio = !isUrlAudio ? await readAudioAsDataUri(filePath, { timeoutMs, headers: fetchHeaders }) : null;
+      const audioUrl = isUrlAudio ? filePath : null;
+
+      if (!isUrlAudio && isAmrAudio(localAudio.mime, localAudio.format, filePath) && !shouldAttemptFfmpegForAmrMagic(localAudio.magic)) {
+        return {
+          success: false,
+          code: 'UNSUPPORTED_AUDIO_FORMAT',
+          error: `unsupported audio content: magic=${localAudio.magic || 'unknown'} ext=.amr`,
+          advice: buildAdvice('INVALID_AUDIO', { tool: 'av_transcribe', file: filePath, magic: localAudio.magic, format: localAudio.format, mime: localAudio.mime }),
+        };
+      }
+
+      if (!isUrlAudio && isAmrAudio(localAudio.mime, localAudio.format, filePath)) {
+        const ok = await checkFfmpegAvailable(ffmpegBin);
+        if (ok) {
+          logger.info?.('av_transcribe:ffmpeg_transcode_start', { label: 'PLUGIN', from: filePath, to: 'wav' });
+          let r;
+          try {
+            r = await transcodeAudioToWavWithFfmpeg(filePath, baseTmpDir, timeoutMs, ffmpegBin);
+          } catch (e) {
+            return { success: false, code: 'FFMPEG_ERR', error: String(e?.message || e), advice: buildAdvice('FFMPEG', { tool: 'av_transcribe', file: filePath, ffmpeg: ffmpegBin }) };
+          }
+          try {
+            localAudio = await readAudioAsDataUri(r.outPath, { timeoutMs, headers: fetchHeaders });
+            localAudio.format = 'wav';
+            localAudio.mime = 'audio/wav';
+          } finally {
+            try { fssync.unlinkSync(r.outPath); } catch {}
+          }
+        }
+      }
+
+      const instructionParts = [
+        'You are a precise audio transcription assistant.',
+        'Transcribe the provided audio into plain text only.',
+        'Do not add any extra commentary or formatting.',
+        'Do not translate. Keep the original language exactly as spoken.',
+      ];
+      if (chatLanguage) instructionParts.push(`Language hint: ${String(chatLanguage)}`);
+      if (chatPrompt) instructionParts.push(`Context hint: ${String(chatPrompt)}`);
+      const userText = instructionParts.join('\n');
+
+      const items = [{ type: 'text', text: userText }];
+      if (isUrlAudio) {
+        items.push({ type: 'audio_url', audio_url: { url: audioUrl } });
+      } else {
+        items.push({ type: 'input_audio', input_audio: { data: localAudio.base64, format: localAudio.format } });
+      }
+
+      if (mode === 'gemini' || isGeminiBaseUrl(baseUrl)) {
+        const url = buildGeminiGenerateContentUrl(baseUrl, model, apiKey);
+        let geminiAudio = isUrlAudio ? await readAudioAsDataUri(filePath, { timeoutMs, headers: fetchHeaders }) : localAudio;
+        if (isGeminiUnsupportedAudio(geminiAudio.mime, geminiAudio.format) && !shouldAttemptFfmpegForAmrMagic(geminiAudio.magic)) {
+          return {
+            success: false,
+            code: 'UNSUPPORTED_AUDIO_FORMAT',
+            error: `unsupported audio content: magic=${geminiAudio.magic || 'unknown'} ext=${String(path.extname(filePath || '') || '')}`,
+            advice: buildAdvice('INVALID_AUDIO', { tool: 'av_transcribe', file: filePath, magic: geminiAudio.magic, format: geminiAudio.format, mime: geminiAudio.mime }),
+          };
+        }
+        if (isGeminiUnsupportedAudio(geminiAudio.mime, geminiAudio.format)) {
+          const ok = await checkFfmpegAvailable(ffmpegBin);
+          if (ok && isUrlAudio) {
+            const tmpIn = path.join(baseTmpDir, `av_transcribe_${Date.now()}_${Math.random().toString(36).slice(2)}.amr`);
+            try {
+              fssync.writeFileSync(tmpIn, Buffer.from(geminiAudio.base64, 'base64'));
+              logger.info?.('av_transcribe:ffmpeg_transcode_start', { label: 'PLUGIN', from: 'url(audio)', to: 'wav' });
+              let r;
+              try {
+                r = await transcodeAudioToWavWithFfmpeg(tmpIn, baseTmpDir, timeoutMs, ffmpegBin);
+              } catch (e) {
+                return { success: false, code: 'FFMPEG_ERR', error: String(e?.message || e), advice: buildAdvice('FFMPEG', { tool: 'av_transcribe', file: filePath, ffmpeg: ffmpegBin }) };
+              }
+              try {
+                geminiAudio = await readAudioAsDataUri(r.outPath, { timeoutMs, headers: fetchHeaders });
+                geminiAudio.format = 'wav';
+                geminiAudio.mime = 'audio/wav';
+              } finally {
+                try { fssync.unlinkSync(r.outPath); } catch {}
+              }
+            } finally {
+              try { fssync.unlinkSync(tmpIn); } catch {}
+            }
+          }
+        }
+        if (isGeminiUnsupportedAudio(geminiAudio.mime, geminiAudio.format)) {
+          return {
+            success: false,
+            code: 'UNSUPPORTED_AUDIO_FORMAT',
+            error: `unsupported audio format for gemini: ${geminiAudio.format || geminiAudio.mime || 'unknown'}`,
+            advice: buildAdvice('UNSUPPORTED_FORMAT', { tool: 'av_transcribe', file: filePath, mode: 'gemini', provider: 'gemini', model, audioFormat: geminiAudio.format, audioMime: geminiAudio.mime }),
+          };
+        }
+        const parts = [
+          { text: userText },
+          { inlineData: { mimeType: geminiAudio.mime || 'audio/mpeg', data: geminiAudio.base64 } },
+        ];
+
+        logger.info?.('av_transcribe:chat_call', {
+          label: 'PLUGIN',
+          url,
+          provider: 'gemini',
+          model,
+          language: null,
+          source: isUrlAudio ? 'url' : 'file',
+          audioFormat: geminiAudio.format,
+          audioMime: geminiAudio.mime,
+          audioBytes: geminiAudio.size,
+        });
+
+        const res = await postJsonWithRetry(
+          url,
+          {
+            contents: [{ role: 'user', parts }],
+            generationConfig: { temperature: 0 },
+          },
+          timeoutMs,
+          retries,
+          retryBaseMs,
+          { ...(apiKey ? { 'x-goog-api-key': apiKey } : {}) }
+        );
+        const content = pickGeminiText(res?.data);
+        const text = String(content || '').trim();
+        if (!text) {
+          return { success: false, code: 'EMPTY_TRANSCRIPTION', error: 'empty transcription result', advice: buildAdvice('ERR', { tool: 'av_transcribe', file: filePath, mode: 'gemini', provider: 'gemini', model }) };
+        }
+        const normalized = normalizeTranscribeOutput({ text, language: '' }, {
+          model,
+          file: filePath,
+          chunks: 1,
+          source: 'chat',
+          languageHint: null,
+        });
+        return { success: true, code: 'OK', data: normalized };
+      }
+
+      const url = `${baseUrl}/chat/completions`;
+      logger.info?.('av_transcribe:chat_call', {
+        label: 'PLUGIN',
+        url,
+        provider: 'openai_compatible',
+        model,
+        language: null,
+        source: isUrlAudio ? 'url' : 'file',
+        audioFormat: isUrlAudio ? null : localAudio.format,
+        audioMime: isUrlAudio ? null : localAudio.mime,
+        audioBytes: isUrlAudio ? null : localAudio.size,
+      });
+      const res = await postJsonWithRetry(
+        url,
+        { model, messages: [{ role: 'user', content: items }] },
+        timeoutMs,
+        retries,
+        retryBaseMs,
+        { Authorization: `Bearer ${apiKey}` }
+      );
+      const content = res?.data?.choices?.[0]?.message?.content || '';
+      const text = String(content || '').trim();
+      if (!text) {
+        return { success: false, code: 'EMPTY_TRANSCRIPTION', error: 'empty transcription result', advice: buildAdvice('ERR', { tool: 'av_transcribe', file: filePath, mode: 'chat', provider: 'openai_compatible', model }) };
+      }
+      const normalized = normalizeTranscribeOutput({ text, language: '' }, {
+        model,
+        file: filePath,
+        chunks: 1,
+        source: 'chat',
+        languageHint: null,
+      });
+      return { success: true, code: 'OK', data: normalized };
+    }
     
     // 支持本地文件与 http/https URL
     const isUrl = filePath.startsWith('http://') || filePath.startsWith('https://');
@@ -358,7 +849,6 @@ export default async function handler(args = {}, options = {}) {
     let fileSize = null; let acceptRanges = '';
     let localPath = filePath; let usingTemp = false;
     const fetchHeaders = buildFetchHeaders(penv, args);
-    const baseTmpDir = resolveBaseDir(penv);
     if (isUrl) {
       const info = await headRemote(filePath, timeoutMs, fetchHeaders);
       if (!Number.isFinite(info.size) || !String(info.acceptRanges || '').includes('bytes')) {
@@ -395,8 +885,10 @@ export default async function handler(args = {}, options = {}) {
       if (language) formData.append('language', language);
       if (prompt) formData.append('prompt', prompt);
 
+      const headers = { Authorization: `Bearer ${apiKey}` };
+
       logger.info?.('av_transcribe:api_call', { label: 'PLUGIN', url: `${baseUrl}/audio/transcriptions`, model, language, source: isUrl ? 'url' : 'file', mode: 'single' });
-      const response = await postWithRetry(`${baseUrl}/audio/transcriptions`, formData, timeoutMs, retries, retryBaseMs);
+      const response = await postWithRetry(`${baseUrl}/audio/transcriptions`, formData, timeoutMs, retries, retryBaseMs, headers);
       logger.info?.('av_transcribe:complete', { label: 'PLUGIN' });
       const raw = response.data;
       if (usingTemp) { try { fssync.unlinkSync(localPath); } catch {} }
@@ -438,17 +930,16 @@ export default async function handler(args = {}, options = {}) {
       const chunkPrompt = chunks.length > 1 ? (prompt ? `${prompt}${addition}` : addition) : (prompt || '');
       if (chunkPrompt) formData.append('prompt', chunkPrompt);
 
-      const res = await postWithRetry(`${baseUrl}/audio/transcriptions`, formData, timeoutMs, retries, retryBaseMs);
+      const headers = { Authorization: `Bearer ${apiKey}` };
+
+      const res = await postWithRetry(`${baseUrl}/audio/transcriptions`, formData, timeoutMs, retries, retryBaseMs, headers);
       const data = res.data;
       // 归一化每片结果
       let text = '';
       let lang = '';
-      if (data && data.success && Array.isArray(data.data) && data.data.length >= 2) {
-        text = String(data.data[0] || '');
-        lang = String(data.data[1] || '');
-      } else if (data && typeof data === 'object') {
-        text = String(data.text || data.transcript || data.content || '');
-        lang = String(data.language_name || data.language || '');
+      if (data && typeof data === 'object') {
+        text = String(data.text || '').trim();
+        lang = String(data.language || '').trim();
       } else if (typeof data === 'string') {
         text = data;
       }
@@ -485,13 +976,14 @@ export default async function handler(args = {}, options = {}) {
     logger.error?.('av_transcribe:error', {
       label: 'PLUGIN',
       error: String(e?.message || e),
+      detail: toErrInfo(e),
       stack: e?.stack
     });
 
     const isTimeout = isTimeoutError(e);
     const code = isTimeout ? 'TIMEOUT' : 'ERR';
     const kind = isTimeout ? 'TIMEOUT' : 'ERR';
-    const isUrl = filePath.startsWith('http://') || filePath.startsWith('https://');
+    const isUrl = String(filePath || '').startsWith('http://') || String(filePath || '').startsWith('https://');
     return { success: false, code, error: String(e?.message || e), advice: buildAdvice(kind, { tool: 'av_transcribe', file: filePath, source: isUrl ? 'url' : 'file' }) };
   }
 }

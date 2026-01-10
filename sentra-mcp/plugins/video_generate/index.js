@@ -42,11 +42,11 @@ function buildAdvice(kind, ctx = {}) {
       context: ctx,
     };
   }
-  if (kind === 'NO_MD_VIDEO') {
+  if (kind === 'NO_VIDEO_LINK') {
     return {
-      suggested_reply: '我已经尝试生成视频并要求输出 Markdown 链接，但模型没有按要求给出可用的视频链接，所以这次生成失败了。我可以把提示词改得更强约束，然后再试一次。\n\n（请结合你当前的预设/人设继续作答）',
+      suggested_reply: '我已经尝试生成视频，但返回内容里没有可用的视频直链（可能返回了描述文本，或链接被包装在不可解析的格式里），所以这次生成失败了。我可以把提示词改得更强约束，然后再试一次。\n\n（请结合你当前的预设/人设继续作答）',
       next_steps: [
-        '缩短提示词，明确要求“必须输出至少 1 个可下载视频直链的 Markdown 链接”',
+        '缩短提示词，明确要求“必须输出至少 1 个可下载视频直链（mp4/webm）”',
         '如果你愿意，也可以改成“先给分镜脚本，再生成视频”',
       ],
       persona_hint: personaHint,
@@ -80,6 +80,76 @@ function isHttpUrl(s) {
   try { const u = new URL(String(s)); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
 }
 
+function htmlUnescapeBasic(s) {
+  return String(s || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function isLikelyVideoUrl(url) {
+  if (!isHttpUrl(url)) return false;
+  try {
+    const u = new URL(url);
+    const p = u.pathname.toLowerCase();
+    if (/(\.mp4|\.webm|\.mov|\.mkv|\.m4v)(?:$|\?)/i.test(url)) return true;
+    if (/(\.mp4|\.webm|\.mov|\.mkv|\.m4v)$/.test(p)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function findHtmlMediaSrcLinks(html) {
+  const s = String(html || '');
+  const out = [];
+
+  const push = (rawUrl) => {
+    const u = htmlUnescapeBasic(String(rawUrl || '').trim());
+    if (!u) return;
+    out.push(u);
+  };
+
+  const reVideo = /<video\b[^>]*\bsrc\s*=\s*(["'])([^"']+)\1[^>]*>/gi;
+  let m;
+  while ((m = reVideo.exec(s)) !== null) push(m[2]);
+
+  const reSource = /<source\b[^>]*\bsrc\s*=\s*(["'])([^"']+)\1[^>]*>/gi;
+  while ((m = reSource.exec(s)) !== null) push(m[2]);
+
+  return out;
+}
+
+function findBareVideoUrls(text) {
+  const s = String(text || '');
+  const re = /(https?:\/\/[^\s"'<>]+(?:\.mp4|\.webm|\.mov|\.mkv|\.m4v)(?:\?[^\s"'<>]+)?)/gi;
+  const out = [];
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    out.push(String(m[1] || '').trim());
+  }
+  return out;
+}
+
+function collectVideoUrlCandidates(text) {
+  const markdownLinks = findMarkdownLinks(text).map((l) => String(l?.url || '').trim()).filter((u) => isHttpUrl(u));
+  const htmlLinks = findHtmlMediaSrcLinks(text).filter((u) => isHttpUrl(u));
+  const bareLinks = findBareVideoUrls(text).filter((u) => isHttpUrl(u));
+  const all = [...markdownLinks, ...htmlLinks, ...bareLinks];
+  const seen = new Set();
+  const candidates = [];
+  for (const u of all) {
+    const key = String(u || '').trim();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push(key);
+  }
+  return candidates;
+}
+
 function findMarkdownLinks(md) {
   const re = /\[([^\]]*)\]\(([^)]+)\)/g;
   const out = [];
@@ -91,9 +161,9 @@ function findMarkdownLinks(md) {
   return out;
 }
 
-function hasMarkdownVideo(md) {
-  const links = findMarkdownLinks(md);
-  return links.some((l) => isHttpUrl(l.url));
+function hasVideoLink(md) {
+  const candidates = collectVideoUrlCandidates(md);
+  return candidates.length > 0;
 }
 
 async function collectVerifiedLocalMarkdownVideos(md) {
@@ -116,15 +186,15 @@ async function collectVerifiedLocalMarkdownVideos(md) {
 }
 
 async function downloadVideosAndRewrite(md, prefix = 'video') {
-  const links = findMarkdownLinks(md).filter((l) => isHttpUrl(l.url));
-  if (!links.length) return md;
+  const candidates = collectVideoUrlCandidates(md);
+  if (!candidates.length) return md;
 
   const baseDir = 'artifacts';
   await fs.mkdir(baseDir, { recursive: true });
 
   const map = new Map();
   let idx = 0;
-  for (const { url } of links) {
+  for (const url of candidates) {
     try {
       const res = await httpRequest({
         method: 'GET',
@@ -161,11 +231,33 @@ async function downloadVideosAndRewrite(md, prefix = 'video') {
     }
   }
 
-  return String(md || '').replace(/\[([^\]]*)\]\(([^)]+)\)/g, (full, text, url) => {
+  let out = String(md || '').replace(/\[([^\]]*)\]\(([^)]+)\)/g, (full, text, url) => {
     const key = String(url || '').trim();
     if (map.has(key)) return `[${text}](${map.get(key)})`;
     return full;
   });
+
+  out = out.replace(/(<video\b[^>]*\bsrc\s*=\s*)(["'])([^"']+)(\2)/gi, (full, prefix2, q, url, suffix2) => {
+    const key = htmlUnescapeBasic(String(url || '').trim());
+    if (!map.has(key)) return full;
+    return `${prefix2}${q}${map.get(key)}${suffix2}`;
+  });
+  out = out.replace(/(<source\b[^>]*\bsrc\s*=\s*)(["'])([^"']+)(\2)/gi, (full, prefix2, q, url, suffix2) => {
+    const key = htmlUnescapeBasic(String(url || '').trim());
+    if (!map.has(key)) return full;
+    return `${prefix2}${q}${map.get(key)}${suffix2}`;
+  });
+
+  const appended = [];
+  for (const [src, local] of map.entries()) {
+    if (!isLikelyVideoUrl(src)) continue;
+    appended.push(`[Download video](${local})`);
+  }
+  if (appended.length) {
+    out = `${out}\n\n${appended.join('\n')}`;
+  }
+
+  return out;
 }
 
 export default async function handler(args = {}, options = {}) {
@@ -197,8 +289,8 @@ export default async function handler(args = {}, options = {}) {
         }
       }
     }
-    if (!hasMarkdownVideo(content)) {
-      return { success: false, code: 'NO_MD_VIDEO', error: 'response has no markdown video link', data: { prompt, content }, advice: buildAdvice('NO_MD_VIDEO', { tool: 'video_generate', prompt }) };
+    if (!hasVideoLink(content)) {
+      return { success: false, code: 'NO_VIDEO_LINK', error: 'response has no usable video link', data: { prompt, content }, advice: buildAdvice('NO_VIDEO_LINK', { tool: 'video_generate', prompt }) };
     }
     const rewritten = await downloadVideosAndRewrite(content, 'video');
     const localMarkdown = await collectVerifiedLocalMarkdownVideos(rewritten);

@@ -77,6 +77,7 @@ export async function decideSendFusionBatch(payload) {
     rdLines.push('  <constraints>');
     rdLines.push('    <item>禁止输出 <sentra-response>；必须输出一个 tools invoke: send_fusion。</item>');
     rdLines.push('    <item>融合后的回复要自然像聊天，不要提“候选/融合/工具/系统”等词。</item>');
+    rdLines.push('    <item>禁止使用模板化旁白：不要写“根据你的请求…/工具调用…/系统提示…/工作流…”。</item>');
     rdLines.push('    <item>去重冗余，但保留不同候选里重要的事实、步骤、提醒、结论与约束。</item>');
     rdLines.push('  </constraints>');
 

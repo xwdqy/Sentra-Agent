@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import logger from '../../src/logger/index.js';
 import { config } from '../../src/config/index.js';
-import OpenAI from 'openai';
 import mime from 'mime-types';
 import { httpRequest } from '../../src/utils/http.js';
 
@@ -80,13 +79,88 @@ function isHttpUrl(s) {
   try { const u = new URL(String(s)); return u.protocol === 'http:' || u.protocol === 'https:'; } catch { return false; }
 }
 
-async function readVideoAsBase64WithMime(src) {
+function normalizeBaseUrl(raw) {
+  const v = String(raw || '').trim();
+  if (!v) return '';
+  return v.endsWith('/') ? v.slice(0, -1) : v;
+}
+
+function normalizeVideoVisionMode(raw) {
+  const v = String(raw || '').trim().toLowerCase();
+  if (!v) return 'openai';
+  if (['gemini', 'google', 'google_gemini'].includes(v)) return 'gemini';
+  return 'openai';
+}
+
+function isGeminiBaseUrl(baseUrl) {
+  try {
+    const u = new URL(String(baseUrl));
+    return String(u.hostname || '').includes('generativelanguage.googleapis.com');
+  } catch {
+    return false;
+  }
+}
+
+function buildGeminiGenerateContentUrl(baseUrl, model) {
+  const safeBase = normalizeBaseUrl(baseUrl);
+  return `${safeBase}/models/${encodeURIComponent(String(model || '').trim())}:generateContent`;
+}
+
+function pickGeminiText(resData) {
+  const parts = resData?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  const texts = parts.map((p) => (p && typeof p.text === 'string' ? p.text : '')).map((t) => t.trim()).filter(Boolean);
+  return texts.join('\n');
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+function shouldRetry(e) {
+  const status = e?.response?.status;
+  const code = String(e?.code || '').toUpperCase();
+  if ([429, 500, 502, 503, 504].includes(status)) return true;
+  if (['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED'].includes(code)) return true;
+  return false;
+}
+
+async function postJsonWithRetry(url, data, timeoutMs, retries, retryBaseMs, headers) {
+  let attempt = 0;
+  while (true) {
+    try {
+      const res = await httpRequest({
+        method: 'POST',
+        url,
+        data,
+        timeoutMs,
+        responseType: 'json',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(headers && typeof headers === 'object' ? headers : {}),
+        },
+        validateStatus: () => true,
+      });
+      const status = Number(res?.status);
+      if (!Number.isFinite(status) || status < 200 || status >= 300) {
+        const err = new Error(`HTTP ${Number.isFinite(status) ? status : 'unknown'}`);
+        err.response = res;
+        throw err;
+      }
+      return res;
+    } catch (e) {
+      attempt++;
+      if (attempt > retries || !shouldRetry(e)) throw e;
+      await sleep(retryBaseMs * Math.pow(2, attempt - 1));
+    }
+  }
+}
+
+async function readVideoAsBase64WithMime(src, { timeoutMs }) {
   let buf; let type = '';
   if (isHttpUrl(src)) {
     const res = await httpRequest({
       method: 'GET',
       url: src,
-      timeoutMs: 60000,
+      timeoutMs,
       responseType: 'arraybuffer',
       validateStatus: () => true,
     });
@@ -112,7 +186,7 @@ async function readVideoAsBase64WithMime(src) {
   }
   
   const dataUri = `data:${type};base64,${buf.toString('base64')}`;
-  return { uri: dataUri, mime: type, size: buf.length };
+  return { uri: dataUri, mime: type, size: buf.length, base64: buf.toString('base64') };
 }
 
 export default async function handler(args = {}, options = {}) {
@@ -127,10 +201,12 @@ export default async function handler(args = {}, options = {}) {
   const baseURL = penv.VIDEO_VISION_BASE_URL || process.env.VIDEO_VISION_BASE_URL || config.llm.baseURL;
   const model = penv.VIDEO_VISION_MODEL || process.env.VIDEO_VISION_MODEL || config.llm.model;
   const maxVideoSizeMB = Number(penv.VIDEO_VISION_MAX_SIZE_MB || process.env.VIDEO_VISION_MAX_SIZE_MB || 50);
+  const mode = normalizeVideoVisionMode(penv.VIDEO_VISION_MODE || process.env.VIDEO_VISION_MODE || 'openai');
+  const timeoutMs = Number(penv.VIDEO_VISION_TIMEOUT_MS || process.env.VIDEO_VISION_TIMEOUT_MS || penv.PLUGIN_TIMEOUT_MS || process.env.PLUGIN_TIMEOUT_MS || 360000);
+  const retries = Math.max(0, Number(penv.VIDEO_VISION_MAX_RETRIES || process.env.VIDEO_VISION_MAX_RETRIES || 2));
+  const retryBaseMs = Math.max(100, Number(penv.VIDEO_VISION_RETRY_BASE_MS || process.env.VIDEO_VISION_RETRY_BASE_MS || 600));
 
-  const oai = new OpenAI({ apiKey, baseURL });
-
-  logger.info?.('video_vision_read:config', { label: 'PLUGIN', baseURL, model, videoCount: videos.length, maxVideoSizeMB });
+  logger.info?.('video_vision_read:config', { label: 'PLUGIN', baseURL, model, mode, videoCount: videos.length, maxVideoSizeMB, timeoutMs });
 
   // prepare vision messages: a single user message with mixed text+videos
   const items = [];
@@ -140,7 +216,7 @@ export default async function handler(args = {}, options = {}) {
   let prepared;
   try {
     prepared = await Promise.all(videos.map(async (src) => {
-      const result = await readVideoAsBase64WithMime(src);
+      const result = await readVideoAsBase64WithMime(src, { timeoutMs: Math.min(60000, timeoutMs) });
       // 检查视频大小限制
       const sizeMB = result.size / (1024 * 1024);
       if (sizeMB > maxVideoSizeMB) {
@@ -161,23 +237,59 @@ export default async function handler(args = {}, options = {}) {
     return { success: false, code, error: msg, advice: buildAdvice(adviceKind, { tool: 'video_vision_read', maxVideoSizeMB, videos_count: videos.length }) };
   }
   
-  // 根据OpenAI API格式，视频使用 video_url 而不是 image_url
-  for (const it of prepared) {
-    items.push({ 
-      type: 'video_url', 
-      video_url: { url: it.uri } 
-    });
-  }
-
-  const messages = [
-    { role: 'user', content: items }
-  ];
-
   try {
-    logger.info?.('video_vision_read:calling_api', { label: 'PLUGIN', model, itemCount: items.length });
-    const res = await oai.chat.completions.create({ model, messages });
-    const content = res?.choices?.[0]?.message?.content || '';
-    logger.info?.('video_vision_read:api_success', { label: 'PLUGIN', responseLength: content?.length || 0 });
+    if (mode === 'gemini' || isGeminiBaseUrl(baseURL)) {
+      const url = buildGeminiGenerateContentUrl(baseURL, model);
+      const parts = [{ text: prompt }];
+      for (const it of prepared) {
+        parts.push({ inlineData: { mimeType: it.mime || 'video/mp4', data: it.base64 } });
+      }
+      logger.info?.('video_vision_read:calling_api', { label: 'PLUGIN', provider: 'gemini', url, model, partCount: parts.length });
+      const res = await postJsonWithRetry(
+        url,
+        { contents: [{ role: 'user', parts }], generationConfig: { temperature: 0 } },
+        timeoutMs,
+        retries,
+        retryBaseMs,
+        { ...(apiKey ? { 'x-goog-api-key': apiKey } : {}) }
+      );
+      const content = pickGeminiText(res?.data);
+      logger.info?.('video_vision_read:api_success', { label: 'PLUGIN', provider: 'gemini', responseLength: content?.length || 0 });
+
+      const formats = Array.from(new Set((prepared || []).map((x) => x.mime))).filter(Boolean);
+      const totalSizeMB = (prepared || []).reduce((sum, x) => sum + x.size, 0) / (1024 * 1024);
+      return {
+        success: true,
+        data: {
+          prompt,
+          description: content,
+          video_count: videos.length,
+          formats,
+          total_size_mb: totalSizeMB.toFixed(2)
+        }
+      };
+    }
+
+    for (const it of prepared) {
+      items.push({
+        type: 'video_url',
+        video_url: { url: it.uri }
+      });
+    }
+
+    const url = `${normalizeBaseUrl(baseURL)}/chat/completions`;
+    const messages = [{ role: 'user', content: items }];
+    logger.info?.('video_vision_read:calling_api', { label: 'PLUGIN', provider: 'openai_compatible', url, model, itemCount: items.length });
+    const res = await postJsonWithRetry(
+      url,
+      { model, messages },
+      timeoutMs,
+      retries,
+      retryBaseMs,
+      { Authorization: `Bearer ${apiKey}` }
+    );
+    const content = res?.data?.choices?.[0]?.message?.content || '';
+    logger.info?.('video_vision_read:api_success', { label: 'PLUGIN', provider: 'openai_compatible', responseLength: content?.length || 0 });
     
     // 返回字段：prompt、视频描述与摘要统计
     const formats = Array.from(new Set((prepared || []).map((x) => x.mime))).filter(Boolean);
@@ -194,7 +306,7 @@ export default async function handler(args = {}, options = {}) {
       } 
     };
   } catch (e) {
-    logger.warn?.('video_vision_read:request_failed', { label: 'PLUGIN', error: String(e?.message || e), stack: e?.stack });
+    logger.warn?.('video_vision_read:request_failed', { label: 'PLUGIN', error: String(e?.message || e), status: e?.response?.status, dataPreview: (() => { try { return typeof e?.response?.data === 'string' ? e.response.data.slice(0, 300) : JSON.stringify(e?.response?.data || {}).slice(0, 300); } catch { return undefined; } })(), stack: e?.stack });
     const isTimeout = isTimeoutError(e);
     return { success: false, code: isTimeout ? 'TIMEOUT' : 'ERR', error: String(e?.message || e), advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'video_vision_read', videos_count: videos.length }) };
   }

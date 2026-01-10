@@ -1,4 +1,6 @@
-import { getEnvBool, getEnvInt } from '../utils/envHotReloader.js';
+import { getEnvBool, getEnvInt, loadEnv } from '../utils/envHotReloader.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   parseSentraResponse,
   buildSentraToolsBlockFromArgsObject,
@@ -6,7 +8,221 @@ import {
 } from '../utils/protocolUtils.js';
 import { judgeReplySimilarity } from '../utils/replySimilarityJudge.js';
 
+import { createRagSdk } from 'sentra-rag';
+import { textSegmentation } from '../src/segmentation.js';
+import { enqueueRagIngest } from '../utils/ragIngestQueue.js';
+
 const swallowOnceStateByConversation = new Map();
+
+const ragCacheByConversation = new Map();
+
+let ragEnvLoaded = false;
+function ensureRagEnvLoaded() {
+  if (ragEnvLoaded) return;
+  ragEnvLoaded = true;
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const ragEnvPath = path.resolve(__dirname, '..', 'sentra-rag', '.env');
+    loadEnv(ragEnvPath);
+  } catch {}
+}
+
+let ragSdkPromise = null;
+async function getRagSdk() {
+  if (!ragSdkPromise) {
+    ensureRagEnvLoaded();
+    ragSdkPromise = createRagSdk({ watchEnv: false }).catch((e) => {
+      ragSdkPromise = null;
+      throw e;
+    });
+  }
+  return ragSdkPromise;
+}
+
+function getRagRuntimeConfig() {
+  ensureRagEnvLoaded();
+  return {
+    timeoutMs: getEnvInt('RAG_TIMEOUT_MS', 8000),
+    cacheTtlMs: getEnvInt('RAG_CACHE_TTL_MS', 60000),
+    maxContextChars: getEnvInt('RAG_CONTEXT_MAX_CHARS', 6000),
+    keywordTopN: getEnvInt('RAG_KEYWORD_TOP_N', 3),
+    keywordFulltextLimit: getEnvInt('RAG_KEYWORD_FULLTEXT_LIMIT', 4),
+    ingestDelayMs: getEnvInt('RAG_INGEST_DELAY_MS', 0)
+  };
+}
+
+function withTimeout(promise, timeoutMs) {
+  const ms = Number(timeoutMs);
+  if (!Number.isFinite(ms) || ms <= 0) return promise;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('RAG_TIMEOUT')), ms);
+    })
+  ]);
+}
+
+function normalizeRagQueryText(text) {
+  const s = String(text || '').trim();
+  if (!s) return '';
+  return s
+    .split('\n')
+    .map((line) => String(line || '').replace(/^\[[^\]]{1,30}\]\s*/g, '').trim())
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 2000);
+}
+
+function extractRagKeywords(text, limit) {
+  const n = Number(limit);
+  const max = Number.isFinite(n) && n > 0 ? n : 0;
+  if (max <= 0) return [];
+  try {
+    const raw = textSegmentation.segment(String(text || ''), { useSegmentation: true });
+    const out = [];
+    const seen = new Set();
+    for (const token of raw) {
+      const t = String(token || '').trim();
+      if (!t) continue;
+      if (t.length <= 1) continue;
+      if (!/[a-zA-Z0-9\u4e00-\u9fff]/.test(t)) continue;
+      if (seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+      if (out.length >= max) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function escapeXmlText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function buildRagSystemBlock({ queryText, contextText, stats, maxChars }) {
+  const q = String(queryText || '').trim();
+  const ctx = String(contextText || '').trim();
+  if (!q || !ctx) return '';
+
+  const budget = Number(maxChars);
+  const clipped = (() => {
+    if (!(Number.isFinite(budget) && budget > 0)) return ctx;
+    const sliced = ctx.slice(0, budget);
+    const cut = ctx.length > sliced.length;
+    if (!cut) return sliced;
+    const b1 = sliced.lastIndexOf('\n\n');
+    if (b1 >= 200) return sliced.slice(0, b1).trim();
+    const b2 = sliced.lastIndexOf('\n');
+    if (b2 >= 200) return sliced.slice(0, b2).trim();
+    return sliced;
+  })();
+  const s = stats && typeof stats === 'object' ? stats : null;
+  const statsLine = s
+    ? (() => {
+        try {
+          const compact = {
+            vectorHits: s.vectorHits,
+            fulltextHits: s.fulltextHits,
+            parentExpanded: s.parentExpanded,
+            mergedContextChunks: s.mergedContextChunks,
+            contextChars: s.contextChars,
+            rerankMode: s.rerankMode
+          };
+          return JSON.stringify(compact);
+        } catch {
+          return '';
+        }
+      })()
+    : '';
+
+  const rules = [
+    '以下为系统注入的只读检索证据（RAG）。',
+    '仅用于辅助理解与提高准确性；不要逐字复述；不要暴露内部检索细节。',
+    '不要编造证据之外的事实；不确定就明确说不确定并建议用户补充信息。'
+  ];
+
+  return [
+    '<sentra-rag-context>',
+    `  <query>${escapeXmlText(q.slice(0, 240))}</query>`,
+    (statsLine ? `  <stats_json>${escapeXmlText(statsLine)}</stats_json>` : ''),
+    '  <rules>',
+    ...rules.map((r) => `    <rule>${escapeXmlText(r)}</rule>`),
+    '  </rules>',
+    '  <evidence>',
+    `${escapeXmlText(clipped)}`,
+    '  </evidence>',
+    '</sentra-rag-context>'
+  ].filter((x) => x !== '').join('\n');
+}
+
+function tryEnqueueRagIngestAfterSave({ logger, conversationId, groupId, userid, userObjective, msg, response } = {}) {
+  try {
+    logger.info('RAG: post-save hook reached', { conversationId, groupId });
+    logger.info('RAG: preparing ingest payload', { conversationId });
+
+    let assistantText = '';
+    try {
+      const parsed = parseSentraResponse(response);
+      const segs = parsed && Array.isArray(parsed.textSegments) ? parsed.textSegments : [];
+      assistantText = segs.join('\n\n').trim();
+    } catch {}
+
+    if (!assistantText) {
+      assistantText = String(response || '').trim();
+    }
+
+    const userText = String(userObjective || msg?.text || msg?.summary || '').trim();
+    if (userText && assistantText) {
+      const contextText = [
+        'CHAT INGEST GRAPH GUIDANCE (STRICT):',
+        '- You are extracting a knowledge graph from a chat turn.',
+        '- Do NOT create entities for role labels like "USER", "ASSISTANT", "SYSTEM", "BOT".',
+        '- Prefer real-world entities: people, accounts, apps, packages, versions, files, errors, URLs, orgs, concepts.',
+        '- Relations MUST be specific predicates (avoid generic RELATED). Examples: "asks_about", "mentions", "uses", "depends_on", "causes_error", "version_of".',
+        '- Every entity/relation should include evidence (segment_id + quote) whenever possible.',
+        '- If the only possible entities are role labels, output zero entities/relations.',
+      ].join('\n');
+
+      const docId = `chat_${conversationId}_${Date.now()}`;
+      const title = userText.length > 60 ? userText.slice(0, 60) : userText;
+      const source = `sentra_chat:${groupId}`;
+      const userIdForMemory = userid || '';
+      const text = [
+        `conversationId: ${conversationId}`,
+        `groupId: ${groupId}`,
+        `userId: ${userIdForMemory}`,
+        `ts: ${Date.now()}`,
+        '',
+        'USER:',
+        userText,
+        '',
+        'ASSISTANT:',
+        assistantText
+      ].join('\n');
+
+      logger.info('RAG: enqueue ingest (before)', { docId, conversationId });
+      enqueueRagIngest({ text, docId, title, source, contextText });
+      logger.info('RAG: 入库任务已入队', { docId, conversationId });
+      return;
+    }
+
+    logger.info('RAG: 跳过入库（userText/assistantText为空）', {
+      conversationId,
+      hasUserText: !!userText,
+      hasAssistantText: !!assistantText
+    });
+  } catch (e) {
+    logger.warn('RAG: 异步入库入队失败（已忽略）', { err: String(e) });
+  }
+}
 
 function ensureSentraResponseHasTarget(raw, msg) {
   const s = typeof raw === 'string' ? raw.trim() : String(raw ?? '').trim();
@@ -548,6 +764,97 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
 
     const agentPresetXml = AGENT_PRESET_XML || '';
 
+    let ragBlock = '';
+    const ragCfg = getRagRuntimeConfig();
+    {
+      logger.info('RAG: pipeline reached', { conversationId });
+
+      const fallbackQueryRaw = String(msg?.text || msg?.summary || '').trim();
+      const queryText = normalizeRagQueryText(userObjective) || normalizeRagQueryText(fallbackQueryRaw);
+      if (queryText) {
+        logger.info('RAG: 尝试检索', { conversationId, queryPreview: queryText.slice(0, 120) });
+        const cacheKey = `${conversationId}::${queryText}`;
+        const cached = ragCacheByConversation.get(cacheKey);
+        if (cached && typeof cached === 'object' && Number.isFinite(cached.at) && cached.block) {
+          if (Date.now() - cached.at <= ragCfg.cacheTtlMs) {
+            ragBlock = cached.block;
+            logger.info('RAG: 命中缓存', { conversationId });
+          } else {
+            ragCacheByConversation.delete(cacheKey);
+          }
+        }
+
+        if (!ragBlock) {
+          try {
+            const rag = await withTimeout(getRagSdk(), ragCfg.timeoutMs);
+            const keywords = extractRagKeywords(queryText, ragCfg.keywordTopN);
+
+            if (Array.isArray(keywords) && keywords.length > 0) {
+              logger.info('RAG: keywords', { conversationId, keywords: keywords.join(', ') });
+            }
+
+            const hybridPromise = rag.getContextHybrid(queryText);
+            const keywordPromises = keywords.map((k) =>
+              rag.getContextFromFulltext(k, { limit: ragCfg.keywordFulltextLimit, expandParent: true })
+            );
+
+            const settled = await withTimeout(
+              Promise.allSettled([hybridPromise, ...keywordPromises]),
+              ragCfg.timeoutMs
+            );
+
+            const hybridRes = settled[0] && settled[0].status === 'fulfilled' ? settled[0].value : null;
+            const extraContexts = [];
+            for (let i = 1; i < settled.length; i++) {
+              const it = settled[i];
+              if (it && it.status === 'fulfilled' && it.value && it.value.contextText) {
+                extraContexts.push(String(it.value.contextText || '').trim());
+              }
+            }
+
+            const mergedExtra = Array.from(new Set(extraContexts.filter(Boolean))).join('\n\n');
+            const mergedContext = [
+              hybridRes && hybridRes.contextText ? String(hybridRes.contextText || '').trim() : '',
+              mergedExtra
+            ]
+              .filter(Boolean)
+              .join('\n\n')
+              .trim();
+
+            if (!mergedContext) {
+              logger.info('RAG: 检索完成但无可用上下文', {
+                conversationId,
+                keywords: Array.isArray(keywords) ? keywords.join(', ') : ''
+              });
+            }
+
+            ragBlock = buildRagSystemBlock({
+              queryText,
+              contextText: mergedContext,
+              stats: hybridRes && hybridRes.stats ? hybridRes.stats : null,
+              maxChars: ragCfg.maxContextChars
+            });
+
+            if (ragBlock) {
+              ragCacheByConversation.set(cacheKey, { at: Date.now(), block: ragBlock });
+              logger.info('RAG: 上下文已注入', { conversationId, queryPreview: queryText.slice(0, 120) });
+              logger.info('RAG: context preview', {
+                conversationId,
+                contextChars: mergedContext ? String(mergedContext).length : 0,
+                preview: mergedContext ? String(mergedContext).slice(0, 320) : ''
+              });
+            } else {
+              logger.info('RAG: 未注入（ragBlock为空）', { conversationId });
+            }
+          } catch (e) {
+            logger.warn('RAG: 检索失败（已忽略）', { err: String(e) });
+          }
+        }
+      } else {
+        logger.info('RAG: skip（empty query）', { conversationId });
+      }
+    }
+
     let socialXml = '';
     try {
       if (ctx && ctx.socialContextManager && typeof ctx.socialContextManager.getXml === 'function') {
@@ -568,7 +875,7 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
       }
     }
 
-    const systemParts = [baseSystem, personaContext, emoXml, memoryXml, socialXml, agentPresetXml].filter(Boolean);
+    const systemParts = [baseSystem, personaContext, emoXml, memoryXml, socialXml, agentPresetXml, ragBlock].filter(Boolean);
     const systemContent = systemParts.join('\n\n');
 
     const maybeRewriteSentraResponse = async (rawResponse) => {
@@ -704,13 +1011,13 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
       overlays = {
         global: baseGlobalOverlay,
         plan:
-          '本轮为由 <sentra-root-directive type="proactive"> 标记的主动发言，请以 root directive 中的 objective 为最高准则，优先规划能够引出“新视角/新子话题”的步骤，可以合理使用各类 MCP 工具（搜索、网页解析、天气/时间、音乐/图片/视频、文档/代码、思维导图等）先获取真实信息或可分享素材，再结合 Bot 人设组织分享或提问，避免仅安排继续解释当前问题或重复提醒。',
+          '本轮为由 <sentra-root-directive type="proactive"> 标记的主动发言，请以 root directive 中的 objective 为最高准则，优先规划能引出“新视角/新子话题”的步骤；可以用工具在后台获取真实信息/素材支撑，但最终对用户呈现必须是人设内的自然聊天与分享，不得播报工具/流程/协议，不要出现“根据你的请求…/工具调用…/系统提示…”。',
         arggen:
-          '当为主动回合生成工具参数时，优先选择那些能够为用户带来具体可观察结果的工具（例如搜索结果、网页摘要、图片/视频/音乐卡片、天气/实时信息等），并将参数控制在一次轻量查询或生成的范围内，避免过度复杂的多轮采集或无关查询。',
+          '当为主动回合生成工具参数时，优先选择能产出具体可观察结果的工具（如搜索结果、网页摘要、图片/视频/音乐卡片、天气/实时信息等），并将参数控制在一次轻量查询或生成范围；注意：这些是后台执行，最终对用户的文本不得出现“工具调用/返回/流程”。',
         judge:
-          '在审核候选计划时，优先选择那些能够通过工具获得具体信息或可视化内容、并围绕当前语境提出新问题或补充背景的方案；对于仅包含“继续解释当前问题”或没有任何工具调用、且缺乏新意的计划，应认为不合格，并允许最终保持沉默。',
+          '在审核候选计划时，优先选择能带来具体新信息/新角度/轻度转场的方案；对于仅“继续解释当前问题”、或输出会变成“根据你的请求/工具调用/系统提示”这类旁白的方案，应认为不合格，并允许最终保持沉默。',
         final_judge:
-          '在最终评估主动回复时，请检查内容是否真正带来了新的信息、视角或轻度转场，而不是复述之前的回答；若回复仅为很短且空泛的客套话（例如简单的“哈哈”“不错哦”等）或对已有解答的轻微改写，应倾向设置 noReply=true 或大幅压缩内容，对于主动回合，保持沉默优于输出低价值内容。'
+          '在最终评估主动回复时，请检查内容是否真正带来了新的信息、视角或轻度转场，并且是否始终遵守人设口吻；若回复会变成流程播报（如“根据你的请求/工具调用/系统提示”）或仅为空泛客套话/轻微改写，应倾向 noReply=true 或大幅压缩内容，对于主动回合，保持沉默优于输出低价值内容。'
       };
     } else {
       overlays = { global: baseGlobalOverlay };
@@ -1129,6 +1436,16 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               assistantContent: response
             }).catch((e) => {
               logger.debug(`PresetTeaching: 异步教导触发失败 ${groupId}`, { err: String(e) });
+            });
+
+            tryEnqueueRagIngestAfterSave({
+              logger,
+              conversationId,
+              groupId,
+              userid: userIdForMemory,
+              userObjective,
+              msg,
+              response
             });
           }
 
@@ -1688,7 +2005,18 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                     } catch {}
 
                     try {
-                      await historyManager.finishConversationPair(groupId, pairId, null);
+                      const saved = await historyManager.finishConversationPair(groupId, pairId, null);
+                      if (saved) {
+                        tryEnqueueRagIngestAfterSave({
+                          logger,
+                          conversationId,
+                          groupId,
+                          userid,
+                          userObjective,
+                          msg,
+                          response: promised
+                        });
+                      }
                     } catch {}
                     pairId = null;
                   } catch {}
@@ -1811,6 +2139,16 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                 logger.debug(`ContextMemory: 异步摘要触发失败 ${groupId}`, { err: String(e) });
               }
             );
+
+            tryEnqueueRagIngestAfterSave({
+              logger,
+              conversationId,
+              groupId,
+              userid: userIdForMemory,
+              userObjective,
+              msg,
+              response: toolResponse
+            });
           }
 
           pairId = null;

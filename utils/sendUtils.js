@@ -446,21 +446,35 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
       );
 
       if (rt.kind === 'private') {
+        const requestId = `private-media-${Date.now()}`;
         const result = await sendAndWaitResult({
           type: "sdk",
           path: replyForMedia ? "send.privateReply" : "send.private",
           args: replyForMedia ? [Number(rt.id), replyMessageId, mediaMessageParts] : [Number(rt.id), mediaMessageParts],
-          requestId: `private-media-${Date.now()}`
+          requestId
         });
-        logger.debug(`媒体发送结果: ${result?.ok ? 'OK' : 'FAIL'}`);
+        logger.debug('媒体发送结果', {
+          ok: !!result?.ok,
+          requestId,
+          target: { kind: rt.kind, id: String(rt.id), isCurrent: !!rt.isCurrent },
+          message_id: result?.data?.message_id,
+          data: result?.data
+        });
       } else if (rt.kind === 'group') {
+        const requestId = `group-media-${Date.now()}`;
         const result = await sendAndWaitResult({
           type: "sdk",
           path: replyForMedia ? "send.groupReply" : "send.group",
           args: replyForMedia ? [Number(rt.id), replyMessageId, mediaMessageParts] : [Number(rt.id), mediaMessageParts],
-          requestId: `group-media-${Date.now()}`
+          requestId
         });
-        logger.debug(`媒体发送结果: ${result?.ok ? 'OK' : 'FAIL'}`);
+        logger.debug('媒体发送结果', {
+          ok: !!result?.ok,
+          requestId,
+          target: { kind: rt.kind, id: String(rt.id), isCurrent: !!rt.isCurrent },
+          message_id: result?.data?.message_id,
+          data: result?.data
+        });
       }
     }
   }
@@ -562,21 +576,35 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
       logger.debug('发送表情包作为图片消息');
       
       if (rt.kind === 'private') {
+        const requestId = `private-emoji-${Date.now()}`;
         const result = await sendAndWaitResult({
           type: "sdk",
           path: "send.private",
           args: [Number(rt.id), emojiMessageParts],
-          requestId: `private-emoji-${Date.now()}`
+          requestId
         });
-        logger.debug(`表情包发送结果: ${result?.ok ? 'OK' : 'FAIL'}`);
+        logger.debug('表情包发送结果', {
+          ok: !!result?.ok,
+          requestId,
+          target: { kind: rt.kind, id: String(rt.id), isCurrent: !!rt.isCurrent },
+          message_id: result?.data?.message_id,
+          data: result?.data
+        });
       } else if (rt.kind === 'group') {
+        const requestId = `group-emoji-${Date.now()}`;
         const result = await sendAndWaitResult({
           type: "sdk",
           path: "send.group",
           args: [Number(rt.id), emojiMessageParts],
-          requestId: `group-emoji-${Date.now()}`
+          requestId
         });
-        logger.debug(`表情包发送结果: ${result?.ok ? 'OK' : 'FAIL'}`);
+        logger.debug('表情包发送结果', {
+          ok: !!result?.ok,
+          requestId,
+          target: { kind: rt.kind, id: String(rt.id), isCurrent: !!rt.isCurrent },
+          message_id: result?.data?.message_id,
+          data: result?.data
+        });
       }
     }
   }
