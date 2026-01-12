@@ -587,12 +587,18 @@ async function fetchAndCacheWeather(cityName, queryType, weatherKey, weatherUrl)
 export default async function handler(args = {}, options = {}) {
   const penv = pluginEnv(options);
   // 严格使用 cities 数组（不再兼容单一 city 字符串）
-  const cities = Array.isArray(args.cities)
+  const citySingle = (args.city !== undefined && args.city !== null) ? String(args.city || '').trim() : '';
+  const cities0 = Array.isArray(args.cities)
     ? args.cities.map((c) => String(c || '').trim()).filter((c) => !!c)
     : [];
+  const usedCitiesArray = Array.isArray(args.cities) && args.cities.length > 0;
+  const cities = [
+    ...(citySingle ? [citySingle] : []),
+    ...cities0,
+  ];
 
   if (!cities.length) {
-    return fail('cities 为必填参数，请提供至少一个城市名称数组，如：["北京", "上海"]', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'weather' }) });
+    return fail('city/cities 为必填参数：请提供单个 city（如 "北京"）或 cities 数组（如 ["北京","上海"]）', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'weather' }) });
   }
 
   const queryType = (args.queryType || 'all').toLowerCase();
@@ -643,12 +649,17 @@ export default async function handler(args = {}, options = {}) {
   const anyOk = results.some((r) => r.success);
 
   if (anyOk) {
+    if (usedCitiesArray || cities.length > 1) {
+      return ok({ mode: 'batch', queryType, results });
+    }
     return ok({ queryType, results });
   }
 
   // 所有城市都失败时，顶层也标记为失败，但仍返回详细 results 便于上层展示
   return fail('所有城市的天气查询均失败', 'WEATHER_API_FAILED', {
     advice: buildAdvice('WEATHER_API_FAILED', { tool: 'weather', cities, queryType }),
-    detail: { queryType, results },
+    detail: (usedCitiesArray || cities.length > 1)
+      ? { mode: 'batch', queryType, results }
+      : { queryType, results },
   });
 }

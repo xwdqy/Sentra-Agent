@@ -112,10 +112,39 @@ function envBool(v) {
 export default async function handler(args = {}, options = {}) {
   try {
     const penv = options?.pluginEnv || {};
-    const repoUrl = String(args.repoUrl || '').trim();
-    if (!repoUrl) {
-      return fail('repoUrl 为必填参数，例如："username/repo" 或完整 GitHub 链接', 'INVALID');
+    const repoUrls0 = Array.isArray(args.repoUrls) ? args.repoUrls : [];
+    const repoUrlSingle = (args.repoUrl !== undefined && args.repoUrl !== null) ? String(args.repoUrl).trim() : '';
+    const repoUrls = [
+      ...(repoUrlSingle ? [repoUrlSingle] : []),
+      ...repoUrls0.map((x) => String(x || '').trim()).filter((x) => !!x),
+    ];
+    if (!repoUrls.length) {
+      return fail('repoUrl/repoUrls 为必填参数，例如："username/repo" 或完整 GitHub 链接', 'INVALID');
     }
+    if (repoUrls.length > 1) {
+      const results = [];
+      for (const u of repoUrls) {
+        const resp = await handler({
+          ...args,
+          repoUrls: undefined,
+          repoUrl: u,
+        }, options);
+        results.push({
+          input: u,
+          success: !!resp?.success,
+          code: resp?.code,
+          data: resp?.data,
+          error: resp?.error,
+          hint: resp?.hint,
+          advice: resp?.advice,
+        });
+      }
+      const anyOk = results.some((r) => r.success);
+      if (anyOk) return ok({ mode: 'batch', results });
+      return fail('所有仓库查询均失败', 'BATCH_FAILED', { detail: { mode: 'batch', results } });
+    }
+
+    const repoUrl = repoUrls[0];
 
     const { owner, repo } = parseGitHubRepoSpec(repoUrl);
 

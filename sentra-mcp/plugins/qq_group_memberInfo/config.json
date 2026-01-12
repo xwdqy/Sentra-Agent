@@ -10,6 +10,13 @@
       "user_id": {
         "type": "integer"
       },
+      "user_ids": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "minItems": 1
+      },
       "refresh": {
         "type": "boolean",
         "default": false
@@ -46,8 +53,11 @@
       }
     },
     "required": [
-      "group_id",
-      "user_id"
+      "group_id"
+    ],
+    "anyOf": [
+      { "required": ["user_id"] },
+      { "required": ["user_ids"] }
     ],
     "additionalProperties": true
   },

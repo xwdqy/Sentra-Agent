@@ -4,6 +4,14 @@
   "inputSchema": {
     "type": "object",
     "properties": {
+      "file": {
+        "type": "string",
+        "description": "单个文件路径（字符串）。支持：1) 本地绝对路径（必须包含完整盘符或根目录）；2) http/https URL。若需要一次读取多个文件，请使用 files[]。",
+        "examples": [
+          "E:/documents/report.docx",
+          "https://example.com/document.pdf"
+        ]
+      },
       "files": {
         "type": "array",
         "items": {
@@ -57,8 +65,9 @@
         "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
-    "required": [
-      "files"
+    "anyOf": [
+      { "required": ["file"] },
+      { "required": ["files"] }
     ],
     "additionalProperties": true
   },

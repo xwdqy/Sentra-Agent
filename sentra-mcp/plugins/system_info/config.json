@@ -57,6 +57,7 @@
             "printers"
           ]
         },
+        "minItems": 1,
         "description": "Multiple categories to retrieve simultaneously (e.g., ['cpu', 'gpu', 'memory']). Overrides 'category' if provided."
       },
       "detailed": {

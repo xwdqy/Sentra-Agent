@@ -6,7 +6,15 @@
     "properties": {
       "user_id": {
         "type": "string",
-        "description": "QQ 号码（字符串或可转字符串）"
+        "description": "单个 QQ 号码（字符串或可转字符串）。若需要一次获取多个 QQ 号头像，请使用 user_ids[]。"
+      },
+      "user_ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "description": "QQ 号码数组（批量模式，必填其一：user_id/user_ids）。"
       },
       "useCache": {
         "type": "boolean",
@@ -40,8 +48,9 @@
         "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
-    "required": [
-      "user_id"
+    "anyOf": [
+      { "required": ["user_id"] },
+      { "required": ["user_ids"] }
     ],
     "additionalProperties": true
   },

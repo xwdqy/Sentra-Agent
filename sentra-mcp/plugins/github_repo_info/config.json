@@ -6,7 +6,15 @@
     "properties": {
       "repoUrl": {
         "type": "string",
-        "description": "GitHub 仓库 URL 或 'owner/repo'，例如：https://github.com/username/repo 或 username/repo"
+        "description": "单个 GitHub 仓库 URL 或 'owner/repo'，例如：https://github.com/username/repo 或 username/repo。若需批量查询多个仓库，请使用 repoUrls[]。"
+      },
+      "repoUrls": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "description": "批量查询多个 GitHub 仓库：数组元素为 GitHub 仓库 URL 或 'owner/repo'。"
       },
       "max_commits": {
         "type": "integer",
@@ -106,8 +114,9 @@
         "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
-    "required": [
-      "repoUrl"
+    "anyOf": [
+      { "required": ["repoUrl"] },
+      { "required": ["repoUrls"] }
     ],
     "additionalProperties": true
   },

@@ -20,9 +20,9 @@ function buildAdvice(kind, ctx = {}) {
   const personaHint = '请结合你当前的预设/人设继续作答：当获取 QQ 头像失败时，要说明原因（参数/网络/接口限制），给替代方案（确认QQ号/稍后重试/换网络），并引导用户补充信息。';
   if (kind === 'INVALID') {
     return {
-      suggested_reply: '我可以帮你获取 QQ 头像，但需要提供 user_id（QQ号）。你把 QQ 号发我一下，我就继续。\n\n（请结合你当前的预设/人设继续作答）',
+      suggested_reply: '我可以帮你获取 QQ 头像，但需要提供 user_id 或 user_ids（QQ号）。你把 QQ 号发我一下（单个用 user_id，多个用 user_ids），我就继续。\n\n（请结合你当前的预设/人设继续作答）',
       next_steps: [
-        '提供 user_id（QQ号）',
+        '提供 user_id 或 user_ids（QQ号）',
         '如需强制更新缓存，可设置 useCache=false',
       ],
       persona_hint: personaHint,
@@ -113,12 +113,7 @@ async function downloadToArtifacts(userId) {
   return abs.replace(/\\/g, '/');
 }
 
-export default async function handler(args = {}, options = {}) {
-  const userIdRaw = args.user_id;
-  const userId = String(userIdRaw ?? '').trim();
-  if (!userId) return fail('user_id is required', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'qq_avatar_get' }) });
-  const useCache = args.useCache !== false; // default true
-
+async function fetchOne(userId, useCache) {
   // Try memory cache
   if (useCache) {
     const cached = getFromMem(userId);
@@ -166,4 +161,29 @@ export default async function handler(args = {}, options = {}) {
     const isTimeout = isTimeoutError(e);
     return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'qq_avatar_get', user_id: userId }) });
   }
+}
+
+export default async function handler(args = {}, options = {}) {
+  const rawArgs = (args && typeof args === 'object') ? args : {};
+  const userIds = Array.isArray(rawArgs.user_ids)
+    ? rawArgs.user_ids.map((v) => String(v ?? '').trim()).filter(Boolean)
+    : [];
+  const userId = String(rawArgs.user_id ?? '').trim();
+  const inputs = userIds.length ? userIds : (userId ? [userId] : []);
+
+  if (!inputs.length) {
+    return fail('user_id/user_ids is required', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'qq_avatar_get' }) });
+  }
+
+  const useCache = rawArgs.useCache !== false; // default true
+  if (inputs.length === 1) {
+    return await fetchOne(inputs[0], useCache);
+  }
+
+  const results = [];
+  for (const uid of inputs) {
+    const out = await fetchOne(uid, useCache);
+    results.push({ user_id: uid, ...out });
+  }
+  return ok({ mode: 'batch', results });
 }

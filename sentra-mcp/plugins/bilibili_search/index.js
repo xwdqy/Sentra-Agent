@@ -721,13 +721,18 @@ async function singleBilibiliSearchHandler(args = {}, options = {}) {
 }
 
 export default async function handler(args = {}, options = {}) {
+  const keywordSingle = (args.keyword !== undefined && args.keyword !== null) ? String(args.keyword || '').trim() : '';
   const rawKeywords = Array.isArray(args.keywords) ? args.keywords : [];
-  const keywords = rawKeywords
-    .map((k) => String(k || '').trim())
-    .filter((k) => !!k);
+  const usedKeywordsArray = Array.isArray(args.keywords) && args.keywords.length > 0;
+  const keywords = [
+    ...(keywordSingle ? [keywordSingle] : []),
+    ...rawKeywords
+      .map((k) => String(k || '').trim())
+      .filter((k) => !!k)
+  ];
 
   if (!keywords.length) {
-    return fail('keywords 为必填参数，请提供至少一个搜索关键词数组，如：["鬼灭之刃 MAD", "进击的巨人 AMV"]', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'bilibili_search' }) });
+    return fail('keyword/keywords 为必填参数：请提供单个 keyword（如 "鬼灭之刃 MAD"）或 keywords 数组（如 ["鬼灭之刃 MAD","进击的巨人 AMV"]）', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'bilibili_search' }) });
   }
 
   const delayMinMs = Number(process.env.BILI_SEARCH_DELAY_MIN_MS || 800);
@@ -753,11 +758,16 @@ export default async function handler(args = {}, options = {}) {
 
   const anyOk = results.some((r) => r.success);
   if (anyOk) {
+    if (usedKeywordsArray || keywords.length > 1) {
+      return ok({ mode: 'batch', results });
+    }
     return ok({ results });
   }
 
   return fail('所有关键词的视频搜索或处理均失败', 'BILIBILI_SEARCH_FAILED', {
     advice: buildAdvice('NO_RESULT', { tool: 'bilibili_search', keywords }),
-    detail: { results },
+    detail: (usedKeywordsArray || keywords.length > 1)
+      ? { mode: 'batch', results }
+      : { results },
   });
 }

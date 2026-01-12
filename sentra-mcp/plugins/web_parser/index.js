@@ -724,6 +724,29 @@ async function tryPuppeteer(url, cfg) {
 }
 
 export default async function webParserHandler(args, options = {}) {
+  const urls = Array.isArray(args?.urls) ? args.urls : [];
+  if (urls.length) {
+    const results = [];
+    for (const u of urls) {
+      const resp = await webParserHandler({
+        ...args,
+        urls: undefined,
+        url: u,
+      }, options);
+      results.push({
+        input: String(u ?? ''),
+        success: !!resp?.success,
+        code: resp?.code,
+        data: resp?.data,
+        error: resp?.error,
+        advice: resp?.advice,
+      });
+    }
+    const anyOk = results.some((r) => r.success);
+    if (anyOk) return ok({ mode: 'batch', results });
+    return fail('所有网页解析均失败', 'BATCH_FAILED', { detail: { mode: 'batch', results } });
+  }
+
   const url = processUrl(args?.url);
   if (!url) return fail('URL格式无效', 'INVALID_URL', { advice: buildAdvice('INVALID_URL') });
 

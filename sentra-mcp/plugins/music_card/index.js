@@ -187,12 +187,17 @@ async function singleMusicCardHandler(args = {}, options = {}) {
 
 export default async function handler(args = {}, options = {}) {
   const rawKeywords = Array.isArray(args.keywords) ? args.keywords : [];
+  const keywordSingle = String(args.keyword || '').trim();
   const keywords = rawKeywords
     .map((k) => String(k || '').trim())
     .filter((k) => !!k);
 
+  if (!keywords.length && keywordSingle) {
+    keywords.push(keywordSingle);
+  }
+
   if (!keywords.length) {
-    return fail('keywords 为必填参数，请提供至少一个关键词数组，如：["稻香 周杰伦", "夜曲 周杰伦"]', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'music_card' }) });
+    return fail('keyword/keywords 为必填参数，请提供关键词（字符串）或关键词数组，如："稻香 周杰伦" 或 ["稻香 周杰伦", "夜曲 周杰伦"]', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'music_card' }) });
   }
 
   const results = [];

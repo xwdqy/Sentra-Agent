@@ -6,7 +6,22 @@
     "properties": {
       "query": {
         "type": "string",
-        "description": "Search query, please use chinese usually."
+        "description": "Search query (single). Please use Chinese usually. Use queries[] when you have multiple similar searches to run together."
+      },
+      "queries": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "description": "Batch search queries (string[]). Prefer this when you have multiple similar searches to run together (homogeneous tasks).",
+        "examples": [
+          [
+            "OpenAI 最近有什么新动态",
+            "Claude 近期更新了什么",
+            "Gemini 最近发布了什么功能"
+          ]
+        ]
       },
       "max_results": {
         "type": "integer",
@@ -74,6 +89,11 @@
         "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
+    "anyOf": [
+      { "required": ["query"] },
+      { "required": ["queries"] },
+      { "required": ["rawRequest"] }
+    ],
     "additionalProperties": true
   },
   "cooldownMs": 0,

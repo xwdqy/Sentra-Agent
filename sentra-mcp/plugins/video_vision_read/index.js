@@ -192,9 +192,14 @@ async function readVideoAsBase64WithMime(src, { timeoutMs }) {
 }
 
 async function legacyHandler(args = {}, options = {}) {
-  const videos = Array.isArray(args.videos) ? args.videos : [];
+  const videos0 = Array.isArray(args.videos) ? args.videos : [];
+  const videoSingle = (args.video !== undefined && args.video !== null) ? String(args.video) : '';
+  const videos = [
+    ...(videoSingle ? [videoSingle] : []),
+    ...videos0
+  ];
   const prompt = String(args.prompt || '').trim();
-  if (!videos.length) return { success: false, code: 'INVALID', error: 'videos is required (array of urls or absolute paths)', advice: buildAdvice('INVALID', { tool: 'video_vision_read' }) };
+  if (!videos.length) return { success: false, code: 'INVALID', error: 'video/videos is required (a url/absolute path string or an array of urls/absolute paths)', advice: buildAdvice('INVALID', { tool: 'video_vision_read' }) };
   if (!prompt) return { success: false, code: 'INVALID', error: 'prompt is required', advice: buildAdvice('INVALID', { tool: 'video_vision_read', videos_count: videos.length }) };
 
   // plugin-level env

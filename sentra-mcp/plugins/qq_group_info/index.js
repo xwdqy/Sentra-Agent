@@ -53,15 +53,39 @@ export default async function handler(args = {}, options = {}) {
   const url = String(penv.WS_SDK_URL || 'ws://localhost:6702');
   const timeoutMs = Math.max(1000, Number(penv.WS_SDK_TIMEOUT_MS || 15000));
   const path = 'group.info';
-  const requestId = String(args.requestId || `${path}-${Date.now()}`);
-  const group_id = Number(args.group_id);
-  if (!Number.isFinite(group_id)) return fail('group_id 不能为空', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'qq_group_info' }) });
-  const refresh = typeof args.refresh === 'boolean' ? args.refresh : false;
-  try {
-    const resp = await wsCall({ url, path, args: [group_id, refresh], requestId, timeoutMs });
-    return ok({ request: { type: 'sdk', path, args: [group_id, refresh], requestId }, response: resp });
-  } catch (e) {
-    const isTimeout = isTimeoutError(e);
-    return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'qq_group_info', group_id, refresh }) });
+  const rawArgs = (args && typeof args === 'object') ? args : {};
+  const baseRequestId = String(rawArgs.requestId || `${path}-${Date.now()}`);
+  const refresh = typeof rawArgs.refresh === 'boolean' ? rawArgs.refresh : false;
+
+  const groupIds = Array.isArray(rawArgs.group_ids) ? rawArgs.group_ids : [];
+  const parsedGroupIds = groupIds.map((v) => Number(v)).filter((v) => Number.isFinite(v));
+  const groupIdSingle = Number(rawArgs.group_id);
+  const inputs = parsedGroupIds.length ? parsedGroupIds : (Number.isFinite(groupIdSingle) ? [groupIdSingle] : []);
+
+  if (!inputs.length) {
+    return fail('group_id/group_ids 不能为空', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'qq_group_info' }) });
   }
+
+  const single = async (group_id, index) => {
+    const requestId = `${baseRequestId}-${index}`;
+    try {
+      const resp = await wsCall({ url, path, args: [group_id, refresh], requestId, timeoutMs });
+      return ok({ request: { type: 'sdk', path, args: [group_id, refresh], requestId }, response: resp });
+    } catch (e) {
+      const isTimeout = isTimeoutError(e);
+      return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'qq_group_info', group_id, refresh }) });
+    }
+  };
+
+  if (inputs.length === 1) {
+    return await single(inputs[0], 0);
+  }
+
+  const results = [];
+  for (let i = 0; i < inputs.length; i++) {
+    const group_id = inputs[i];
+    const out = await single(group_id, i);
+    results.push({ group_id, ...out });
+  }
+  return ok({ mode: 'batch', results });
 }

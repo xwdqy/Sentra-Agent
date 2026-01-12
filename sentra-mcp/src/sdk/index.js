@@ -17,6 +17,55 @@ function escapeXmlEntities(str) {
     .replace(/'/g, '&apos;');
 }
 
+function extractRequiredGroups(schema = {}) {
+  try {
+    const groups = [];
+    const visit = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node.required) && node.required.length) {
+        groups.push(node.required.map(String));
+      }
+      const variants = [];
+      if (Array.isArray(node.anyOf)) variants.push(...node.anyOf);
+      if (Array.isArray(node.oneOf)) variants.push(...node.oneOf);
+      if (Array.isArray(node.allOf)) variants.push(...node.allOf);
+      for (const v of variants) visit(v);
+    };
+    visit(schema);
+    const seen = new Set();
+    const uniq = [];
+    for (const g of groups) {
+      const key = JSON.stringify(g.slice().sort());
+      if (!seen.has(key)) { seen.add(key); uniq.push(g); }
+    }
+    return uniq;
+  } catch {
+    return [];
+  }
+}
+
+function formatRequiredHint(schema = {}) {
+  try {
+    const required = Array.isArray(schema.required) ? schema.required.map(String) : [];
+    const groups = extractRequiredGroups(schema);
+    const baseKey = JSON.stringify(required.slice().sort());
+    const conditionalGroups = groups
+      .map((g) => ({ g, key: JSON.stringify(g.slice().sort()) }))
+      .filter((x) => x.g.length && x.key !== baseKey)
+      .map((x) => x.g);
+    return { required, conditionalGroups };
+  } catch {
+    return { required: [], conditionalGroups: [] };
+  }
+}
+
+const CIRCLED_NUMS = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'];
+function circledNum(n) {
+  const idx = Number(n) - 1;
+  if (idx >= 0 && idx < CIRCLED_NUMS.length) return CIRCLED_NUMS[idx];
+  return `(${n})`;
+}
+
 function toMarkdownCatalog(items = []) {
   const lines = ['# Sentra MCP 工具清单', '', `**可用工具总数**: ${items.length}`, '---', ''];
   for (const t of items) {
@@ -29,10 +78,26 @@ function toMarkdownCatalog(items = []) {
     lines.push(`**描述**: ${t.description || '(无描述)'}`);
     lines.push(`**提供者**: ${t.provider}${t.serverId ? ` | serverId: ${t.serverId}` : ''}`);
     
-    const req = Array.isArray(t.inputSchema?.required) ? t.inputSchema.required.join(', ') : '(无)';
-    lines.push(`**必填参数**: ${req}`);
+    const schema = t.inputSchema || {};
+    const { required, conditionalGroups } = formatRequiredHint(schema);
+    if (!required.length && !conditionalGroups.length) {
+      lines.push('**必填参数**: (无)');
+    } else {
+      lines.push('**必填参数**:');
+      let idx = 1;
+      for (const r of required) {
+        lines.push(`${idx}. ${r}`);
+        idx++;
+      }
+      if (conditionalGroups.length) {
+        const options = conditionalGroups
+          .map((g, i) => `${circledNum(i + 1)}[${g.join(', ')}]`)
+          .join(' ');
+        lines.push(`${idx}. 任选其一：${options}`);
+      }
+    }
     
-    lines.push(`**冷却(ms)**: ${t.cooldownMs}ms | **超时**: ${t.timeoutMs}ms`);
+    lines.push(`**超时(ms)**: ${t.timeoutMs}ms`);
     
     // 元信息
     if (t.meta && Object.keys(t.meta).length) {
@@ -69,8 +134,11 @@ function toXmlCatalog(items = []) {
     const real = (t.meta && t.meta.realWorldAction) || '';
     const cooldown = t.cooldownMs != null ? String(t.cooldownMs) : '';
     const timeout = t.timeoutMs != null ? String(t.timeoutMs) : '';
-    const required = Array.isArray(t.inputSchema?.required)
-      ? t.inputSchema.required.join(', ')
+    const schema = t.inputSchema || {};
+    const { required, conditionalGroups } = formatRequiredHint(schema);
+    const reqLine = required.length ? required.join(', ') : '(无)';
+    const condLine = conditionalGroups.length
+      ? `anyOf/oneOf: one of ${conditionalGroups.map((g) => `[${g.join(', ')}]`).join(' OR ')}`
       : '';
     const responseStyle = (t.meta && t.meta.responseStyle) || '';
     const responseExample =
@@ -83,7 +151,8 @@ function toXmlCatalog(items = []) {
     if (serverId) lines.push(`    <server_id>${escapeXmlEntities(serverId)}</server_id>`);
     if (desc) lines.push(`    <description>${escapeXmlEntities(desc)}</description>`);
     if (real) lines.push(`    <real_world_action>${escapeXmlEntities(real)}</real_world_action>`);
-    if (required) lines.push(`    <required_params>${escapeXmlEntities(required)}</required_params>`);
+    if (reqLine && reqLine !== '(无)') lines.push(`    <required_params>${escapeXmlEntities(reqLine)}</required_params>`);
+    if (condLine) lines.push(`    <conditional_required>${escapeXmlEntities(condLine)}</conditional_required>`);
     if (cooldown) lines.push(`    <cooldown_ms>${escapeXmlEntities(cooldown)}</cooldown_ms>`);
     if (timeout) lines.push(`    <timeout_ms>${escapeXmlEntities(timeout)}</timeout_ms>`);
     if (responseStyle || responseExample) {

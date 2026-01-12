@@ -4,6 +4,10 @@
   "inputSchema": {
     "type": "object",
     "properties": {
+      "keyword": {
+        "type": "string",
+        "description": "单个音乐标题或关键词（字符串）。若需要一次发送多个关键词，请使用 keywords[]。"
+      },
       "keywords": {
         "type": "array",
         "items": {
@@ -76,8 +80,10 @@
         "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
-    "required": [
-      "keywords"
+    "required": [],
+    "anyOf": [
+      { "required": ["keyword"] },
+      { "required": ["keywords"] }
     ],
     "additionalProperties": true
   },

@@ -377,9 +377,9 @@ function buildAdvice(kind, ctx = {}) {
   const personaHint = '请结合你当前的预设/人设继续作答：当音视频转写失败时，要说明原因（文件路径/网络/权限/接口/长度），给替代方案（换文件/压缩/截取片段/稍后重试/分段），并引导用户补充必要信息。';
   if (kind === 'INVALID') {
     return {
-      suggested_reply: '我需要你提供要转写的音频/视频文件（file）。当前参数缺失，所以我没法开始转写。你把文件路径或链接发我一下，我就继续。\n\n（请结合你当前的预设/人设继续作答）',
+      suggested_reply: '我需要你提供要转写的音频/视频文件（file 或 files）。当前参数缺失，所以我没法开始转写。你把文件路径或链接发我一下（单个用 file，多个用 files），我就继续。\n\n（请结合你当前的预设/人设继续作答）',
       next_steps: [
-        '提供 file：本地文件路径或 http(s) URL',
+        '提供 file 或 files：本地文件路径或 http(s) URL',
         '可选提供 language（语言）和 prompt（转写提示/上下文）',
       ],
       persona_hint: personaHint,
@@ -756,7 +756,7 @@ async function legacyHandler(args = {}, options = {}) {
   const prompt = args.prompt || null;
   
   if (!fileInput) {
-    return { success: false, code: 'INVALID', error: 'file is required', advice: buildAdvice('INVALID', { tool: 'av_transcribe' }) };
+    return { success: false, code: 'INVALID', error: 'file/files is required', advice: buildAdvice('INVALID', { tool: 'av_transcribe' }) };
   }
   
   const penv = options?.pluginEnv || {};
@@ -1152,15 +1152,40 @@ async function legacyHandler(args = {}, options = {}) {
 }
 
 export default async function handler(args = {}, options = {}) {
-  const out = await legacyHandler(args, options);
-  if (out && typeof out === 'object' && typeof out.success === 'boolean') {
-    if (out.success === true) {
-      return ok(out.data ?? null, out.code || 'OK', { ...('advice' in out ? { advice: out.advice } : {}) });
-    }
+  const rawArgs = (args && typeof args === 'object') ? args : {};
+  const { files: _files, ...baseArgs } = rawArgs;
 
-    const extra = { ...('advice' in out ? { advice: out.advice } : {}) };
-    if ('data' in out && out.data != null) extra.detail = { data: out.data };
-    return fail(('error' in out) ? out.error : 'Tool failed', out.code || 'ERR', extra);
+  const files = Array.isArray(_files) ? _files.map((v) => String(v || '').trim()).filter(Boolean) : [];
+  const file = String(rawArgs.file || '').trim();
+  const inputs = files.length ? files : (file ? [file] : []);
+
+  if (!inputs.length) {
+    return fail('file/files 不能为空', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'av_transcribe' }) });
   }
-  return ok(out);
+
+  if (inputs.length === 1) {
+    const out = await legacyHandler({ ...baseArgs, file: inputs[0] }, options);
+    if (out && typeof out === 'object' && typeof out.success === 'boolean') {
+      if (out.success === true) {
+        return ok(out.data ?? null, out.code || 'OK', { ...('advice' in out ? { advice: out.advice } : {}) });
+      }
+
+      const extra = { ...('advice' in out ? { advice: out.advice } : {}) };
+      if ('data' in out && out.data != null) extra.detail = { data: out.data };
+      return fail(('error' in out) ? out.error : 'Tool failed', out.code || 'ERR', extra);
+    }
+    return ok(out);
+  }
+
+  const results = [];
+  for (const f of inputs) {
+    const out = await legacyHandler({ ...baseArgs, file: f }, options);
+    if (out && typeof out === 'object' && typeof out.success === 'boolean') {
+      results.push({ file: f, ...out });
+    } else {
+      results.push({ file: f, success: true, code: 'OK', data: out });
+    }
+  }
+
+  return ok({ mode: 'batch', results });
 }

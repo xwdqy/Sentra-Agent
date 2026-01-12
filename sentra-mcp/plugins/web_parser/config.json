@@ -6,7 +6,15 @@
     "properties": {
       "url": {
         "type": "string",
-        "description": "要解析的网页 URL（可不带协议，会自动补全为 https://）"
+        "description": "单个要解析的网页 URL（可不带协议，会自动补全为 https://）。若需要一次解析多个网页，请使用 urls[]。"
+      },
+      "urls": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "description": "批量解析的网页 URL 数组（每个元素可不带协议，会自动补全为 https://）。"
       },
       "prompt": {
         "type": "string",
@@ -41,8 +49,11 @@
       }
     },
     "required": [
-      "url",
       "prompt"
+    ],
+    "anyOf": [
+      { "required": ["url"] },
+      { "required": ["urls"] }
     ],
     "additionalProperties": false
   },

@@ -4,13 +4,17 @@
   "inputSchema": {
     "type": "object",
     "properties": {
+      "query": {
+        "type": "string",
+        "description": "单个搜索关键词（字符串）。若需要一次搜索多个关键词，请使用 queries[]。"
+      },
       "queries": {
         "type": "array",
         "items": {
           "type": "string"
         },
         "minItems": 1,
-        "description": "搜索关键词数组，例如：[ '动漫 少女 高清 壁纸 4k', '风景 高清 壁纸' ]，支持中文/英文及风格、分辨率等组合提示词。"
+        "description": "搜索关键词数组（批量模式，必填其一：query/queries），例如：[ '动漫 少女 高清 壁纸 4k', '风景 高清 壁纸' ]，支持中文/英文及风格、分辨率等组合提示词。"
       },
       "count": {
         "type": "integer",
@@ -127,9 +131,12 @@
       }
     },
     "required": [
-      "queries",
       "count",
       "bingImageType"
+    ],
+    "anyOf": [
+      { "required": ["query"] },
+      { "required": ["queries"] }
     ],
     "additionalProperties": true
   },

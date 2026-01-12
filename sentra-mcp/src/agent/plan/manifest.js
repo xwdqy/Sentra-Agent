@@ -9,20 +9,81 @@ function escapeXmlEntities(str) {
     .replace(/'/g, '&apos;');
 }
 
+function extractRequiredGroups(schema = {}) {
+  try {
+    const groups = [];
+    const visit = (node) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node.required) && node.required.length) {
+        groups.push(node.required.map(String));
+      }
+      const variants = [];
+      if (Array.isArray(node.anyOf)) variants.push(...node.anyOf);
+      if (Array.isArray(node.oneOf)) variants.push(...node.oneOf);
+      if (Array.isArray(node.allOf)) variants.push(...node.allOf);
+      for (const v of variants) visit(v);
+    };
+    visit(schema);
+    const seen = new Set();
+    const uniq = [];
+    for (const g of groups) {
+      const key = JSON.stringify(g.slice().sort());
+      if (!seen.has(key)) { seen.add(key); uniq.push(g); }
+    }
+    return uniq;
+  } catch {
+    return [];
+  }
+}
+
+function summarizeConditionalRequired(schema = {}) {
+  try {
+    const groups = extractRequiredGroups(schema);
+    if (!groups.length) return '';
+    const baseReq = Array.isArray(schema.required) ? schema.required.map(String) : [];
+    const filtered = groups.filter((g) => {
+      if (!baseReq.length) return true;
+      const keyA = JSON.stringify(g.slice().sort());
+      const keyB = JSON.stringify(baseReq.slice().sort());
+      return keyA !== keyB;
+    });
+    if (!filtered.length) return '';
+    const parts = filtered.map((g) => `[${g.join(', ')}]`).join(' OR ');
+    return `CONDITIONAL(anyOf/oneOf): one of ${parts}`;
+  } catch {
+    return '';
+  }
+}
+
 // 中文：仅保留必填字段的 schema 视图，供“规划期清单展示”，避免上下文噪音
 export function requiredOnlySchema(schema = {}) {
   try {
     const props = schema.properties || {};
     const req = Array.isArray(schema.required) ? schema.required : [];
+    const groups = extractRequiredGroups(schema);
+    const allKeys = new Set();
+    for (const k of req) allKeys.add(String(k));
+    for (const g of groups) for (const k of g) allKeys.add(String(k));
     const picked = {};
-    for (const k of req) {
+    for (const k of Array.from(allKeys)) {
       if (props[k] != null) picked[k] = props[k];
-      else picked[k] = {}; // 保留占位，提示为必填
+      else picked[k] = {};
     }
+    const anyOfSlim = (() => {
+      const out = [];
+      const variants = Array.isArray(schema.anyOf) ? schema.anyOf : [];
+      for (const v of variants) {
+        if (v && typeof v === 'object' && Array.isArray(v.required) && v.required.length) {
+          out.push({ required: v.required.map(String) });
+        }
+      }
+      return out.length ? out : undefined;
+    })();
     return {
       type: 'object',
       properties: picked,
       required: req,
+      ...(anyOfSlim ? { anyOf: anyOfSlim } : {}),
       additionalProperties: schema.additionalProperties !== undefined ? schema.additionalProperties : true,
     };
   } catch {
@@ -81,6 +142,8 @@ export function summarizeRequiredFieldsDetail(schema = {}) {
       }
       out.push(`- ${k}: type=${t}${extra}`);
     }
+    const cond = summarizeConditionalRequired(schema);
+    if (cond) out.push(cond);
     return out.join('\n');
   } catch {
     return '';
@@ -109,6 +172,12 @@ export function summarizeRequiredFieldsDetailXml(schema = {}) {
         lines.push(`    <description>${escapeXmlEntities(desc)}</description>`);
       }
       lines.push('  </param>');
+    }
+    const cond = summarizeConditionalRequired(schema);
+    if (cond) {
+      lines.push('  <conditional_required>');
+      lines.push(`    <rule>${escapeXmlEntities(cond)}</rule>`);
+      lines.push('  </conditional_required>');
     }
     lines.push('</params>');
     return lines.join('\n');

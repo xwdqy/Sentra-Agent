@@ -7,6 +7,13 @@
       "group_id": {
         "type": "integer"
       },
+      "group_ids": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "minItems": 1
+      },
       "requestId": {
         "type": "string"
       },
@@ -38,8 +45,9 @@
         "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
-    "required": [
-      "group_id"
+    "anyOf": [
+      { "required": ["group_id"] },
+      { "required": ["group_ids"] }
     ],
     "additionalProperties": true
   },

@@ -240,11 +240,16 @@ export async function generateToolArgs(params) {
         }
         const target = calls.find((c) => String(c.name) === String(aiName)) || calls[0];
         if (target && target.arguments && typeof target.arguments === 'object') {
-          const okReq = Array.isArray(requiredList) && requiredList.length ? requiredList.every((k) => Object.prototype.hasOwnProperty.call(target.arguments, k)) : true;
-          if (okReq) { toolArgs = target.arguments; break; }
-          // 记录缺失/类型错误字段，供下一轮提示
-          const props = ((currentToolFull?.inputSchema || {}).properties) || {};
-          lastMissing = Array.isArray(requiredList) ? requiredList.filter((k) => !Object.prototype.hasOwnProperty.call(target.arguments, k)) : [];
+          const schemaToValidate = currentToolFull?.inputSchema || { type: 'object', properties: {} };
+          const check = validateAndRepairArgs(schemaToValidate, target.arguments);
+          if (check?.valid) {
+            toolArgs = check.output;
+            break;
+          }
+          // 记录缺失/类型错误字段，供下一轮提示（best-effort）
+          const props = (schemaToValidate.properties) || {};
+          const req0 = Array.isArray(schemaToValidate.required) ? schemaToValidate.required : [];
+          lastMissing = Array.isArray(req0) ? req0.filter((k) => !Object.prototype.hasOwnProperty.call(target.arguments, k)) : [];
           const invalid = [];
           for (const [k, def] of Object.entries(props)) {
             if (!Object.prototype.hasOwnProperty.call(target.arguments, k)) continue;
@@ -359,10 +364,15 @@ export async function generateToolArgs(params) {
           }
           const target2 = calls2.find((c) => String(c.name) === String(aiName)) || calls2[0];
           if (target2 && target2.arguments && typeof target2.arguments === 'object') {
-            const okReq2 = Array.isArray(requiredList) && requiredList.length ? requiredList.every((k) => Object.prototype.hasOwnProperty.call(target2.arguments, k)) : true;
-            if (okReq2) { toolArgs = target2.arguments; break; }
-            const props2 = ((currentToolFull?.inputSchema || {}).properties) || {};
-            lastMissing2 = Array.isArray(requiredList) ? requiredList.filter((k) => !Object.prototype.hasOwnProperty.call(target2.arguments, k)) : [];
+            const schemaToValidate2 = currentToolFull?.inputSchema || { type: 'object', properties: {} };
+            const check2 = validateAndRepairArgs(schemaToValidate2, target2.arguments);
+            if (check2?.valid) {
+              toolArgs = check2.output;
+              break;
+            }
+            const props2 = (schemaToValidate2.properties) || {};
+            const req02 = Array.isArray(schemaToValidate2.required) ? schemaToValidate2.required : [];
+            lastMissing2 = Array.isArray(req02) ? req02.filter((k) => !Object.prototype.hasOwnProperty.call(target2.arguments, k)) : [];
             const invalid2 = [];
             for (const [k, def] of Object.entries(props2)) {
               if (!Object.prototype.hasOwnProperty.call(target2.arguments, k)) continue;

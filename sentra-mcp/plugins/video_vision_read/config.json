@@ -4,6 +4,10 @@
   "inputSchema": {
     "type": "object",
     "properties": {
+      "video": {
+        "type": "string",
+        "description": "单个视频路径（字符串）。支持：1) 本地绝对路径；2) http/https URL。若需要一次处理多个视频，请使用 videos[]。"
+      },
       "videos": {
         "type": "array",
         "items": {
@@ -58,8 +62,11 @@
       }
     },
     "required": [
-      "videos",
       "prompt"
+    ],
+    "anyOf": [
+      { "required": ["video"] },
+      { "required": ["videos"] }
     ],
     "additionalProperties": true
   },

@@ -113,9 +113,14 @@ async function readImageAsBase64WithMime(src, convertGif = false) {
 }
 
 export default async function handler(args = {}, options = {}) {
-  const images = Array.isArray(args.images) ? args.images : [];
+  const images0 = Array.isArray(args.images) ? args.images : [];
+  const imageSingle = (args.image !== undefined && args.image !== null) ? String(args.image) : '';
+  const images = [
+    ...(imageSingle ? [imageSingle] : []),
+    ...images0
+  ];
   const prompt = String(args.prompt || '').trim();
-  if (!images.length) return fail('images is required (array of urls or absolute paths)', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'image_vision_read' }) });
+  if (!images.length) return fail('image/images is required (a url/absolute path string or an array of urls/absolute paths)', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'image_vision_read' }) });
   if (!prompt) return fail('prompt is required', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'image_vision_read', images_count: images.length }) });
 
   // plugin-level env

@@ -21,7 +21,7 @@ function buildAdvice(kind, ctx = {}) {
     return {
       suggested_reply: '我现在还没拿到要搜索的关键词/问题描述，所以没法开始实时搜索。你把想查的内容发我一下，我再继续。\n\n（请结合你当前的预设/人设继续作答）',
       next_steps: [
-        '请提供 query（搜索关键词/问题）',
+        '请提供 query（单条搜索关键词/问题）或 queries（多个关键词数组）',
         '可以给出你期望的时间范围/地区/更具体的限定词',
       ],
       persona_hint: personaHint,
@@ -86,9 +86,52 @@ function extractUrls(text) {
   return Array.from(set);
 }
 
+function normalizeQueries(args = {}) {
+  const list = Array.isArray(args.queries) ? args.queries : [];
+  const cleaned = list.map((q) => String(q || '').trim()).filter(Boolean);
+  return cleaned;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function runOneSearch({ client, model, baseArgs = {}, query, include, exclude, maxResults }) {
+  const raw = baseArgs.rawRequest && typeof baseArgs.rawRequest === 'object' ? baseArgs.rawRequest : null;
+  let payload;
+  if (raw) {
+    // Pass-through but enforce model from env
+    payload = { ...raw, model };
+  } else {
+    const systemPrompt = buildSearchSystemPrompt({ include, exclude, maxResults });
+    payload = {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: String(query || '').trim() }
+      ],
+      temperature: 0.3,
+    };
+  }
+
+  const res = await client.chat.completions.create(payload);
+  const text = extractTextFromChatCompletion(res);
+  const urls = extractUrls(text);
+  return {
+    query: String(query || '').trim() || null,
+    model: res?.model || model,
+    created: res?.created || null,
+    answer_text: text || null,
+    citations: urls.map((u, i) => ({ index: i + 1, url: u })),
+    completion_id: res?.id || null,
+    usage: res?.usage || null,
+  };
+}
+
 export default async function handler(args = {}, options = {}) {
   const penv = options?.pluginEnv || {};
   const q = String(args.query || '').trim();
+  const queries = normalizeQueries(args);
   const raw = args.rawRequest && typeof args.rawRequest === 'object' ? args.rawRequest : null;
   const model = String(penv.REALTIME_SEARCH_MODEL || process.env.REALTIME_SEARCH_MODEL || 'gpt-4o-search');
   const baseURL = String(penv.REALTIME_SEARCH_BASE_URL || process.env.REALTIME_SEARCH_BASE_URL || config.llm.baseURL || 'https://yuanplus.chat/v1');
@@ -97,31 +140,49 @@ export default async function handler(args = {}, options = {}) {
   const include = arrifyCsv(args.include_domains);
   const exclude = arrifyCsv(args.exclude_domains);
 
-  if (!raw && !q) {
-    return fail('query is required (or provide rawRequest)', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'realtime_search' }) });
+  // Required condition: rawRequest OR query OR queries
+  if (!raw && !q && !queries.length) {
+    return fail('query/queries is required (or provide rawRequest)', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'realtime_search' }) });
   }
 
   const client = new OpenAI({ apiKey, baseURL });
-  let payload;
-  if (raw) {
-    // Pass-through but enforce model from env
-    payload = { ...raw, model };
-  } else {
-    // Construct standard chat completions request
-    const systemPrompt = buildSearchSystemPrompt({ include, exclude, maxResults });
-    payload = {
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: q }
-      ],
-      temperature: 0.3,
-    };
+
+  // Batch mode: queries[] (homogeneous tasks)
+  if (!raw && queries.length) {
+    const delayMs = Math.max(0, Number(penv.REALTIME_SEARCH_BATCH_DELAY_MS || process.env.REALTIME_SEARCH_BATCH_DELAY_MS || 250));
+    const results = [];
+    for (let i = 0; i < queries.length; i++) {
+      const one = queries[i];
+      try {
+        const data = await runOneSearch({ client, model, baseArgs: args, query: one, include, exclude, maxResults });
+        results.push({ query: one, success: true, data });
+      } catch (e) {
+        const msg = String(e?.message || e);
+        const isTimeout = isTimeoutError(e);
+        logger.error('realtime_search: batch item failed', { label: 'PLUGIN', error: msg, index: i, query: one });
+        results.push({
+          query: one,
+          success: false,
+          code: isTimeout ? 'TIMEOUT' : 'ERR',
+          error: msg,
+          advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'realtime_search', query: one || null })
+        });
+      }
+
+      if (delayMs > 0 && i < queries.length - 1) {
+        await sleep(delayMs);
+      }
+    }
+    const anyOk = results.some((r) => r && r.success);
+    return anyOk
+      ? ok({ mode: 'batch', results })
+      : fail('All batch queries failed', 'ERR', { detail: { mode: 'batch', results } });
   }
 
-  let res;
+  // Single mode: rawRequest or query
+  let data;
   try {
-    res = await client.chat.completions.create(payload);
+    data = await runOneSearch({ client, model, baseArgs: args, query: q, include, exclude, maxResults });
   } catch (e) {
     const msg = String(e?.message || e);
     logger.error('realtime_search: chat.completions.create failed', { label: 'PLUGIN', error: msg });
@@ -131,17 +192,6 @@ export default async function handler(args = {}, options = {}) {
     });
   }
 
-  const text = extractTextFromChatCompletion(res);
-  const urls = extractUrls(text);
-
-  const data = {
-    query: q || null,
-    model: res?.model || model,
-    created: res?.created || null,
-    answer_text: text || null,
-    citations: urls.map((u, i) => ({ index: i + 1, url: u })),
-    completion_id: res?.id || null,
-    usage: res?.usage || null,
-  };
   return ok(data);
 }
+

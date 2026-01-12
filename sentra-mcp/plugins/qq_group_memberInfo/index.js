@@ -17,10 +17,10 @@ function buildAdvice(kind, ctx = {}) {
   const personaHint = '请结合你当前的预设/人设继续作答：当查询群成员信息失败时，要说明原因（参数/权限/机器人状态/WS 连接），给替代方案（补参数/重试/检查权限）。';
   if (kind === 'INVALID') {
     return {
-      suggested_reply: '我可以帮你查询群成员信息，但需要提供 group_id 和 user_id（数字）。你把群号和成员 QQ 号发我一下，我就继续。\n\n（请结合你当前的预设/人设继续作答）',
+      suggested_reply: '我可以帮你查询群成员信息，但需要提供 group_id，以及 user_id 或 user_ids（数字）。你把群号和成员 QQ 号发我一下（单个用 user_id，多个用 user_ids），我就继续。\n\n（请结合你当前的预设/人设继续作答）',
       next_steps: [
         '提供 group_id（群号，数字）',
-        '提供 user_id（成员 QQ 号，数字）',
+        '提供 user_id 或 user_ids（成员 QQ 号，数字）',
         '可选 refresh=true（是否强制刷新）',
       ],
       persona_hint: personaHint,
@@ -54,17 +54,42 @@ export default async function handler(args = {}, options = {}) {
   const url = String(penv.WS_SDK_URL || 'ws://localhost:6702');
   const timeoutMs = Math.max(1000, Number(penv.WS_SDK_TIMEOUT_MS || 15000));
   const path = 'group.memberInfo';
-  const requestId = String(args.requestId || `${path}-${Date.now()}`);
-  const group_id = Number(args.group_id);
-  const user_id = Number(args.user_id);
+  const rawArgs = (args && typeof args === 'object') ? args : {};
+  const baseRequestId = String(rawArgs.requestId || `${path}-${Date.now()}`);
+  const group_id = Number(rawArgs.group_id);
   if (!Number.isFinite(group_id)) return fail('group_id 不能为空', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'qq_group_memberInfo' }) });
-  if (!Number.isFinite(user_id)) return fail('user_id 不能为空', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'qq_group_memberInfo', group_id }) });
-  const refresh = typeof args.refresh === 'boolean' ? args.refresh : false;
-  try {
-    const resp = await wsCall({ url, path, args: [group_id, user_id, refresh], requestId, timeoutMs });
-    return ok({ request: { type: 'sdk', path, args: [group_id, user_id, refresh], requestId }, response: resp });
-  } catch (e) {
-    const isTimeout = isTimeoutError(e);
-    return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'qq_group_memberInfo', group_id, user_id, refresh }) });
+
+  const userIds = Array.isArray(rawArgs.user_ids) ? rawArgs.user_ids : [];
+  const parsedUserIds = userIds.map((v) => Number(v)).filter((v) => Number.isFinite(v));
+  const userIdSingle = Number(rawArgs.user_id);
+  const inputs = parsedUserIds.length ? parsedUserIds : (Number.isFinite(userIdSingle) ? [userIdSingle] : []);
+
+  if (!inputs.length) {
+    return fail('user_id/user_ids 不能为空', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'qq_group_memberInfo', group_id }) });
   }
+
+  const refresh = typeof rawArgs.refresh === 'boolean' ? rawArgs.refresh : false;
+
+  const single = async (user_id, index) => {
+    const requestId = `${baseRequestId}-${index}`;
+    try {
+      const resp = await wsCall({ url, path, args: [group_id, user_id, refresh], requestId, timeoutMs });
+      return ok({ request: { type: 'sdk', path, args: [group_id, user_id, refresh], requestId }, response: resp });
+    } catch (e) {
+      const isTimeout = isTimeoutError(e);
+      return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'qq_group_memberInfo', group_id, user_id, refresh }) });
+    }
+  };
+
+  if (inputs.length === 1) {
+    return await single(inputs[0], 0);
+  }
+
+  const results = [];
+  for (let i = 0; i < inputs.length; i++) {
+    const user_id = inputs[i];
+    const out = await single(user_id, i);
+    results.push({ group_id, user_id, ...out });
+  }
+  return ok({ mode: 'batch', results });
 }

@@ -141,14 +141,19 @@ async function fetchDocument(src) {
 }
 
 export default async function handler(args = {}, options = {}) {
-  const files = Array.isArray(args.files) ? args.files : [];
+  const files0 = Array.isArray(args.files) ? args.files : [];
+  const fileSingle = (args.file !== undefined && args.file !== null) ? String(args.file) : '';
+  const files = [
+    ...(fileSingle ? [fileSingle] : []),
+    ...files0
+  ];
   const encoding = String(args.encoding || '').trim() || undefined;
   
   // 从环境变量读取文件大小限制
   const penv = options?.pluginEnv || {};
   const maxFileSizeMB = Number(penv.DOC_MAX_FILE_SIZE_MB || process.env.DOC_MAX_FILE_SIZE_MB || 10);
   
-  if (!files.length) return fail('files is required (array of urls or absolute paths)', 'INVALID');
+  if (!files.length) return fail('file/files is required (a url/absolute path string or an array of urls/absolute paths)', 'INVALID');
   
   logger.info?.('document_read:start', { label: 'PLUGIN', fileCount: files.length, encoding, maxFileSizeMB });
   const results = [];

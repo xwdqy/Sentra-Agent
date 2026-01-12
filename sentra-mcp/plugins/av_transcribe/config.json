@@ -15,6 +15,19 @@
           "https://example.com/audio.mp3"
         ]
       },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "音视频文件路径列表（批量模式，必填其一：file/files）。每个元素规则同 file：支持本地绝对路径或 http/https URL。",
+        "examples": [
+          [
+            "E:/media/audio1.mp3",
+            "E:/media/audio2.mp3"
+          ]
+        ]
+      },
       "language": {
         "type": "string",
         "description": "音频语言（可选）：如 zh/en/ja/ko 等。不指定则自动检测"
@@ -51,8 +64,17 @@
         "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
-    "required": [
-      "file"
+    "anyOf": [
+      {
+        "required": [
+          "file"
+        ]
+      },
+      {
+        "required": [
+          "files"
+        ]
+      }
     ]
   },
   "timeoutMs": 180000,

@@ -4,6 +4,10 @@
   "inputSchema": {
     "type": "object",
     "properties": {
+      "city": {
+        "type": "string",
+        "description": "单个城市名称（字符串），如：\"北京\"。若需一次查询多个城市，请使用 cities[]。"
+      },
       "cities": {
         "type": "array",
         "items": {
@@ -66,8 +70,9 @@
         "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
-    "required": [
-      "cities"
+    "anyOf": [
+      { "required": ["city"] },
+      { "required": ["cities"] }
     ],
     "additionalProperties": true
   },

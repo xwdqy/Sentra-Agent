@@ -706,8 +706,38 @@ export function createSDK(init?: SDKInit): SdkInvoke {
         return parts.join('');
       };
 
+      const renderSegmentsTextOnly = (segs: any[]): string => {
+        if (!Array.isArray(segs)) return '';
+        const parts: string[] = [];
+        for (const s of segs) {
+          if (!s || !s.type) continue;
+
+          if (s.type === 'text') {
+            const t = String(s.data?.text ?? '');
+            if (t) parts.push(t);
+            continue;
+          }
+
+          if (s.type === 'at') {
+            const qq = s.data?.qq;
+            if (qq === 'all') parts.push('@全体成员');
+            else if (qq) parts.push(`@${qq}`);
+            continue;
+          }
+
+          if (s.type === 'face') {
+            const text = s.data?.text;
+            const id = s.data?.id;
+            parts.push(text ? String(text) : `表情${id ?? ''}`);
+            continue;
+          }
+        }
+
+        return parts.join('');
+      };
+
       let embeddedPlain = '';
-      if (reply?.message && Array.isArray(reply.message)) embeddedPlain = renderSegmentsMarkdownInline(reply.message);
+      if (reply?.message && Array.isArray(reply.message)) embeddedPlain = renderSegmentsTextOnly(reply.message);
       if (!embeddedPlain && reply?.raw_message) embeddedPlain = String(reply.raw_message);
 
       if (reply && reply.id) {
@@ -778,7 +808,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
       }
 
       if (referred && referred.message) {
-        referredPlain = renderSegmentsMarkdownInline(referred.message as any[]);
+        referredPlain = renderSegmentsTextOnly(referred.message as any[]);
       } else if (referred && referred.raw_message) {
         referredPlain = String(referred.raw_message);
       } else {

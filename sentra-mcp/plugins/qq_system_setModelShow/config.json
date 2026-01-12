@@ -49,8 +49,8 @@
   },
   "timeoutMs": 20000,
   "meta": {
-    "realWorldAction": "设置设备展示",
+    "realWorldAction": "QQ修改当前账号的设备/机型展示",
     "responseStyle": "自然语言（简洁）",
-    "responseExample": "已设置机型"
+    "responseExample": "我已经把QQ设备展示改好了。"
   }
 }

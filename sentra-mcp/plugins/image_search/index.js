@@ -17,7 +17,7 @@ function buildAdvice(kind, ctx = {}) {
     return {
       suggested_reply: '我现在还没拿到完整的搜图参数（比如关键词或数量），所以没法开始搜索。你把要找的图片关键词/风格偏好发我一下，我再继续。\n\n（请结合你当前的预设/人设继续作答）',
       next_steps: [
-        '补充 query（必填）：例如“赛博朋克城市夜景 4K”',
+        '补充 query 或 queries（必填其一）：例如“赛博朋克城市夜景 4K”',
         '可调整 count（数量）/quality（清晰度）/provider（来源）',
       ],
       persona_hint: personaHint,
@@ -1447,15 +1447,40 @@ async function singleImageSearchHandler(args = {}, options = {}) {
 }
 
 export default async function handler(args = {}, options = {}) {
-  const out = await singleImageSearchHandler(args, options);
-  if (out && typeof out === 'object' && typeof out.success === 'boolean') {
-    if (out.success === true) {
-      return ok(out.data ?? null, out.code || 'OK', { ...('advice' in out ? { advice: out.advice } : {}), ...('details' in out ? { detail: out.details } : {}) });
-    }
-    const err = ('error' in out) ? out.error : 'Tool failed';
-    const extra = { ...('advice' in out ? { advice: out.advice } : {}), ...('details' in out ? { detail: out.details } : {}) };
-    if ('data' in out && out.data != null) extra.detail = extra.detail ? { ...(typeof extra.detail === 'object' ? extra.detail : { value: extra.detail }), data: out.data } : { data: out.data };
-    return fail(err, out.code || 'ERR', extra);
+  const rawArgs = (args && typeof args === 'object') ? args : {};
+  const queries = Array.isArray(rawArgs.queries)
+    ? rawArgs.queries.map((q) => String(q || '').trim()).filter(Boolean)
+    : [];
+  const query = String(rawArgs.query || '').trim();
+  const inputs = queries.length ? queries : (query ? [query] : []);
+
+  if (!inputs.length) {
+    const out = { success: false, code: 'INVALID_PARAM', error: 'query/queries 参数是必需的', advice: buildAdvice('INVALID_PARAM', { tool: 'image_search' }) };
+    return fail(out.error, out.code || 'ERR', { advice: out.advice });
   }
-  return ok(out);
+
+  if (inputs.length === 1) {
+    const out = await singleImageSearchHandler({ ...rawArgs, query: inputs[0] }, options);
+    if (out && typeof out === 'object' && typeof out.success === 'boolean') {
+      if (out.success === true) {
+        return ok(out.data ?? null, out.code || 'OK', { ...('advice' in out ? { advice: out.advice } : {}), ...('details' in out ? { detail: out.details } : {}) });
+      }
+      const err = ('error' in out) ? out.error : 'Tool failed';
+      const extra = { ...('advice' in out ? { advice: out.advice } : {}), ...('details' in out ? { detail: out.details } : {}) };
+      if ('data' in out && out.data != null) extra.detail = extra.detail ? { ...(typeof extra.detail === 'object' ? extra.detail : { value: extra.detail }), data: out.data } : { data: out.data };
+      return fail(err, out.code || 'ERR', extra);
+    }
+    return ok(out);
+  }
+
+  const results = [];
+  for (const q of inputs) {
+    const out = await singleImageSearchHandler({ ...rawArgs, query: q, queries: undefined }, options);
+    if (out && typeof out === 'object' && typeof out.success === 'boolean') {
+      results.push({ query: q, ...out });
+    } else {
+      results.push({ query: q, success: true, data: out });
+    }
+  }
+  return ok({ mode: 'batch', results });
 }
