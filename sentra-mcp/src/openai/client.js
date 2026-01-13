@@ -64,6 +64,58 @@ export async function chatCompletion({ messages, tools, tool_choice, temperature
   return res;
 }
 
+export async function chatCompletionStream({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens, onDelta }) {
+  const openai = (apiKey || baseURL)
+    ? new OpenAI({ apiKey: apiKey || config.llm.apiKey, baseURL: baseURL || config.llm.baseURL })
+    : getOpenAI();
+
+  const payload = {
+    model: model || config.llm.model,
+    messages,
+    temperature: temperature ?? config.llm.temperature,
+    stream: true,
+  };
+
+  if (typeof top_p === 'number') {
+    const tp = Number(top_p);
+    if (Number.isFinite(tp) && tp > 0 && tp <= 1) payload.top_p = tp;
+  }
+
+  if (!omitMaxTokens) {
+    const cfgMax = Number(config.llm.maxTokens);
+    if (typeof max_tokens !== 'undefined') {
+      const mt = Number(max_tokens);
+      if (Number.isFinite(mt) && mt > 0) payload.max_tokens = mt;
+    } else if (Number.isFinite(cfgMax) && cfgMax > 0) {
+      payload.max_tokens = cfgMax;
+    }
+  }
+
+  if (tools) payload.tools = tools;
+  if (tool_choice) payload.tool_choice = tool_choice;
+
+  logger.debug?.('openai.chat.completions.create(stream)', { hasTools: !!tools, tool_choice: payload.tool_choice });
+
+  const stream = await openai.chat.completions.create(payload);
+  let content = '';
+  let created;
+  let usedModel;
+
+  for await (const chunk of stream) {
+    if (typeof chunk?.created === 'number') created = chunk.created;
+    if (typeof chunk?.model === 'string') usedModel = chunk.model;
+    const delta = chunk?.choices?.[0]?.delta?.content || '';
+    if (delta) {
+      content += delta;
+      if (typeof onDelta === 'function') {
+        try { onDelta(delta, content, chunk); } catch {}
+      }
+    }
+  }
+
+  return { content, created, model: usedModel || payload.model };
+}
+
 // 中文：简单封装 Embeddings 接口，返回每个输入文本的向量数组
 export async function embedTexts({ texts = [], apiKey, baseURL, model }) {
   if (!Array.isArray(texts) || texts.length === 0) return [];
@@ -91,4 +143,4 @@ export function buildToolSchemaFromLocal(tools) {
   }));
 }
 
-export default { getOpenAI, chatCompletion, buildToolSchemaFromLocal, embedTexts };
+export default { getOpenAI, chatCompletion, chatCompletionStream, buildToolSchemaFromLocal, embedTexts };

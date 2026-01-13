@@ -1,0 +1,60 @@
+{
+  "name": "image_to_video",
+  "description": "根据图片+文字提示生成视频：直接使用你提供的 prompt 与参考图生成视频，并返回可下载的视频文件链接。",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string",
+        "description": "视频需求描述（建议写清主体、动作、风格、镜头感、时长/节奏等）。"
+      },
+      "images": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string"
+        },
+        "description": "参考图片列表（至少 1 张）。每个元素支持：1) 本地绝对路径（含盘符/根目录）；2) http/https URL。"
+      },
+      "schedule": {
+        "type": "object",
+        "properties": {
+          "when": {
+            "type": "string",
+            "description": "时间表达：如 '5分钟后' / '30秒后' / '明天09:00' / '2025-12-16 21:30' / ISO 字符串。请使用清晰、可解析的时间表达，避免使用『稍后』『改天』『有空的时候』『尽快』『5分钟之后』等模糊说法。"
+          },
+          "language": {
+            "type": "string",
+            "description": "语言标识，例如 zh|en（默认 zh）"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA 时区名称，例如 Asia/Shanghai"
+          },
+          "targetISO": {
+            "type": "string",
+            "description": "预解析好的绝对时间（ISO 字符串），例如 '2025-12-16T21:30:00+08:00'；如提供，将被上游优先用作目标时间。"
+          }
+        },
+        "required": [
+          "when",
+          "targetISO"
+        ],
+        "additionalProperties": true,
+        "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
+      }
+    },
+    "required": [
+      "prompt",
+      "images"
+    ],
+    "additionalProperties": true
+  },
+  "timeoutMs": 600000,
+  "meta": {
+    "realWorldAction": "用图片生成视频",
+    "responseStyle": "纯文本（Markdown）",
+    "responseExample": "已生成视频：\n\n[Download video](E:/sentra-agent/sentra-mcp/artifacts/itv_1696231234567_0.mp4)",
+    "streamSupport": true
+  }
+}

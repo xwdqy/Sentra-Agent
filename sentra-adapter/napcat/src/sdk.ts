@@ -215,6 +215,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
         port: (init as any)?.port || cfg.reversePort || 6701,
         path: (init as any)?.path || cfg.reversePath || '/onebot',
         accessToken: (init as any)?.accessToken || cfg.accessToken,
+        requestTimeoutMs: (init as any)?.requestTimeoutMs || cfg.requestTimeoutMs,
         logLevel: (init as any)?.logLevel || cfg.logLevel,
         whitelistGroups: (init as any)?.whitelistGroups || cfg.whitelistGroups,
         whitelistUsers: (init as any)?.whitelistUsers || cfg.whitelistUsers,

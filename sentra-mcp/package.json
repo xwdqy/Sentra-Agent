@@ -32,6 +32,9 @@
   "engines": {
     "node": ">=18.17.0"
   },
+  "devDependencies": {
+    "electron-builder": "^24.13.3"
+  },
   "dependencies": {
     "@microsoft/recognizers-text-date-time": "^1.0.2",
     "@microsoft/recognizers-text-suite": "^1.0.2",
