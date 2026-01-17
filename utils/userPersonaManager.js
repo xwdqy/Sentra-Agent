@@ -223,6 +223,18 @@ class UserPersonaManager {
       if (!data.personaStats) {
         data.personaStats = { traits: {}, interests: {}, patterns: {}, insights: {} };
       }
+
+       let dirty = false;
+       if (data && data.persona && typeof data.persona === 'object' && data.persona._raw_xml) {
+         try {
+           delete data.persona._raw_xml;
+           dirty = true;
+         } catch {}
+       }
+       if (dirty) {
+         this._saveUserData(senderId, data);
+       }
+
       this.cache.set(senderId, data);
       return data;
     } catch (error) {
@@ -546,11 +558,7 @@ class UserPersonaManager {
       
       // 解析 XML 结构
       const persona = this._parsePersonaXML(personaXML);
-      
-      // 保存原始 XML 用于后续优化（包含 sender_id 属性）
-      const senderIdAttr = senderId ? ` sender_id="${escapeXmlAttr(unescapeXml(String(senderId)))}"` : '';
-      persona._raw_xml = `<sentra-persona${senderIdAttr}>\n${personaXML}\n</sentra-persona>`;
-      
+
       return persona;
       
     } catch (error) {
@@ -684,9 +692,6 @@ class UserPersonaManager {
     // 若已是 XML 字符串或对象内含原始XML，则直接返回
     if (typeof persona === 'string' && persona.includes('<sentra-persona')) {
       return persona;
-    }
-    if (persona._raw_xml && typeof persona._raw_xml === 'string') {
-      return persona._raw_xml;
     }
     
     const lines = [];

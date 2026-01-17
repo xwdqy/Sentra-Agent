@@ -75,6 +75,10 @@ export class OneBotWSClient extends EventEmitter<{
 
   async connect(): Promise<void> {
     this.manualClose = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     await this.openSocket();
   }
 
@@ -104,7 +108,16 @@ export class OneBotWSClient extends EventEmitter<{
   }
 
   private openSocket(): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const prev = this.ws;
+      if (prev && (prev.readyState === WebSocket.OPEN || prev.readyState === WebSocket.CONNECTING)) {
+        try {
+          prev.terminate();
+        } catch {
+          // ignore
+        }
+      }
+
       const headers: Record<string, string> = {};
       if (this.opts.accessToken) {
         headers['Authorization'] = `Bearer ${this.opts.accessToken}`;
@@ -112,10 +125,32 @@ export class OneBotWSClient extends EventEmitter<{
       const ws = new WebSocket(this.url, { headers });
       this.ws = ws;
 
+      let settled = false;
+      const finish = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimer);
+        if (err) reject(err);
+        else resolve();
+      };
+
+      const connectTimer = setTimeout(() => {
+        this.logger.warn({ url: this.url, timeoutMs: this.opts.requestTimeoutMs }, 'WS connect timeout');
+        try {
+          ws.terminate();
+        } catch {
+          // ignore
+        }
+        if (!this.manualClose && this.opts.reconnect) {
+          this.scheduleReconnect();
+        }
+        finish(new Error('WebSocket connect timeout'));
+      }, this.opts.requestTimeoutMs);
+
       ws.on('open', () => {
         this.logger.info({ url: this.url }, 'WS open');
         this.emit('open');
-        resolve();
+        finish();
       });
 
       ws.on('message', (data: RawData) => this.handleMessage(data.toString()));
@@ -128,11 +163,20 @@ export class OneBotWSClient extends EventEmitter<{
         if (!this.manualClose && this.opts.reconnect) {
           this.scheduleReconnect();
         }
+        if (!settled) {
+          finish(new Error(`WebSocket closed before open: ${code} ${reason}`));
+        }
       });
 
       ws.on('error', (err: Error) => {
         this.logger.error({ err }, 'WS error');
         this.emit('error', err);
+        if (!this.manualClose && this.opts.reconnect) {
+          this.scheduleReconnect();
+        }
+        if (!settled) {
+          finish(err);
+        }
       });
 
       // periodic ping

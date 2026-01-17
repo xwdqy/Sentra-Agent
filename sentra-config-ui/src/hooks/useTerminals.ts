@@ -9,76 +9,16 @@ export type UseTerminalsParams = {
 };
 
 export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
-  const [terminalWindows, setTerminalWindows] = useState<TerminalWin[]>(() => {
-    try {
-      const saved = localStorage.getItem('sentra_terminal_windows');
-      if (!saved) return [];
-      const parsed = JSON.parse(saved);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .filter(Boolean)
-        .map((t: any) => {
-          const p = t?.pos || { x: 0, y: 0 };
-          const invalid =
-            p.x == null || p.y == null ||
-            p.x < 0 || p.y < 0 ||
-            p.x > window.innerWidth - 120 || p.y > window.innerHeight - 120;
+  const [terminalWindows, setTerminalWindows] = useState<TerminalWin[]>([]);
 
-          const safePos = invalid
-            ? { x: Math.max(0, window.innerWidth / 2 - 350), y: Math.max(40, window.innerHeight / 2 - 250) }
-            : p;
-
-          return {
-            ...t,
-            pos: safePos,
-          } as TerminalWin;
-        });
-    } catch {
-      return [];
-    }
-  });
-
-  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(() => {
-    try {
-      const v = localStorage.getItem('sentra_active_terminal_id');
-      return v ? String(v) : null;
-    } catch {
-      return null;
-    }
-  });
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem('sentra_terminal_windows', JSON.stringify(terminalWindows));
-      } catch { }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [terminalWindows]);
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
 
   useEffect(() => {
     try {
-      localStorage.setItem('sentra_active_terminal_id', activeTerminalId ? String(activeTerminalId) : '');
+      localStorage.removeItem('sentra_terminal_windows');
+      localStorage.removeItem('sentra_active_terminal_id');
     } catch { }
-  }, [activeTerminalId]);
-
-  useEffect(() => {
-    const flush = () => {
-      try {
-        localStorage.setItem('sentra_terminal_windows', JSON.stringify(terminalWindows));
-        localStorage.setItem('sentra_active_terminal_id', activeTerminalId ? String(activeTerminalId) : '');
-      } catch { }
-    };
-    const onVis = () => {
-      if (document.visibilityState === 'hidden') flush();
-    };
-    window.addEventListener('pagehide', flush);
-    document.addEventListener('visibilitychange', onVis);
-    return () => {
-      window.removeEventListener('pagehide', flush);
-      document.removeEventListener('visibilitychange', onVis);
-    };
-  }, [activeTerminalId, terminalWindows]);
+  }, []);
 
   const bringTerminalToFront = (id: string) => {
     const z = allocateZ ? allocateZ() : undefined;
@@ -108,11 +48,36 @@ export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
   const runScript = async (path: string, title: string, appKey: string, args: string[], options?: { theme?: any, headerText?: string }) => {
     const existing = terminalWindows.find(t => t.appKey === appKey);
     if (existing) {
-      if (existing.minimized) {
-        setTerminalWindows(prev => prev.map(t => t.id === existing.id ? { ...t, minimized: false } : t));
+      try {
+        const res = await fetch(`/api/scripts/status/${existing.processId}`, { headers: getAuthHeaders() });
+        if (res.status === 404) {
+          setTerminalWindows(prev => prev.filter(t => t.id !== existing.id));
+        } else if (res.ok) {
+          const st: any = await res.json();
+          if (st && (st.exitCode != null || st.endTime != null)) {
+            setTerminalWindows(prev => prev.filter(t => t.id !== existing.id));
+          } else {
+            if (existing.minimized) {
+              setTerminalWindows(prev => prev.map(t => t.id === existing.id ? { ...t, minimized: false } : t));
+            }
+            bringTerminalToFront(existing.id);
+            return;
+          }
+        } else if (res.ok) {
+          const st: any = await res.json();
+          if (st && (st.exitCode != null || st.endTime != null)) {
+            setTerminalWindows(prev => prev.filter(t => t.id !== existing.id));
+          } else {
+            if (existing.minimized) {
+              setTerminalWindows(prev => prev.map(t => t.id === existing.id ? { ...t, minimized: false } : t));
+            }
+            bringTerminalToFront(existing.id);
+            return;
+          }
+        }
+      } catch {
+        // ignore
       }
-      bringTerminalToFront(existing.id);
-      return;
     }
     try {
       const response = await fetch(path, {

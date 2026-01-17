@@ -9,6 +9,7 @@ import {
 } from 'react-icons/si';
 
 import Editor from '@monaco-editor/react';
+import '../utils/monacoSetup';
 import {
     fetchFileTree, fetchFileContent, saveFileContent,
     createFile, deleteFile,

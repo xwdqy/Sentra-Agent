@@ -13,6 +13,7 @@ import { VscNewFile, VscNewFolder, VscTrash, VscEdit, VscCopy, VscPreview } from
 import Editor from '@monaco-editor/react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import '../utils/monacoSetup';
 import {
     fetchFileTree, fetchFileContent, saveFileContent,
     createFile, renameFile, deleteFile,

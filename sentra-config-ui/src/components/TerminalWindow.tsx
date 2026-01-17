@@ -10,9 +10,10 @@ interface TerminalWindowProps {
     processId: string;
     theme?: any;
     headerText?: string;
+    onProcessNotFound?: () => void;
 }
 
-export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme, headerText }) => {
+export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme, headerText, onProcessNotFound }) => {
     const terminalRef = useRef<HTMLDivElement>(null);
     const xtermInstance = useRef<Terminal | null>(null);
     const fitAddonRef = useRef<FitAddon | null>(null);
@@ -22,6 +23,9 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
     const userScrolledRef = useRef(false);
     const lastScrollPositionRef = useRef(0);
     const disconnectedRef = useRef(false);
+    const reconnectAttemptRef = useRef(0);
+    const reconnectTimerRef = useRef<number | null>(null);
+    const stoppedRef = useRef(false);
 
     useEffect(() => {
         autoScrollRef.current = autoScroll;
@@ -30,6 +34,14 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
     // Initialize terminal
     useEffect(() => {
         if (!terminalRef.current) return;
+
+        stoppedRef.current = false;
+        disconnectedRef.current = false;
+        reconnectAttemptRef.current = 0;
+        if (reconnectTimerRef.current) {
+            window.clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+        }
 
         // Clean up previous instance
         if (xtermInstance.current) {
@@ -124,7 +136,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
 
         // Handle input
         term.onData((data) => {
-            const token = sessionStorage.getItem('sentra_auth_token');
+            const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
             fetch(`/api/scripts/input/${processId}?token=${token}`, {
                 method: 'POST',
                 headers: {
@@ -213,37 +225,117 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         window.addEventListener('resize', handleResize);
 
         // Connect to SSE
-        const token = sessionStorage.getItem('sentra_auth_token');
-        const eventSource = new EventSource(`/api/scripts/stream/${processId}?token=${token}`);
-        eventSourceRef.current = eventSource;
-
-        eventSource.onopen = () => {
-            if (disconnectedRef.current) {
-                disconnectedRef.current = false;
-                term.write('\r\n\x1b[32m✓ Reconnected.\x1b[0m\r\n');
+        const cleanupEventSource = () => {
+            const es = eventSourceRef.current;
+            if (es) {
+                try { es.close(); } catch { }
             }
+            eventSourceRef.current = null;
         };
 
-        eventSource.onmessage = (event) => {
+        const scheduleReconnect = (reason: string) => {
+            if (stoppedRef.current) return;
+            if (reconnectTimerRef.current) return;
+
+            const attempt = reconnectAttemptRef.current;
+            const base = 500;
+            const maxDelay = 15000;
+            const delay = Math.min(maxDelay, base * Math.pow(2, Math.min(6, attempt)));
+            const jitter = Math.floor(Math.random() * 250);
+            const finalDelay = delay + jitter;
+
+            reconnectTimerRef.current = window.setTimeout(() => {
+                reconnectTimerRef.current = null;
+                if (stoppedRef.current) return;
+                connectEventSource(reason);
+            }, finalDelay);
+        };
+
+        const checkProcessAlive = async (): Promise<'alive' | 'not_found' | 'ended'> => {
+            const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
             try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'output') {
-                    term.write(data.data);
-                } else if (data.type === 'exit') {
-                    term.write(`\r\n\x1b[32m✓ Process exited with code ${data.code}\x1b[0m\r\n`);
-                    eventSource.close();
-                }
-            } catch (e) {
-                console.error('Failed to parse SSE message:', e);
+                const res = await fetch(`/api/scripts/status/${processId}?token=${encodeURIComponent(token || '')}`);
+                if (res.status === 404) return 'not_found';
+                if (!res.ok) return 'alive';
+                const st: any = await res.json();
+                if (st && (st.exitCode != null || st.endTime != null)) return 'ended';
+                return 'alive';
+            } catch {
+                return 'alive';
             }
         };
 
-        eventSource.onerror = () => {
-            if (!disconnectedRef.current) {
-                disconnectedRef.current = true;
-                term.write('\r\n\x1b[31m✗ Connection lost, retrying...\x1b[0m\r\n');
+        const connectEventSource = async (_reason?: string) => {
+            const alive = await checkProcessAlive();
+            if (alive === 'not_found') {
+                stoppedRef.current = true;
+                if (reconnectTimerRef.current) {
+                    window.clearTimeout(reconnectTimerRef.current);
+                    reconnectTimerRef.current = null;
+                }
+                cleanupEventSource();
+                term.write(`\r\n\x1b[31m✗ Process not found (stale terminal window).\x1b[0m\r\n`);
+                try { onProcessNotFound?.(); } catch { }
+                return;
+            }
+            cleanupEventSource();
+            const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
+            const es = new EventSource(`/api/scripts/stream/${processId}?token=${token}`);
+            eventSourceRef.current = es;
+
+            es.onopen = () => {
+                reconnectAttemptRef.current = 0;
+                if (disconnectedRef.current) {
+                    disconnectedRef.current = false;
+                    term.write('\r\n\x1b[32m✓ Reconnected.\x1b[0m\r\n');
+                }
+            };
+
+            es.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'output') {
+                        term.write(data.data);
+                    } else if (data.type === 'exit') {
+                        stoppedRef.current = true;
+                        if (reconnectTimerRef.current) {
+                            window.clearTimeout(reconnectTimerRef.current);
+                            reconnectTimerRef.current = null;
+                        }
+                        term.write(`\r\n\x1b[32m✓ Process exited with code ${data.code}\x1b[0m\r\n`);
+                        cleanupEventSource();
+                    }
+                } catch (e) {
+                    console.error('Failed to parse SSE message:', e);
+                }
+            };
+
+            es.onerror = () => {
+                if (stoppedRef.current) return;
+                reconnectAttemptRef.current += 1;
+                if (!disconnectedRef.current) {
+                    disconnectedRef.current = true;
+                    term.write('\r\n\x1b[31m✗ Connection lost, retrying...\x1b[0m\r\n');
+                }
+                scheduleReconnect('error');
+            };
+        };
+
+        const handleOnline = () => {
+            if (stoppedRef.current) return;
+            void connectEventSource('online');
+        };
+        const handleVisibility = () => {
+            if (stoppedRef.current) return;
+            if (document.visibilityState === 'visible') {
+                void connectEventSource('visible');
             }
         };
+
+        window.addEventListener('online', handleOnline);
+        document.addEventListener('visibilitychange', handleVisibility);
+
+        void connectEventSource('init');
 
         // Initial fit
         requestAnimationFrame(() => {
@@ -254,10 +346,17 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         });
 
         return () => {
+            stoppedRef.current = true;
+            if (reconnectTimerRef.current) {
+                window.clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = null;
+            }
+            window.removeEventListener('online', handleOnline);
+            document.removeEventListener('visibilitychange', handleVisibility);
             window.removeEventListener('resize', handleResize);
             terminalRef.current?.removeEventListener('contextmenu', handleContextMenu);
             term.dispose();
-            eventSource.close();
+            cleanupEventSource();
         };
     }, [processId, theme, headerText]);
 

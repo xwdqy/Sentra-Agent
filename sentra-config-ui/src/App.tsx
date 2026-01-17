@@ -7,6 +7,7 @@ import { buildDesktopIcons, buildDesktopFolders } from './utils/buildDesktopIcon
 import type { ToastMessage } from './components/Toast';
 import { useDevice } from './hooks/useDevice';
 import 'react-contexify/dist/ReactContexify.css';
+import 'antd/dist/reset.css';
 import './styles/macOS.css';
 import './styles/ios.css';
 // Lazy load views
@@ -21,17 +22,7 @@ import { WallpaperEditorModal } from './components/WallpaperEditorModal';
 import { useUsageCounts } from './hooks/useUsageCounts';
 import { useDockFavorites } from './hooks/useDockFavorites';
 import { useDesktopWindows } from './hooks/useDesktopWindows';
-import { loader } from '@monaco-editor/react';
 import { usePresetsEditor } from './hooks/usePresetsEditor';
-import * as monaco from 'monaco-editor';
-
-// Configure Monaco to use local instance (bundled) instead of CDN
-loader.config({ monaco: monaco as any });
-
-
-
-
-
 function App() {
   const { isMobile, isTablet } = useDevice();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -431,23 +422,26 @@ function App() {
     }
 
     // 2. Check if server restarted (Boot Time changed)
-    const lastBootTime = sessionStorage.getItem('sentra_server_boot_time');
+    const lastBootTime = sessionStorage.getItem('sentra_server_boot_time') || localStorage.getItem('sentra_server_boot_time');
     if (lastBootTime && lastBootTime !== String(bootTime)) {
       console.log('Server restarted, invalidating session');
       sessionStorage.removeItem('sentra_auth_token');
       sessionStorage.removeItem('sentra_server_boot_time');
+      localStorage.removeItem('sentra_auth_token');
+      localStorage.removeItem('sentra_server_boot_time');
       setIsAuthenticated(false);
     }
 
     // Update stored boot time
     sessionStorage.setItem('sentra_server_boot_time', String(bootTime));
+    localStorage.setItem('sentra_server_boot_time', String(bootTime));
 
     // 3. Check auth
     await checkAuth();
   };
 
   const checkAuth = async () => {
-    const token = sessionStorage.getItem('sentra_auth_token');
+    const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
     if (token) {
       const isValid = await verifyToken(token);
       if (isValid) {
@@ -455,6 +449,7 @@ function App() {
         loadConfigs();
       } else {
         sessionStorage.removeItem('sentra_auth_token');
+        localStorage.removeItem('sentra_auth_token');
       }
     }
     setAuthChecking(false);
@@ -465,6 +460,7 @@ function App() {
     const isValid = await verifyToken(token);
     if (isValid) {
       sessionStorage.setItem('sentra_auth_token', token);
+      localStorage.setItem('sentra_auth_token', token);
       setIsAuthenticated(true);
       loadConfigs();
       return true;
@@ -474,6 +470,7 @@ function App() {
 
   function handleLogout() {
     sessionStorage.removeItem('sentra_auth_token');
+    localStorage.removeItem('sentra_auth_token');
     setIsAuthenticated(false);
     setOpenWindows([]);
     setConfigData(null);

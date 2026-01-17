@@ -4,6 +4,7 @@ import { IoSearch, IoDocumentText, IoSave, IoReload, IoInformationCircle, IoAdd,
 import Editor from '@monaco-editor/react';
 import { SafeInput } from './SafeInput';
 import { PresetsEditorState } from '../hooks/usePresetsEditor';
+import '../utils/monacoSetup';
 
 interface PresetsEditorProps {
     onClose: () => void;

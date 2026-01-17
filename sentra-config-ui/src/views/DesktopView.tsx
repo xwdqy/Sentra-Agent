@@ -8,10 +8,12 @@ const FileManager = lazy(() => import('../components/FileManager').then(module =
 const DeepWikiChat = lazy(() => import('../components/DeepWikiChat').then(module => ({ default: module.DeepWikiChat })));
 const PresetImporter = lazy(() => import('../components/PresetImporter').then(module => ({ default: module.PresetImporter })));
 const ModelProvidersManager = lazy(() => import('../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
+const DevCenterV2 = lazy(() => import('../components/DevCenterV2').then(module => ({ default: module.DevCenterV2 })));
+const RedisAdminManager = lazy(() => import('../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
+const TerminalWindow = lazy(() => import('../components/TerminalWindow').then(module => ({ default: module.TerminalWindow })));
 
 import { Dock } from '../components/Dock';
 import { Launchpad } from '../components/Launchpad';
-import { TerminalWindow } from '../components/TerminalWindow';
 import { SideTaskbar } from '../components/SideTaskbar';
 import { ToastContainer, ToastMessage } from '../components/Toast';
 import { Dialog } from '../components/Dialog';
@@ -20,8 +22,6 @@ import { getDisplayName, getIconForType } from '../utils/icons';
 import { IoCubeOutline, IoTerminalOutline, IoBookOutline } from 'react-icons/io5';
 import type { DeskWindow, DesktopIcon, FileItem, TerminalWin, AppFolder } from '../types/ui';
 import { AppFolderModal } from '../components/AppFolderModal';
-import { DevCenterV2 } from '../components/DevCenterV2';
-import { RedisAdminManager } from '../components/RedisAdminManager/RedisAdminManager';
 
 class WindowErrorBoundary extends Component<
   { resetKey: string; fallback: (err: any) => ReactNode; children: ReactNode },
@@ -992,70 +992,72 @@ export function DesktopView(props: DesktopViewProps) {
             onFocus={() => { bringUtilityToFront('dev-center'); }}
             onMove={() => { }}
           >
-            <DevCenterV2
-              allItems={allItems}
-              tools={[
-                {
-                  id: 'redis-admin',
-                  name: 'redis-admin',
-                  subtitle: 'Redis 管理器（可视化）',
-                  onOpen: () => {
-                    setRedisAdminOpen(true);
-                    setRedisAdminMinimized(false);
-                    bringUtilityToFront('redis-admin');
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
+              <DevCenterV2
+                allItems={allItems}
+                tools={[
+                  {
+                    id: 'redis-admin',
+                    name: 'redis-admin',
+                    subtitle: 'Redis 管理器（可视化）',
+                    onOpen: () => {
+                      setRedisAdminOpen(true);
+                      setRedisAdminMinimized(false);
+                      bringUtilityToFront('redis-admin');
+                    },
                   },
-                },
-                {
-                  id: 'model-providers-manager',
-                  name: 'model-providers-manager',
-                  subtitle: '模型供应商管理（配置 /v1/models）',
-                  onOpen: () => {
-                    setModelProvidersManagerOpen(true);
-                    setModelProvidersManagerMinimized(false);
-                    bringUtilityToFront('model-providers-manager');
+                  {
+                    id: 'model-providers-manager',
+                    name: 'model-providers-manager',
+                    subtitle: '模型供应商管理（配置 /v1/models）',
+                    onOpen: () => {
+                      setModelProvidersManagerOpen(true);
+                      setModelProvidersManagerMinimized(false);
+                      bringUtilityToFront('model-providers-manager');
+                    },
                   },
-                },
-                {
-                  id: 'presets-editor',
-                  name: 'presets-editor',
-                  subtitle: '预设撰写（内置工具）',
-                  onOpen: () => {
-                    setPresetsEditorOpen(true);
-                    setPresetsEditorMinimized(false);
-                    bringUtilityToFront('presets-editor');
+                  {
+                    id: 'presets-editor',
+                    name: 'presets-editor',
+                    subtitle: '预设撰写（内置工具）',
+                    onOpen: () => {
+                      setPresetsEditorOpen(true);
+                      setPresetsEditorMinimized(false);
+                      bringUtilityToFront('presets-editor');
+                    },
                   },
-                },
-                {
-                  id: 'preset-importer',
-                  name: 'preset-importer',
-                  subtitle: '预设导入（内置工具）',
-                  onOpen: () => {
-                    setPresetImporterOpen(true);
-                    setPresetImporterMinimized(false);
-                    bringUtilityToFront('preset-importer');
+                  {
+                    id: 'preset-importer',
+                    name: 'preset-importer',
+                    subtitle: '预设导入（内置工具）',
+                    onOpen: () => {
+                      setPresetImporterOpen(true);
+                      setPresetImporterMinimized(false);
+                      bringUtilityToFront('preset-importer');
+                    },
                   },
-                },
-                {
-                  id: 'file-manager',
-                  name: 'file-manager',
-                  subtitle: '文件管理（内置工具）',
-                  onOpen: () => {
-                    setFileManagerOpen(true);
-                    setFileManagerMinimized(false);
-                    bringUtilityToFront('file-manager');
+                  {
+                    id: 'file-manager',
+                    name: 'file-manager',
+                    subtitle: '文件管理（内置工具）',
+                    onOpen: () => {
+                      setFileManagerOpen(true);
+                      setFileManagerMinimized(false);
+                      bringUtilityToFront('file-manager');
+                    },
                   },
-                },
-                {
-                  id: 'deepwiki',
-                  name: 'DeepWiki',
-                  subtitle: '开发文档与指南',
-                  icon: <IoBookOutline style={{ color: '#2563eb' }} />,
-                  onOpen: () => handleOpenDeepWiki(),
-                },
-              ]}
-              onOpenItem={(file) => openWindow(file, { maximize: true })}
-              onOpenDeepWiki={handleOpenDeepWiki}
-            />
+                  {
+                    id: 'deepwiki',
+                    name: 'DeepWiki',
+                    subtitle: '开发文档与指南',
+                    icon: <IoBookOutline style={{ color: '#2563eb' }} />,
+                    onOpen: () => handleOpenDeepWiki(),
+                  },
+                ]}
+                onOpenItem={(file) => openWindow(file, { maximize: true })}
+                onOpenDeepWiki={handleOpenDeepWiki}
+              />
+            </Suspense>
           </MacWindow>
         )}
 
@@ -1084,7 +1086,9 @@ export function DesktopView(props: DesktopViewProps) {
             onFocus={() => { bringUtilityToFront('redis-admin'); }}
             onMove={() => { }}
           >
-            <RedisAdminManager addToast={addToast} />
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
+              <RedisAdminManager addToast={addToast} />
+            </Suspense>
           </MacWindow>
         )}
 
@@ -1445,11 +1449,14 @@ export function DesktopView(props: DesktopViewProps) {
             onFocus={() => bringTerminalToFront(terminal.id)}
             onMove={(x, y) => { setTerminalWindows(prev => prev.map(w => w.id === terminal.id ? { ...w, pos: { x, y } } : w)); }}
           >
-            <TerminalWindow
-              processId={terminal.processId}
-              theme={terminal.theme}
-              headerText={terminal.headerText}
-            />
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
+              <TerminalWindow
+                processId={terminal.processId}
+                theme={terminal.theme}
+                headerText={terminal.headerText}
+                onProcessNotFound={() => handleCloseTerminal(terminal.id)}
+              />
+            </Suspense>
           </MacWindow>
         ))}
 

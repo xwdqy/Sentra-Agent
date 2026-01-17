@@ -6,6 +6,7 @@ import { testProviderModels } from '../../services/llmProvidersApi.ts';
 import type { ConfigData, EnvVariable } from '../../types/config.ts';
 import type { ToastMessage } from '../Toast';
 import { getDisplayName } from '../../utils/icons.tsx';
+import { Select } from 'antd';
 import styles from './ModelProvidersManager.module.css';
 import modelVendorMap from './modelVendorMap.json';
 import llmEnvMapping from './llmEnvMapping.json';
@@ -40,6 +41,20 @@ function parseCsvValue(raw: string) {
 }
 
 function formatCsvValue(values: string[]) {
+  return (Array.isArray(values) ? values : [])
+    .map(s => String(s || '').trim())
+    .filter(Boolean)
+    .join(',');
+}
+
+function parseMultiTextValue(raw: string) {
+  return String(raw || '')
+    .split(/[\n\r,]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+function formatMultiTextValue(values: string[]) {
   return (Array.isArray(values) ? values : [])
     .map(s => String(s || '').trim())
     .filter(Boolean)
@@ -459,53 +474,6 @@ function modelInScope(modelId: string, scope: LlmModelScope) {
   return caps.includes('chat') && !caps.includes('embedding') && !caps.includes('rerank');
 }
 
-function ModelOptionRow(props: {
-  modelId: string;
-  providerType: ProviderType;
-  override?: { icon?: CustomIconRef; caps?: string[] } | null;
-  onPick: (id: string) => void;
-}) {
-  const vendor = safeInferModelVendor({ id: props.modelId }, providerTypeFallbackVendor(props.providerType));
-  const caps = props.override?.caps && props.override.caps.length
-    ? props.override.caps.map(k => ({ key: k, label: k }))
-    : safeInferModelCapabilities(props.modelId);
-  return (
-    <button
-      type="button"
-      className={styles.modelDropdownItem}
-      onMouseDown={(e) => {
-        e.preventDefault();
-        props.onPick(props.modelId);
-      }}
-      title={props.modelId}
-    >
-      <span className={styles.modelDropdownItemLeft}>
-        <span className={styles.modelInputLeftIcon}>
-          {props.override?.icon ? (
-            <CustomIcon icon={props.override.icon as any} size={16} />
-          ) : (
-            <BrandLogo iconName={vendor.iconName} size={16} />
-          )}
-        </span>
-        <span className={styles.modelDropdownItemText}>{props.modelId}</span>
-      </span>
-      <span className={styles.modelInputCaps}>
-        {caps.map(c => (
-          <span
-            key={c.key}
-            className={styles.modelCapIcon}
-            style={capStyleVars(c.key)}
-            title={c.label}
-            aria-label={c.key}
-          >
-            <CapabilityIcon capKey={c.key} />
-          </span>
-        ))}
-      </span>
-    </button>
-  );
-}
-
 function inferModelVendor(model: any, fallback: ModelVendor): ModelVendor {
   const id = (model?.id != null ? String(model.id) : '').toLowerCase();
   const owned = (model?.owned_by != null ? String(model.owned_by) : '').toLowerCase();
@@ -788,7 +756,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [providerSearch, setProviderSearch] = useState('');
   const [modelSearch, setModelSearch] = useState('');
   const [showApiKey, setShowApiKey] = useState(false);
-  const [multiModelDrafts, setMultiModelDrafts] = useState<Record<string, string>>({});
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
   const [editingProviderName, setEditingProviderName] = useState('');
@@ -1094,11 +1061,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
       .filter(Boolean);
   }, [activeModels]);
 
-  const [modelDropdownKey, setModelDropdownKey] = useState<string | null>(null);
-  const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
-
-  const modelDropdownMaxHeight = 240;
-
   const filteredProviders = useMemo(() => {
     const term = providerSearch.trim().toLowerCase();
     if (!term) return providers;
@@ -1277,20 +1239,18 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
       addToast('error', '保存失败', e?.message ? String(e.message) : String(e));
     }
   }, [addToast, localModelOverrides, modelSettingsCaps, modelSettingsIcon, modelSettingsModelId, modelSettingsProviderId, saveLocalModelOverridesToFile]);
-
   const llmActiveProfile = useMemo(() => {
     const profiles: LlmProfile[] = Array.isArray(llmModuleMapping?.profiles) ? llmModuleMapping.profiles : [];
     if (!profiles.length) return null;
+
     for (const p of profiles) {
+      if (!p?.when || p.when.length === 0) return p;
       if (evalLlmConditions(p.when, llmVarsMap)) return p;
     }
-    return profiles[0];
+    return profiles[0] || null;
   }, [llmModuleMapping, llmVarsMap]);
 
   useEffect(() => {
-    // Any context switch should close the dropdown to avoid stale anchor -> misplacement/jumping
-    setModelDropdownOpen(false);
-    setModelDropdownKey(null);
     setMcpPluginPickerOpen(false);
   }, [llmModule, llmTab, llmActiveProfile?.key, activeProvider?.id, mcpPluginName]);
 
@@ -2140,14 +2100,10 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                   const value = String(v?.value ?? '');
                                   const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
                                   const isSecret = isSensitiveKeyKind(it.kind, it.key);
-                                  const dropKey = `plugin:${mcpPluginName}:${it.key}`;
 
                                   return (
                                     <div
-                                      className={[
-                                        styles.envRow,
-                                        modelDropdownOpen && modelDropdownKey === dropKey ? styles.envRowDropdownOpen : '',
-                                      ].filter(Boolean).join(' ')}
+                                      className={styles.envRow}
                                       key={it.key}
                                     >
                                       <div className={styles.envLeft}>
@@ -2163,35 +2119,50 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                             onChange={(next) => updateMcpPluginVar(it.key, next ? 'true' : 'false')}
                                           />
                                         ) : it.kind === 'enum' ? (
-                                          <select
-                                            className={styles.select}
+                                          <Select
+                                            className={styles.antdSelect}
                                             value={value}
-                                            onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
-                                          >
-                                            {(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map(op => (
-                                              <option key={op} value={op}>{op}</option>
-                                            ))}
-                                          </select>
+                                            onChange={(next) => updateMcpPluginVar(it.key, String(next ?? ''))}
+                                            options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map(op => ({ value: op, label: op }))}
+                                            showSearch
+                                            allowClear
+                                          />
                                         ) : it.kind === 'model' ? (
-                                          <div className={styles.modelInputWrap}>
-                                            <input
-                                              className={styles.input}
-                                              value={value}
-                                              onChange={(e) => {
-                                                updateMcpPluginVar(it.key, e.target.value);
-                                                setModelDropdownKey(dropKey);
-                                                setModelDropdownOpen(true);
-                                              }}
-                                              onFocus={() => {
-                                                setModelDropdownKey(dropKey);
-                                                setModelDropdownOpen(true);
-                                              }}
-                                              onBlur={() => {
-                                                setTimeout(() => setModelDropdownOpen(false), 120);
-                                              }}
-                                              placeholder={activeProvider ? (activeModelIds.length ? '从供应商模型选择或手动输入' : '请先检测供应商模型') : '请先选择供应商'}
-                                            />
-                                          </div>
+                                          <Select
+                                            className={styles.antdSelect}
+                                            mode="tags"
+                                            showSearch
+                                            allowClear
+                                            tokenSeparators={[',']}
+                                            value={value ? [value] : []}
+                                            placeholder={activeProvider ? (activeModelIds.length ? '选择/搜索模型（回车确认）' : '请先检测供应商模型') : '请先选择供应商'}
+                                            options={(activeProvider ? activeModelIds
+                                              .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
+                                              .filter(id => {
+                                                const requireCaps = getPluginModelRequireCaps(mcpPluginName, it.key);
+                                                return modelHasCaps(activeProvider.id, id, requireCaps);
+                                              })
+                                              .map(id => ({ value: id, label: id })) : [])}
+                                            onChange={(vals) => {
+                                              const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
+                                              const next = list.length ? list[list.length - 1] : '';
+                                              updateMcpPluginVar(it.key, next);
+                                            }}
+                                          />
+                                        ) : it.kind === 'text' && /whitelist/i.test(it.key) ? (
+                                          <Select
+                                            className={styles.antdSelect}
+                                            mode="tags"
+                                            showSearch
+                                            allowClear
+                                            tokenSeparators={[',']}
+                                            value={parseMultiTextValue(value)}
+                                            placeholder="输入多个值（回车/逗号）"
+                                            onChange={(vals) => {
+                                              const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
+                                              updateMcpPluginVar(it.key, formatMultiTextValue(list));
+                                            }}
+                                          />
                                         ) : it.kind === 'api_key' ? (
                                           <input
                                             className={styles.input}
@@ -2217,40 +2188,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                           />
                                         )}
                                       </div>
-
-                                      {it.kind === 'model' &&
-                                        modelDropdownOpen &&
-                                        modelDropdownKey === dropKey &&
-                                        activeProvider &&
-                                        activeModelIds.length ? (
-                                        <div className={styles.modelPickerInlineRow}>
-                                          <div
-                                            className={styles.modelPickerInlineList}
-                                            style={{ maxHeight: `${modelDropdownMaxHeight}px` }}
-                                          >
-                                            {(() => {
-                                              const requireCaps = getPluginModelRequireCaps(mcpPluginName, it.key);
-                                              return activeModelIds
-                                                .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
-                                                .filter(id => modelHasCaps(activeProvider.id, id, requireCaps))
-                                                .filter(id => value ? id.toLowerCase().includes(value.toLowerCase()) : true)
-                                                .slice(0, 80)
-                                                .map(id => (
-                                                  <ModelOptionRow
-                                                    key={id}
-                                                    modelId={id}
-                                                    providerType={activeProviderType}
-                                                    override={getModelOverride(activeProvider.id, id)}
-                                                    onPick={(picked) => {
-                                                      updateMcpPluginVar(it.key, picked);
-                                                      setModelDropdownOpen(false);
-                                                    }}
-                                                  />
-                                                ));
-                                            })()}
-                                          </div>
-                                        </div>
-                                      ) : null}
                                     </div>
                                   );
                                 })}
@@ -2317,10 +2254,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
                               return (
                                 <div
-                                  className={[
-                                    styles.envRow,
-                                    modelDropdownOpen && modelDropdownKey === it.key ? styles.envRowDropdownOpen : '',
-                                  ].filter(Boolean).join(' ')}
+                                  className={styles.envRow}
                                   key={it.key}
                                 >
                                   <div className={styles.envLeft}>
@@ -2336,144 +2270,50 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                         onChange={(next) => updateLlmVar(it.key, next ? 'true' : 'false')}
                                       />
                                     ) : it.kind === 'enum' ? (
-                                      <select
-                                        className={styles.select}
+                                      <Select
+                                        className={styles.antdSelect}
                                         value={value}
-                                        onChange={(e) => updateLlmVar(it.key, e.target.value)}
-                                      >
-                                        {(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map(op => (
-                                          <option key={op} value={op}>{op}</option>
-                                        ))}
-                                      </select>
+                                        onChange={(next) => updateLlmVar(it.key, String(next ?? ''))}
+                                        options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map(op => ({ value: op, label: op }))}
+                                        showSearch
+                                        allowClear
+                                      />
                                     ) : it.kind === 'model' ? (
-                                      <>
-                                        <div className={styles.modelInputWrap}>
-                                          {(() => {
-                                            const draft = String(multiModelDrafts[it.key] ?? '');
-                                            const csvValues = isModelMultiCsv ? parseCsvValue(value) : [];
-                                            const first = (csvValues[0] || draft || value);
-                                            const displayId = first || '';
-                                            const removeCsvValue = (id: string) => {
-                                              const next = csvValues.filter(x => x !== id);
-                                              updateLlmVar(it.key, formatCsvValue(next));
-                                            };
-                                            const addCsvValue = (rawId: string) => {
-                                              const nextId = String(rawId || '').trim();
-                                              if (!nextId) return;
-                                              const merged = Array.from(new Set([...csvValues, nextId]));
-                                              updateLlmVar(it.key, formatCsvValue(merged));
-                                              setMultiModelDrafts(prev => ({ ...prev, [it.key]: '' }));
-                                            };
-                                            const setDraft = (next: string) => {
-                                              setMultiModelDrafts(prev => ({ ...prev, [it.key]: next }));
-                                            };
-
-                                            return (
-                                              <>
-                                                <span className={styles.modelInputLeftIcon}>
-                                                  <BrandLogo
-                                                    iconName={safeInferModelVendor({ id: displayId }, providerTypeFallbackVendor(activeProviderType || 'custom')).iconName}
-                                                    size={16}
-                                                  />
-                                                </span>
-
-                                                {isModelMultiCsv ? (
-                                                  <div className={styles.modelMultiInput}>
-                                                    <div className={styles.modelMultiChips}>
-                                                      {csvValues.map((id) => (
-                                                        <span key={id} className={styles.modelMultiChip}>
-                                                          <span className={styles.modelMultiChipText}>{id}</span>
-                                                          <button
-                                                            type="button"
-                                                            className={styles.modelMultiChipRemove}
-                                                            aria-label={`remove-${id}`}
-                                                            onClick={() => removeCsvValue(id)}
-                                                          >
-                                                            ×
-                                                          </button>
-                                                        </span>
-                                                      ))}
-                                                      <input
-                                                        className={styles.modelMultiDraftInput}
-                                                        value={draft}
-                                                        onChange={(e) => {
-                                                          const next = e.target.value;
-                                                          setDraft(next);
-                                                          setModelDropdownKey(it.key);
-                                                          setModelDropdownOpen(true);
-                                                        }}
-                                                        onKeyDown={(e) => {
-                                                          if (e.key === 'Enter' || e.key === ',') {
-                                                            e.preventDefault();
-                                                            const parts = String(draft || '')
-                                                              .split(',')
-                                                              .map(s => s.trim())
-                                                              .filter(Boolean);
-                                                            if (parts.length) parts.forEach(addCsvValue);
-                                                            return;
-                                                          }
-                                                          if (e.key === 'Backspace' && !draft && csvValues.length) {
-                                                            removeCsvValue(csvValues[csvValues.length - 1]);
-                                                          }
-                                                        }}
-                                                        onFocus={() => {
-                                                          setModelDropdownKey(it.key);
-                                                          setModelDropdownOpen(true);
-                                                        }}
-                                                        onBlur={() => {
-                                                          setTimeout(() => setModelDropdownOpen(false), 120);
-                                                        }}
-                                                        placeholder={activeProvider ? (activeModelIds.length ? '添加模型（回车/逗号）' : '请先检测供应商模型') : '请先选择供应商'}
-                                                      />
-                                                    </div>
-                                                  </div>
-                                                ) : (
-                                                  <>
-                                                    <input
-                                                      className={styles.input}
-                                                      value={value}
-                                                      onChange={(e) => {
-                                                        updateLlmVar(it.key, e.target.value);
-                                                        if (it.picker === 'model') {
-                                                          setModelDropdownKey(it.key);
-                                                          setModelDropdownOpen(true);
-                                                        }
-                                                      }}
-                                                      onFocus={() => {
-                                                        if (it.picker === 'model') {
-                                                          setModelDropdownKey(it.key);
-                                                          setModelDropdownOpen(true);
-                                                        }
-                                                      }}
-                                                      onBlur={() => {
-                                                        setTimeout(() => setModelDropdownOpen(false), 120);
-                                                      }}
-                                                      placeholder={activeProvider ? (activeModelIds.length ? '从供应商模型选择或手动输入' : '请先检测供应商模型') : '请先选择供应商'}
-                                                    />
-                                                    <span className={styles.modelInputCaps}>
-                                                      {(() => {
-                                                        const ov = activeProvider ? getModelOverride(activeProvider.id, value) : null;
-                                                        const caps = ov?.caps && ov.caps.length ? ov.caps.map(k => ({ key: k, label: k })) : safeInferModelCapabilities(value);
-                                                        return caps.map((cap) => (
-                                                        <span
-                                                          key={cap.key}
-                                                          className={styles.modelCapIcon}
-                                                          style={capStyleVars(cap.key)}
-                                                          title={cap.label}
-                                                          aria-label={cap.key}
-                                                        >
-                                                          <CapabilityIcon capKey={cap.key} />
-                                                        </span>
-                                                        ));
-                                                      })()}
-                                                    </span>
-                                                  </>
-                                                )}
-                                              </>
-                                            );
-                                          })()}
-                                        </div>
-                                      </>
+                                      <Select
+                                        className={styles.antdSelect}
+                                        mode="tags"
+                                        showSearch
+                                        allowClear
+                                        tokenSeparators={[',']}
+                                        value={isModelMultiCsv ? parseCsvValue(value) : (value ? [value] : [])}
+                                        placeholder={activeProvider ? (activeModelIds.length ? (isModelMultiCsv ? '选择/搜索多个模型（回车确认）' : '选择/搜索模型（回车确认）') : '请先检测供应商模型') : '请先选择供应商'}
+                                        options={(activeProvider ? activeModelIds
+                                          .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
+                                          .map(id => ({ value: id, label: id })) : [])}
+                                        onChange={(vals) => {
+                                          const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
+                                          if (isModelMultiCsv) {
+                                            updateLlmVar(it.key, formatCsvValue(Array.from(new Set(list))));
+                                            return;
+                                          }
+                                          const next = list.length ? list[list.length - 1] : '';
+                                          updateLlmVar(it.key, next);
+                                        }}
+                                      />
+                                    ) : it.kind === 'text' && /whitelist/i.test(it.key) ? (
+                                      <Select
+                                        className={styles.antdSelect}
+                                        mode="tags"
+                                        showSearch
+                                        allowClear
+                                        tokenSeparators={[',']}
+                                        value={parseMultiTextValue(value)}
+                                        placeholder="输入多个值（回车/逗号）"
+                                        onChange={(vals) => {
+                                          const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
+                                          updateLlmVar(it.key, formatMultiTextValue(list));
+                                        }}
+                                      />
                                     ) : it.kind === 'api_key' ? (
                                       <input
                                         className={styles.input}
@@ -2499,51 +2339,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                       />
                                     )}
                                   </div>
-
-                                  {it.kind === 'model' &&
-                                    it.picker === 'model' &&
-                                    modelDropdownOpen &&
-                                    modelDropdownKey === it.key &&
-                                    activeProvider &&
-                                    activeModelIds.length ? (
-                                    <div className={styles.modelPickerInlineRow}>
-                                      <div
-                                        className={styles.modelPickerInlineList}
-                                        style={{ maxHeight: `${modelDropdownMaxHeight}px` }}
-                                      >
-                                        {activeModelIds
-                                          .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
-                                          .filter(id => {
-                                            if (isModelMultiCsv) {
-                                              const draft = String(multiModelDrafts[it.key] ?? '');
-                                              return draft ? id.toLowerCase().includes(draft.toLowerCase()) : true;
-                                            }
-                                            return value ? id.toLowerCase().includes(value.toLowerCase()) : true;
-                                          })
-                                          .slice(0, 80)
-                                          .map(id => (
-                                            <ModelOptionRow
-                                              key={id}
-                                              modelId={id}
-                                              providerType={activeProviderType}
-                                              override={getModelOverride(activeProvider.id, id)}
-                                              onPick={(picked) => {
-                                                if (isModelMultiCsv) {
-                                                  const csvValues = parseCsvValue(String(llmVarsMap.get(it.key)?.value ?? ''));
-                                                  const merged = Array.from(new Set([...csvValues, picked]));
-                                                  updateLlmVar(it.key, formatCsvValue(merged));
-                                                  setMultiModelDrafts(prev => ({ ...prev, [it.key]: '' }));
-                                                  setModelDropdownOpen(false);
-                                                  return;
-                                                }
-                                                updateLlmVar(it.key, picked);
-                                                setModelDropdownOpen(false);
-                                              }}
-                                            />
-                                          ))}
-                                      </div>
-                                    </div>
-                                  ) : null}
                                 </div>
                               );
                             })}

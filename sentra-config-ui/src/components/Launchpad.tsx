@@ -3,7 +3,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion';
 import { getIconForType, getDisplayName } from '../utils/icons';
 import styles from './Launchpad.module.css';
-import { IoChevronBack, IoChevronForward } from 'react-icons/io5';
+import { IoChevronBack, IoChevronForward, IoSearch } from 'react-icons/io5';
 
 import { useDevice } from '../hooks/useDevice';
 
@@ -294,7 +294,7 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
           <div className={styles.content}>
 
             <div className={styles.searchBar} onClick={e => e.stopPropagation()}>
-              <span className="material-icons" style={{ color: '#fff', opacity: 0.6 }}>search</span>
+              <IoSearch style={{ color: '#fff', opacity: 0.6 }} />
               <input
                 ref={searchInputRef}
                 type="text"

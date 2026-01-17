@@ -179,6 +179,46 @@
   color-scheme: dark;
 }
 
+.antdSelect {
+  width: 100%;
+}
+
+.antdSelect :global(.ant-select-selector) {
+  background: var(--mpm-input-bg);
+  border: 1px solid var(--mpm-input-border);
+  border-radius: 10px;
+  color: var(--mpm-input-fg);
+  min-height: 36px;
+  box-shadow: none;
+}
+
+.antdSelect :global(.ant-select-selection-placeholder) {
+  color: var(--mpm-placeholder);
+}
+
+.antdSelect :global(.ant-select-selection-item),
+.antdSelect :global(.ant-select-selection-search-input) {
+  color: var(--mpm-input-fg);
+}
+
+.antdSelect :global(.ant-select-arrow) {
+  color: var(--mpm-muted);
+}
+
+.antdSelect :global(.ant-select-clear) {
+  color: var(--mpm-muted);
+}
+
+.antdSelect :global(.ant-select-focused .ant-select-selector) {
+  border-color: var(--mpm-focus-border) !important;
+  box-shadow: var(--mpm-focus-shadow) !important;
+}
+
+:global(:root[data-theme='dark']) .antdSelect :global(.ant-select-dropdown) {
+  background: #121214;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
 .sidebar {
   border-right: 1px solid var(--mpm-border);
   padding: 12px;

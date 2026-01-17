@@ -4,7 +4,6 @@ import { IOSEditor } from '../components/IOSEditor';
 import { IOSPresetsEditor } from '../components/IOSPresetsEditor';
 import { PresetImporter } from '../components/PresetImporter';
 import { Launchpad } from '../components/Launchpad';
-import { TerminalWindow } from '../components/TerminalWindow';
 import { ToastContainer, ToastMessage, ToastType } from '../components/Toast';
 import { IoChevronBack } from 'react-icons/io5';
 import { getDisplayName, getIconForType } from '../utils/icons';
@@ -14,6 +13,7 @@ import { IOSFileManager } from '../components/IOSFileManager';
 
 const ModelProvidersManager = React.lazy(() => import('../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
 const RedisAdminManager = React.lazy(() => import('../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
+const TerminalWindow = React.lazy(() => import('../components/TerminalWindow').then(module => ({ default: module.TerminalWindow })));
 
 export type MobileViewProps = {
   allItems: FileItem[];
@@ -177,7 +177,9 @@ export function MobileView(props: MobileViewProps) {
               关闭
             </div>
           </div>
-          <TerminalWindow processId={term.processId} />
+          <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
+            <TerminalWindow processId={term.processId} onProcessNotFound={() => handleCloseTerminal(term.id)} />
+          </Suspense>
         </div>
       ))}
 

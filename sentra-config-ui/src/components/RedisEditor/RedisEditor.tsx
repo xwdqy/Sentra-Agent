@@ -3,6 +3,7 @@ import styles from './RedisEditor.module.css';
 import { IoServer, IoKey, IoTerminal, IoTrash, IoRefresh } from 'react-icons/io5';
 import { useRedisEditor } from '../../hooks/useRedisEditor';
 import Editor from '@monaco-editor/react';
+import '../../utils/monacoSetup';
 
 interface RedisEditorProps {
     theme: 'light' | 'dark';

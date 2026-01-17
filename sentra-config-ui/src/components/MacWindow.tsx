@@ -140,7 +140,6 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     if (isMaximized) return;
     const target = e.target as HTMLElement | null;
     if (target && target.closest('.window-controls')) return;
-    onFocus();
     e.preventDefault();
 
     setIsDragging(true);

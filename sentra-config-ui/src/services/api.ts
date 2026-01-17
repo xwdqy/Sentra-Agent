@@ -3,7 +3,7 @@ import { ConfigData, EnvVariable } from '../types/config';
 const API_BASE = '/api';
 
 export function getAuthHeaders() {
-  const token = sessionStorage.getItem('sentra_auth_token');
+  const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
   return {
     'Content-Type': 'application/json',
     'x-auth-token': token || ''

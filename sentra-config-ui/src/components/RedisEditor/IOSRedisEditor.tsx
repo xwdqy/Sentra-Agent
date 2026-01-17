@@ -3,6 +3,7 @@ import styles from './IOSRedisEditor.module.css';
 import { IoServer, IoKey, IoTrash, IoRefresh, IoArrowBack } from 'react-icons/io5';
 import { useRedisEditor } from '../../hooks/useRedisEditor';
 import Editor from '@monaco-editor/react';
+import '../../utils/monacoSetup';
 
 interface IOSRedisEditorProps {
     state: ReturnType<typeof useRedisEditor>;

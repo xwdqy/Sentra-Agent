@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { IoChevronBack, IoAdd, IoSave, IoSearch, IoDocumentText, IoTrash, IoChevronDown, IoChevronForward, IoFolder, IoFolderOpen } from 'react-icons/io5';
 import Editor from '@monaco-editor/react';
 import { PresetsEditorState } from '../hooks/usePresetsEditor';
+import '../utils/monacoSetup';
 
 
 interface IOSPresetsEditorProps {
