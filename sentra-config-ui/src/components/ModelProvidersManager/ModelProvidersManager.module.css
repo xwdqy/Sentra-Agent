@@ -136,6 +136,14 @@
   color-scheme: light;
 }
 
+.mobileRoot {
+  grid-template-columns: 1fr;
+}
+
+.mobileHidden {
+  display: none !important;
+}
+
  .root * {
    scrollbar-width: thin;
    scrollbar-color: var(--mpm-scrollbar-thumb) transparent;
@@ -177,6 +185,14 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+@media (max-width: 820px) {
+  .sidebar,
+  .right {
+    flex: 1;
+    min-height: 0;
+  }
 }
 
 .sidebarHeader {
@@ -464,6 +480,72 @@
   overflow: auto;
 }
 
+.mobileBackRow {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -16px -16px 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--mpm-border);
+  background: var(--mpm-window-bg);
+}
+
+.mobileBackBtn {
+  appearance: none;
+  border: 1px solid var(--mpm-border-strong);
+  background: var(--mpm-input-bg);
+  border-radius: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mpm-button-fg);
+}
+
+.mobileBackBtn:hover {
+  background: var(--mpm-input-bg-strong);
+}
+
+.mobileBackTitle {
+  min-width: 0;
+  font-weight: 850;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.92;
+}
+
+.mobileSectionBar {
+  display: flex;
+  gap: 8px;
+  padding: 0 0 12px;
+  margin-top: 10px;
+}
+
+.mobileSectionBtn {
+  flex: 1;
+  appearance: none;
+  border: 1px solid var(--mpm-border-strong);
+  background: var(--mpm-input-bg);
+  border-radius: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-weight: 850;
+  color: var(--mpm-button-fg);
+}
+
+.mobileSectionBtnActive {
+  border-color: rgba(var(--sentra-accent-rgb), 0.30);
+  background: rgba(var(--sentra-accent-rgb), 0.14);
+  color: var(--mpm-text);
+}
+
 .header {
   display: flex;
   gap: 12px;
@@ -489,6 +571,41 @@
   align-items: center;
 }
 
+@media (max-width: 820px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .toolbar {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .cardTitleRow {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .cardMeta {
+    line-height: 1.35;
+  }
+
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .modelsHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .modelsSearch {
+    max-width: none;
+  }
+}
+
 .primaryButton {
   appearance: none;
   border: 1px solid var(--mpm-primary-border);
@@ -503,6 +620,13 @@
   gap: 8px;
   cursor: pointer;
   transition: transform 120ms ease, background 120ms ease;
+}
+
+.llmSaveBtn {
+  flex-direction: row;
+  white-space: nowrap;
+  min-width: max-content;
+  flex-shrink: 0;
 }
 
 .primaryButton:hover {

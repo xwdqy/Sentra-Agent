@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, Suspense, lazy } from 'react';
+import { useState, useEffect, useCallback, useMemo, Suspense, lazy } from 'react';
 import { ConfigData } from './types/config';
 import { fetchConfigs, verifyToken, waitForBackend } from './services/api';
 import { LoginScreen } from './components/LoginScreen';
@@ -17,6 +17,7 @@ import { DEFAULT_WALLPAPERS, BING_WALLPAPER, SOLID_COLORS } from './constants/wa
 import { useIOSEditor } from './hooks/useIOSEditor';
 import { useTerminals } from './hooks/useTerminals';
 import { useWallpaper } from './hooks/useWallpaper';
+import { WallpaperEditorModal } from './components/WallpaperEditorModal';
 import { useUsageCounts } from './hooks/useUsageCounts';
 import { useDockFavorites } from './hooks/useDockFavorites';
 import { useDesktopWindows } from './hooks/useDesktopWindows';
@@ -148,14 +149,50 @@ function App() {
 
     brightness,
     setBrightness,
-    wallpaperFit,
-    setWallpaperFit,
     wallpaperInterval,
     setWallpaperInterval,
     handleWallpaperSelect,
     handleUploadWallpaper,
+    wallpaperEditorOpen,
+    wallpaperEditorSrc,
+    cancelWallpaperEdit,
+    saveWallpaperFromEditor,
     deleteCurrentWallpaper,
   } = useWallpaper(addToast);
+
+  const wallpaperTargetAspect = useMemo(() => {
+    try {
+      const desktopMain = document.querySelector('.desktop-main') as HTMLElement | null;
+      if (desktopMain) {
+        const rect = desktopMain.getBoundingClientRect();
+        const w = Math.max(1, rect.width || 1);
+        const h = Math.max(1, rect.height || 1);
+        return w / h;
+      }
+
+      const w = Math.max(1, window.innerWidth || 1);
+      const h = Math.max(1, window.innerHeight || 1);
+      return w / h;
+    } catch {
+      return 16 / 9;
+    }
+  }, [wallpaperEditorOpen]);
+
+  const wallpaperTargetSize = useMemo(() => {
+    try {
+      const desktopMain = document.querySelector('.desktop-main') as HTMLElement | null;
+      if (desktopMain) {
+        const rect = desktopMain.getBoundingClientRect();
+        return {
+          w: Math.max(1, Math.round(rect.width || 1)),
+          h: Math.max(1, Math.round(rect.height || 1)),
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }, [wallpaperEditorOpen]);
 
   // Usage counts via hook
   const { usageCounts, recordUsage } = useUsageCounts();
@@ -249,6 +286,8 @@ function App() {
   const [fileManagerOpen, setFileManagerOpen] = useState(() => readBool('sentra_file_manager_open', false));
   const [fileManagerMinimized, setFileManagerMinimized] = useState(() => readBool('sentra_file_manager_minimized', false));
   const [iosFileManagerOpen, setIosFileManagerOpen] = useState(false);
+  const [iosModelProvidersManagerOpen, setIosModelProvidersManagerOpen] = useState(false);
+  const [iosRedisAdminOpen, setIosRedisAdminOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -315,7 +354,7 @@ function App() {
 
   const handleOpenRedisAdmin = () => {
     if (isMobile || isTablet) {
-      addToast('info', '暂不支持', '移动端暂未接入 Redis 管理器，请使用桌面端 WebUI。');
+      setIosRedisAdminOpen(true);
       return;
     }
     setRedisAdminOpen(true);
@@ -324,7 +363,7 @@ function App() {
 
   const handleOpenModelProvidersManager = () => {
     if (isMobile || isTablet) {
-      addToast('info', '暂不支持', '移动端暂未接入模型供应商管理，请使用桌面端 WebUI。');
+      setIosModelProvidersManagerOpen(true);
       return;
     }
     setModelProvidersManagerOpen(true);
@@ -618,7 +657,7 @@ function App() {
           style={{
             backgroundImage: isSolidColor ? 'none' : `url(${currentWallpaper})`,
             backgroundColor: isSolidColor ? currentWallpaper : '#000',
-            backgroundSize: wallpaperFit,
+            backgroundSize: 'cover',
             backgroundPosition: 'center',
             backgroundRepeat: 'no-repeat',
             height: '100vh',
@@ -684,6 +723,10 @@ function App() {
           setIosPresetImporterOpen={setIosPresetImporterOpen}
           iosFileManagerOpen={iosFileManagerOpen}
           setIosFileManagerOpen={setIosFileManagerOpen}
+          iosModelProvidersManagerOpen={iosModelProvidersManagerOpen}
+          setIosModelProvidersManagerOpen={setIosModelProvidersManagerOpen}
+          iosRedisAdminOpen={iosRedisAdminOpen}
+          setIosRedisAdminOpen={setIosRedisAdminOpen}
           addToast={addToast}
           presetsState={presetsState}
         />
@@ -694,10 +737,17 @@ function App() {
   // Desktop View
   return (
     <Suspense fallback={<div className="loading-screen">Loading...</div>}>
+      <WallpaperEditorModal
+        isOpen={wallpaperEditorOpen}
+        src={wallpaperEditorSrc}
+        targetAspect={wallpaperTargetAspect}
+        targetSize={wallpaperTargetSize}
+        onCancel={cancelWallpaperEdit}
+        onSave={saveWallpaperFromEditor}
+      />
       <DesktopView
         isSolidColor={isSolidColor}
         currentWallpaper={currentWallpaper}
-        wallpaperFit={wallpaperFit}
         brightness={brightness}
         setBrightness={setBrightness}
         theme={theme}
@@ -746,7 +796,6 @@ function App() {
         handleWallpaperSelect={handleWallpaperSelect}
         handleUploadWallpaper={handleUploadWallpaper}
         handleDeleteWallpaper={handleDeleteWallpaper}
-        setWallpaperFit={setWallpaperFit}
         wallpaperInterval={wallpaperInterval}
         setWallpaperInterval={setWallpaperInterval}
         loadConfigs={loadConfigs}

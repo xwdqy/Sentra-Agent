@@ -10,8 +10,9 @@ import styles from './ModelProvidersManager.module.css';
 import modelVendorMap from './modelVendorMap.json';
 import llmEnvMapping from './llmEnvMapping.json';
 import * as LobeIcons from '@lobehub/icons';
-import { IoAdd, IoBulbOutline, IoChatbubbleEllipsesOutline, IoChevronDown, IoChevronForward, IoCheckmarkOutline, IoCodeSlashOutline, IoConstructOutline, IoCopyOutline, IoDocumentTextOutline, IoEyeOffOutline, IoEyeOutline, IoFlashOutline, IoGlobeOutline, IoImageOutline, IoLayersOutline, IoLaptopOutline, IoLanguageOutline, IoMicOutline, IoMusicalNotesOutline, IoPlayCircleOutline, IoPulseOutline, IoRefresh, IoSave, IoSearch, IoSettingsOutline, IoShieldCheckmarkOutline, IoShuffleOutline, IoTimeOutline, IoTrashOutline, IoVideocamOutline, IoBrushOutline, IoVolumeHighOutline } from 'react-icons/io5';
+import { IoAdd, IoBulbOutline, IoChatbubbleEllipsesOutline, IoChevronBack, IoChevronDown, IoChevronForward, IoCheckmarkOutline, IoCodeSlashOutline, IoConstructOutline, IoCopyOutline, IoDocumentTextOutline, IoEyeOffOutline, IoEyeOutline, IoFlashOutline, IoGlobeOutline, IoImageOutline, IoLayersOutline, IoLaptopOutline, IoLanguageOutline, IoMicOutline, IoMusicalNotesOutline, IoPlayCircleOutline, IoPulseOutline, IoRefresh, IoSave, IoSearch, IoSettingsOutline, IoShieldCheckmarkOutline, IoShuffleOutline, IoTimeOutline, IoTrashOutline, IoVideocamOutline, IoBrushOutline, IoVolumeHighOutline } from 'react-icons/io5';
 import { AiOutlineEye } from 'react-icons/ai';
+import { useDevice } from '../../hooks/useDevice';
 
 // ProviderType is intentionally extensible: new vendors can be added via JSON/UX without changing TS.
 type ProviderType = string;
@@ -727,6 +728,11 @@ function providerTypeFallbackVendor(type: ProviderType): ModelVendor {
 
 export default function ModelProvidersManager(props: { addToast: (type: ToastMessage['type'], title: string, message?: string) => void }) {
   const addToast = props.addToast;
+
+  const { isMobile, isTablet } = useDevice();
+  const isCompact = isMobile || isTablet;
+  const [mobilePane, setMobilePane] = useState<'list' | 'detail'>('list');
+  const [mobileSection, setMobileSection] = useState<'provider' | 'config' | 'models'>('provider');
 
   const [llmMappingState, setLlmMappingState] = useState<LlmMapping>(() => LLM_MAPPING_STATIC);
   const [llmMappingLoading, setLlmMappingLoading] = useState(false);
@@ -1646,9 +1652,20 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     return id || owned || safeStringify(m);
   };
 
+  useEffect(() => {
+    if (!isCompact) return;
+    if (activeProvider) setMobilePane('detail');
+    else setMobilePane('list');
+  }, [isCompact, activeId]);
+
+  useEffect(() => {
+    if (!isCompact) return;
+    setMobileSection('provider');
+  }, [isCompact, activeId]);
+
   return (
-    <div className={styles.root}>
-      <div className={styles.sidebar}>
+    <div className={[styles.root, isCompact ? styles.mobileRoot : ''].filter(Boolean).join(' ')}>
+      <div className={[styles.sidebar, (isCompact && mobilePane === 'detail') ? styles.mobileHidden : ''].filter(Boolean).join(' ')}>
         <div className={styles.sidebarHeader}>
           <div className={styles.sidebarTitle}>供应商</div>
         </div>
@@ -1674,7 +1691,10 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
             return (
               <div
                 key={p.id}
-                onClick={() => setActiveId(p.id)}
+                onClick={() => {
+                  setActiveId(p.id);
+                  if (isCompact) setMobilePane('detail');
+                }}
                 className={[
                   styles.providerItem,
                   isActive ? styles.providerItemActive : '',
@@ -1787,7 +1807,46 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
         </div>
       </div>
 
-      <div className={styles.right} ref={rightRef}>
+      <div className={[styles.right, (isCompact && mobilePane === 'list') ? styles.mobileHidden : ''].filter(Boolean).join(' ')} ref={rightRef}>
+        {isCompact ? (
+          <div className={styles.mobileBackRow}>
+            <button
+              type="button"
+              className={styles.mobileBackBtn}
+              onClick={() => setMobilePane('list')}
+            >
+              <IoChevronBack />
+              供应商
+            </button>
+            <div className={styles.mobileBackTitle}>{activeProvider?.name || '模型供应商'}</div>
+          </div>
+        ) : null}
+
+        {isCompact && activeProvider ? (
+          <div className={styles.mobileSectionBar}>
+            <button
+              type="button"
+              className={[styles.mobileSectionBtn, mobileSection === 'provider' ? styles.mobileSectionBtnActive : ''].filter(Boolean).join(' ')}
+              onClick={() => setMobileSection('provider')}
+            >
+              供应商
+            </button>
+            <button
+              type="button"
+              className={[styles.mobileSectionBtn, mobileSection === 'config' ? styles.mobileSectionBtnActive : ''].filter(Boolean).join(' ')}
+              onClick={() => setMobileSection('config')}
+            >
+              配置中心
+            </button>
+            <button
+              type="button"
+              className={[styles.mobileSectionBtn, mobileSection === 'models' ? styles.mobileSectionBtnActive : ''].filter(Boolean).join(' ')}
+              onClick={() => setMobileSection('models')}
+            >
+              模型
+            </button>
+          </div>
+        ) : null}
         {!activeProvider ? (
           <div className={styles.emptyState}>请先新增或选择一个供应商。</div>
         ) : (
@@ -1819,6 +1878,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
             {errorText ? <div className={styles.errorBox}>{errorText}</div> : null}
 
+            {(!isCompact || mobileSection === 'provider') ? (
             <div className={styles.card}>
               <div className={styles.cardTitleRow}>
                 <div className={styles.cardTitle}>供应商设置</div>
@@ -1860,7 +1920,9 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                 </div>
               </div>
             </div>
+            ) : null}
 
+            {(!isCompact || mobileSection === 'config') ? (
             <div className={styles.card}>
               <div className={styles.cardTitleRow}>
                 <div>
@@ -2019,7 +2081,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                   ) : null}
                 </div>
                 <button
-                  className={styles.primaryButton}
+                  className={[styles.primaryButton, styles.llmSaveBtn].filter(Boolean).join(' ')}
                   type="button"
                   onClick={llmTab === 'mcp-plugins' ? saveMcpPlugin : saveLlmModule}
                   disabled={llmTab === 'mcp-plugins'
@@ -2493,227 +2555,9 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                 </div>
               ))}
             </div>
-
-            {false && mcpPluginCandidates.length ? (
-              <div className={styles.card}>
-                <div className={styles.cardTitleRow}>
-                  <div>
-                    <div className={styles.cardTitle}>MCP 插件（本地）</div>
-                    <div className={styles.cardMeta}>编辑 sentra-mcp/plugins/*/.env（默认仅展示需要配置 LLM 的字段）</div>
-                  </div>
-                </div>
-
-                <div className={styles.llmToolbar}>
-                  <div className={styles.llmToolbarLeft}>
-                    <button
-                      className={styles.secondaryButton}
-                      type="button"
-                      onClick={() => setMcpPluginShowAllVars(s => !s)}
-                      disabled={mcpPluginSaving}
-                    >
-                      {mcpPluginShowAllVars ? '仅显示 LLM 字段' : '显示全部字段'}
-                    </button>
-
-                    <button
-                      className={styles.secondaryButton}
-                      type="button"
-                      onClick={fillMcpPluginSecretsFromActiveProvider}
-                      disabled={!activeProvider || mcpPluginSaving || !mcpPluginName}
-                      title="一键把当前供应商的 BaseURL(/v1) / API Key 填入插件内所有 *_BASE_URL/*_API_KEY 字段"
-                    >
-                      一键配置
-                    </button>
-
-                    <select
-                      className={styles.select}
-                      value={mcpPluginName}
-                      onChange={(e) => setMcpPluginName(e.target.value)}
-                      disabled={mcpPluginSaving}
-                      title="选择 MCP 插件"
-                    >
-                      {mcpPluginCandidates.map(n => (
-                        <option key={n} value={n}>{n}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <button
-                    className={styles.primaryButton}
-                    type="button"
-                    onClick={saveMcpPlugin}
-                    disabled={mcpPluginSaving || !mcpPluginName || !mcpPluginDirty[mcpPluginName]}
-                    title={mcpPluginName ? '写入插件 .env' : '请选择插件'}
-                  >
-                    <IoSave />
-                    {mcpPluginSaving ? '保存中...' : '保存插件'}
-                  </button>
-                </div>
-
-                {!mcpPluginName ? (
-                  <div className={styles.cardMeta}>未选择插件。</div>
-                ) : mcpPluginItems.length === 0 ? (
-                  <div className={styles.cardMeta}>该插件暂无可配置项（可能没有 .env.example）。</div>
-                ) : (
-                  <BrandLogoErrorBoundary
-                    resetKey={`mcpPlugin:${mcpPluginName}:${mcpPluginShowAllVars ? 'all' : 'llm'}`}
-                    fallback={<div className={styles.errorBox}>插件配置渲染失败，请刷新或切换插件。</div>}
-                  >
-                    <div className={styles.llmGroups}>
-                      {mcpPluginGroupedItems.map(([g, items]) => {
-                        const k = `plugin:${mcpPluginName}:${g}`;
-                        const collapsed = !!mcpPluginGroupCollapsed[k];
-                        return (
-                          <div className={styles.llmGroup} key={k}>
-                            <div className={styles.llmGroupHeader}>
-                              <div className={styles.llmGroupHeaderLeft}>
-                                <div className={styles.llmGroupTitle}>{g}</div>
-                                <span className={styles.badgeOff}>{items.length}</span>
-                              </div>
-                              <div className={styles.llmGroupHeaderRight}>
-                                <button
-                                  className={styles.groupToggleBtn}
-                                  type="button"
-                                  onClick={() => setMcpPluginGroupCollapsed(prev => ({ ...prev, [k]: !prev[k] }))}
-                                  aria-label={collapsed ? '展开' : '折叠'}
-                                  title={collapsed ? '展开' : '折叠'}
-                                >
-                                  {collapsed ? <IoChevronForward /> : <IoChevronDown />}
-                                </button>
-                              </div>
-                            </div>
-
-                            {!collapsed ? (
-                              <div className={styles.envList}>
-                                {items.map((it) => {
-                                  const v = mcpPluginVarsMap.get(it.key);
-                                  const meta = parseEnvMeta(v?.comment);
-                                  const desc = meta?.description || '';
-                                  const value = String(v?.value ?? '');
-                                  const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
-                                  const isSecret = isSensitiveKeyKind(it.kind, it.key);
-                                  const dropKey = `plugin:${mcpPluginName}:${it.key}`;
-
-                                  return (
-                                    <div
-                                      className={[
-                                        styles.envRow,
-                                        modelDropdownOpen && modelDropdownKey === dropKey ? styles.envRowDropdownOpen : '',
-                                      ].filter(Boolean).join(' ')}
-                                      key={it.key}
-                                    >
-                                      <div className={styles.envLeft}>
-                                        {String(v?.displayName ?? '').trim() ? (
-                                          <div className={styles.envName}>{String(v?.displayName ?? '').trim()}</div>
-                                        ) : null}
-                                        <div className={styles.envKey}>{it.key}</div>
-                                        {desc ? <div className={styles.envDesc}>{desc}</div> : null}
-                                      </div>
-                                      <div className={styles.envRight}>
-                                        {it.kind === 'boolean' ? (
-                                          <Switch
-                                            ariaLabel={it.key}
-                                            checked={isTruthyString(value)}
-                                            onChange={(next) => updateMcpPluginVar(it.key, next ? 'true' : 'false')}
-                                          />
-                                        ) : it.kind === 'enum' ? (
-                                          <select
-                                            className={styles.select}
-                                            value={value}
-                                            onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
-                                          >
-                                            {(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map(op => (
-                                              <option key={op} value={op}>{op}</option>
-                                            ))}
-                                          </select>
-                                        ) : it.kind === 'model' ? (
-                                          <div className={styles.modelInputWrap}>
-                                            <input
-                                              className={styles.input}
-                                              value={value}
-                                              onChange={(e) => {
-                                                updateMcpPluginVar(it.key, e.target.value);
-                                                setModelDropdownKey(dropKey);
-                                                setModelDropdownOpen(true);
-                                              }}
-                                              onFocus={() => {
-                                                setModelDropdownKey(dropKey);
-                                                setModelDropdownOpen(true);
-                                              }}
-                                              onBlur={() => {
-                                                setTimeout(() => setModelDropdownOpen(false), 120);
-                                              }}
-                                              placeholder={activeProvider ? (activeModelIds.length ? '从供应商模型选择或手动输入' : '请先检测供应商模型') : '请先选择供应商'}
-                                            />
-                                          </div>
-                                        ) : it.kind === 'api_key' ? (
-                                          <input
-                                            className={styles.input}
-                                            value={value}
-                                            onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
-                                            type={isSecret && !showSecretsInEnv ? 'password' : 'text'}
-                                          />
-                                        ) : it.kind === 'base_url' ? (
-                                          <input
-                                            className={styles.input}
-                                            value={value}
-                                            onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
-                                            onBlur={(e) => updateMcpPluginVar(it.key, normalizeBaseUrlV1(e.target.value))}
-                                            type="text"
-                                            placeholder="https://.../v1"
-                                          />
-                                        ) : (
-                                          <input
-                                            className={styles.input}
-                                            value={value}
-                                            onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
-                                            type={isSecret && !showSecretsInEnv ? 'password' : (type === 'number' ? 'number' : 'text')}
-                                          />
-                                        )}
-                                      </div>
-
-                                      {it.kind === 'model' &&
-                                        modelDropdownOpen &&
-                                        modelDropdownKey === dropKey &&
-                                        activeProvider &&
-                                        activeModelIds.length ? (
-                                        <div className={styles.modelPickerInlineRow}>
-                                          <div
-                                            className={styles.modelPickerInlineList}
-                                            style={{ maxHeight: `${modelDropdownMaxHeight}px` }}
-                                          >
-                                            {activeModelIds
-                                              .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
-                                              .filter(id => value ? id.toLowerCase().includes(value.toLowerCase()) : true)
-                                              .slice(0, 80)
-                                              .map(id => (
-                                                <ModelOptionRow
-                                                  key={id}
-                                                  modelId={id}
-                                                  providerType={activeProviderType}
-                                                  override={getModelOverride(activeProvider.id, id)}
-                                                  onPick={(picked) => {
-                                                    updateMcpPluginVar(it.key, picked);
-                                                    setModelDropdownOpen(false);
-                                                  }}
-                                                />
-                                              ))}
-                                          </div>
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </BrandLogoErrorBoundary>
-                )}
-              </div>
             ) : null}
 
+            {(!isCompact || mobileSection === 'models') ? (
             <div className={styles.card}>
               <div className={styles.modelsHeader}>
                 <div>
@@ -2845,6 +2689,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                 </BrandLogoErrorBoundary>
               )}
             </div>
+            ) : null}
 
             {modelSettingsOpen ? (
               <div

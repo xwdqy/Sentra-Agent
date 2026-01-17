@@ -23,12 +23,27 @@ export function useWallpaper(addToast: (type: ToastMessage['type'], title: strin
     return saved ? Number(saved) : 100;
   });
 
-  const [wallpaperFit, setWallpaperFit] = useState<'cover' | 'contain'>(() => {
-    const saved = localStorage.getItem('sentra_wallpaper_fit');
-    return (saved as 'cover' | 'contain') || 'cover';
-  });
-
   const [wallpaperInterval, setWallpaperInterval] = useState<number>(0);
+
+  const [wallpaperEditorOpen, setWallpaperEditorOpen] = useState(false);
+  const [wallpaperEditorSrc, setWallpaperEditorSrc] = useState<string | null>(null);
+  const [wallpaperEditorBlobUrl, setWallpaperEditorBlobUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.removeItem('sentra_wallpaper_fit');
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (wallpaperEditorBlobUrl) {
+        try { URL.revokeObjectURL(wallpaperEditorBlobUrl); } catch { /* ignore */ }
+      }
+    };
+  }, [wallpaperEditorBlobUrl]);
 
   // rotation
   useEffect(() => {
@@ -50,10 +65,6 @@ export function useWallpaper(addToast: (type: ToastMessage['type'], title: strin
     localStorage.setItem('sentra_brightness', String(brightness));
   }, [brightness]);
 
-  useEffect(() => {
-    localStorage.setItem('sentra_wallpaper_fit', wallpaperFit);
-  }, [wallpaperFit]);
-
   const handleWallpaperSelect = (wp: string) => setCurrentWallpaper(wp);
 
   const handleUploadWallpaper = () => {
@@ -63,30 +74,56 @@ export function useWallpaper(addToast: (type: ToastMessage['type'], title: strin
     input.onchange = (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
       if (file) {
-        if (file.size > 5 * 1024 * 1024) {
-          addToast('error', '图片过大', '请上传小于 5MB 的图片');
+        if (file.size > 10 * 1024 * 1024) {
+          addToast('error', '图片过大', '请上传小于 10MB 的图片');
           return;
         }
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-          const result = ev.target?.result as string;
-          if (result) {
-            const newWallpapers = [...wallpapers, result];
-            setWallpapers(newWallpapers);
-            setCurrentWallpaper(result);
-            const customOnly = newWallpapers.slice(DEFAULT_WALLPAPERS.length);
-            try {
-              localStorage.setItem('sentra_custom_wallpapers', JSON.stringify(customOnly));
-              addToast('success', '壁纸已添加');
-            } catch (e) {
-              addToast('error', '存储空间不足', '无法保存更多壁纸，请删除一些旧壁纸');
-            }
+        try {
+          const nextUrl = URL.createObjectURL(file);
+
+          // cleanup previous blob url if any
+          if (wallpaperEditorBlobUrl) {
+            try { URL.revokeObjectURL(wallpaperEditorBlobUrl); } catch { /* ignore */ }
           }
-        };
-        reader.readAsDataURL(file);
+
+          setWallpaperEditorBlobUrl(nextUrl);
+          setWallpaperEditorSrc(nextUrl);
+          setWallpaperEditorOpen(true);
+        } catch {
+          addToast('error', '打开失败', '无法读取该图片文件');
+        }
       }
     };
     input.click();
+  };
+
+  const cancelWallpaperEdit = () => {
+    if (wallpaperEditorBlobUrl) {
+      try { URL.revokeObjectURL(wallpaperEditorBlobUrl); } catch { /* ignore */ }
+    }
+    setWallpaperEditorOpen(false);
+    setWallpaperEditorSrc(null);
+    setWallpaperEditorBlobUrl(null);
+  };
+
+  const saveWallpaperFromEditor = (dataUrl: string) => {
+    try {
+      const newWallpapers = [...wallpapers, dataUrl];
+      setWallpapers(newWallpapers);
+      setCurrentWallpaper(dataUrl);
+
+      const customOnly = newWallpapers.slice(DEFAULT_WALLPAPERS.length);
+      localStorage.setItem('sentra_custom_wallpapers', JSON.stringify(customOnly));
+      addToast('success', '壁纸已添加');
+      setWallpaperEditorOpen(false);
+      setWallpaperEditorSrc(null);
+      if (wallpaperEditorBlobUrl) {
+        try { URL.revokeObjectURL(wallpaperEditorBlobUrl); } catch { /* ignore */ }
+      }
+      setWallpaperEditorBlobUrl(null);
+    } catch {
+      addToast('error', '存储空间不足', '无法保存更多壁纸，请删除一些旧壁纸');
+    }
   };
 
   const deleteCurrentWallpaper = () => {
@@ -109,12 +146,14 @@ export function useWallpaper(addToast: (type: ToastMessage['type'], title: strin
     setCurrentWallpaper,
     brightness,
     setBrightness,
-    wallpaperFit,
-    setWallpaperFit,
     wallpaperInterval,
     setWallpaperInterval,
     handleWallpaperSelect,
     handleUploadWallpaper,
+    wallpaperEditorOpen,
+    wallpaperEditorSrc,
+    cancelWallpaperEdit,
+    saveWallpaperFromEditor,
     deleteCurrentWallpaper,
   } as const;
 }

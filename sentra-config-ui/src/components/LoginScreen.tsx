@@ -145,14 +145,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, wallpaper }) 
                             }}
                             placeholder="输入密码"
                             autoFocus
-                            className={styles.input}
+                            disabled={loading}
+                            className={`${styles.input} ${error ? styles.inputError : ''}`}
                         />
                         <button
                             type="submit"
                             disabled={!token || loading}
                             className={`${styles.submitBtn} ${token ? styles.visible : ''}`}
                         >
-                            <IoArrowForward size={18} color="#333" />
+                            <IoArrowForward size={18} className={styles.submitIcon} />
                         </button>
                     </div>
                 </form>

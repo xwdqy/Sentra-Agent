@@ -4,6 +4,7 @@
     left: 0;
     width: 100vw;
     height: 100vh;
+
     background-size: cover;
     background-position: center;
     display: flex;
@@ -14,6 +15,8 @@
     color: white;
     overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    text-rendering: optimizeLegibility;
+    font-kerning: normal;
     user-select: none;
 }
 
@@ -103,7 +106,7 @@
 
 .time {
     font-size: 8rem;
-    font-weight: 100;
+    font-weight: 200;
     letter-spacing: -4px;
     line-height: 1;
     font-variant-numeric: tabular-nums;
@@ -199,8 +202,8 @@
 }
 
 .input {
-    background: rgba(0, 0, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(255, 255, 255, 0.16);
     border-radius: 30px;
     padding: 14px 24px;
     padding-right: 50px;
@@ -210,10 +213,13 @@
     outline: none;
     backdrop-filter: blur(15px) saturate(180%);
     -webkit-backdrop-filter: blur(15px) saturate(180%);
-    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+    box-shadow:
+        inset 0 0 0 1px rgba(0, 0, 0, 0.10),
+        0 10px 36px rgba(0, 0, 0, 0.18);
     transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
     text-align: center;
     font-weight: 500;
+    letter-spacing: 0.2px;
 }
 
 .input::placeholder {
@@ -223,15 +229,29 @@
 }
 
 .input:focus {
-    background: rgba(30, 30, 30, 0.4);
-    border-color: rgba(255, 255, 255, 0.3);
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
-    width: 300px;
-    transform: translateY(-2px);
+    background: rgba(0, 0, 0, 0.28);
+    border-color: rgba(var(--sentra-accent-rgb), 0.45);
+    box-shadow:
+        0 0 0 3px rgba(var(--sentra-accent-rgb), 0.22),
+        inset 0 0 0 1px rgba(0, 0, 0, 0.10),
+        0 14px 48px rgba(0, 0, 0, 0.24);
 }
 
 .input:focus::placeholder {
     color: transparent;
+}
+
+.input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.inputError {
+    border-color: rgba(255, 95, 87, 0.55);
+    box-shadow:
+        0 0 0 3px rgba(255, 95, 87, 0.18),
+        inset 0 0 0 1px rgba(0, 0, 0, 0.10),
+        0 14px 48px rgba(0, 0, 0, 0.20);
 }
 
 .submitBtn {
@@ -239,8 +259,8 @@
     right: 0;
     top: 50%;
     transform: translate(-6px, -50%) scale(0.8);
-    background: rgba(255, 255, 255, 0.95);
-    border: none;
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(255, 255, 255, 0.26);
     border-radius: 50%;
     width: 32px;
     height: 32px;
@@ -252,6 +272,10 @@
     transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
     opacity: 0;
     pointer-events: none;
+    box-shadow:
+        0 10px 26px rgba(0, 0, 0, 0.18),
+        inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+    color: rgba(15, 23, 42, 0.92);
 }
 
 .submitBtn.visible {
@@ -261,13 +285,25 @@
 }
 
 .submitBtn:hover {
-    background: white;
+    background: rgba(var(--sentra-accent-rgb), 0.18);
+    border-color: rgba(var(--sentra-accent-rgb), 0.32);
     transform: translate(-6px, -50%) scale(1.15);
-    box-shadow: 0 0 15px rgba(255, 255, 255, 0.4);
+    box-shadow:
+        0 14px 32px rgba(0, 0, 0, 0.20),
+        inset 0 0 0 1px rgba(var(--sentra-accent-rgb), 0.20);
 }
 
 .submitBtn:active {
     transform: translate(-6px, -50%) scale(0.95);
+}
+
+.submitBtn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.submitIcon {
+    color: currentColor;
 }
 
 .errorMessage {
@@ -275,6 +311,7 @@
     top: 100%;
     left: 50%;
     transform: translateX(-50%);
+
     font-size: 13px;
     color: #ff5f57;
     margin-top: 16px;
@@ -394,6 +431,16 @@
     }
 }
 
+@media (prefers-reduced-motion: reduce) {
+    .loadingSpinner {
+        animation: none !important;
+    }
+}
+
+:global(body[data-performance='1']) .loadingSpinner {
+    animation: none !important;
+}
+
 /* Responsive & Layout Conflict Prevention */
 
 /* Small Height Screens (e.g. Laptops) */
@@ -466,34 +513,33 @@
         display: none;
     }
 
-    /* Hide footer on very short screens to prevent overlap */
+/* Hide footer on very short screens to prevent overlap */
 }
 
 /* Mobile Devices */
 @media (max-width: 768px) {
-    .clockSection {
-        margin-top: 15vh;
-    }
+.clockSection {
+margin-top: 15vh;
+}
 
-    .time {
-        font-size: 5rem;
-    }
+.time {
+font-size: 5rem;
+}
 
-    .loginSection {
-        margin-bottom: 25vh;
-    }
+.loginSection {
+margin-bottom: 25vh;
+}
 
-    .avatarContainer {
-        width: 100px;
-        height: 100px;
-    }
+.avatarContainer {
+width: 100px;
+height: 100px;
+}
 
-    .inputWrapper,
-    .input:focus {
-        width: 240px;
-    }
+.inputWrapper {
+width: 240px;
+}
 
-    .footer {
-        gap: 30px;
-    }
+.footer {
+gap: 30px;
+}
 }

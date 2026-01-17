@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { IOSHomeScreen } from '../components/IOSHomeScreen';
 import { IOSEditor } from '../components/IOSEditor';
 import { IOSPresetsEditor } from '../components/IOSPresetsEditor';
@@ -11,6 +11,9 @@ import { getDisplayName, getIconForType } from '../utils/icons';
 import { FileItem, IOSEditorWin, DesktopIcon, TerminalWin, AppFolder } from '../types/ui';
 import { PresetsEditorState } from '../hooks/usePresetsEditor';
 import { IOSFileManager } from '../components/IOSFileManager';
+
+const ModelProvidersManager = React.lazy(() => import('../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
+const RedisAdminManager = React.lazy(() => import('../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
 
 export type MobileViewProps = {
   allItems: FileItem[];
@@ -42,6 +45,10 @@ export type MobileViewProps = {
   setIosPresetImporterOpen: (open: boolean) => void;
   iosFileManagerOpen: boolean;
   setIosFileManagerOpen: (open: boolean) => void;
+  iosModelProvidersManagerOpen: boolean;
+  setIosModelProvidersManagerOpen: (open: boolean) => void;
+  iosRedisAdminOpen: boolean;
+  setIosRedisAdminOpen: (open: boolean) => void;
   addToast: (type: ToastType, title: string, message?: string) => void;
   presetsState: PresetsEditorState;
 };
@@ -78,6 +85,10 @@ export function MobileView(props: MobileViewProps) {
     setIosPresetImporterOpen,
     iosFileManagerOpen,
     setIosFileManagerOpen,
+    iosModelProvidersManagerOpen,
+    setIosModelProvidersManagerOpen,
+    iosRedisAdminOpen,
+    setIosRedisAdminOpen,
     addToast,
     presetsState,
   } = props;
@@ -88,40 +99,48 @@ export function MobileView(props: MobileViewProps) {
   const fallback = [...allItems].sort((a, b) => getDisplayName(a.name).localeCompare(getDisplayName(b.name), 'zh-Hans-CN'));
   const pick = (arr: { item: FileItem, count?: number }[], n: number) => arr.slice(0, n).map(x => x.item);
 
-  // Select top 2 items for dock (reduced from 3 to fit max 5 dock items total)
-  const selected = (topByUsage[0]?.count ? pick(topByUsage, 2) : fallback.slice(0, 2));
+  const selected = (topByUsage[0]?.count ? pick(topByUsage, 12) : fallback.slice(0, 12));
 
-  // Create dock items from selected (maximum 2 dynamic items)
-  // Total dock: Launchpad (1) + 2 dynamic + Presets (1) + File Manager (1) = 5 items
-  const iosDockExtra = selected.slice(0, 2).map(it => ({
-    id: `${it.type}-${it.name}`,
-    name: getDisplayName(it.name),
-    icon: getIconForType(it.name, it.type),
-    onClick: () => {
-      recordUsage(`${it.type}:${it.name}`);
-      setReturnToLaunchpad(false); // Reset when opening from Dock
-      handleIOSOpenWindow(it);
-    }
-  }));
+  const iosDockExtra: { id: string; name: string; icon: React.ReactNode; onClick: () => void }[] = [];
+  const seen = new Set<string>();
+  const push = (it: { id: string; name: string; icon: React.ReactNode; onClick: () => void }) => {
+    if (!it?.id) return;
+    if (seen.has(it.id)) return;
+    seen.add(it.id);
+    iosDockExtra.push(it);
+  };
 
-  // Add fixed items (Presets + File Manager = 2 items)
-  // Total: Launchpad (always present) + 2 dynamic + 2 fixed = 5 items (maximum)
-  iosDockExtra.push({
-    id: 'ios-presets',
+  // Main candidates: most-used apps (not hardcoded count; IOSHomeScreen will cap by width)
+  for (const it of selected) {
+    push({
+      id: `${it.type}-${it.name}`,
+      name: getDisplayName(it.name),
+      icon: getIconForType(it.name, it.type),
+      onClick: () => {
+        recordUsage(`${it.type}:${it.name}`);
+        setReturnToLaunchpad(false); // Reset when opening from Dock
+        handleIOSOpenWindow(it);
+      }
+    });
+  }
+
+  // Built-in candidates (optional; will only show if there's room)
+  push({
+    id: 'module-presets-editor',
     name: '预设撰写',
     icon: getIconForType('agent-presets', 'module'),
     onClick: () => setIosPresetsEditorOpen(true)
   });
 
-  iosDockExtra.push({
-    id: 'ios-preset-importer',
+  push({
+    id: 'module-preset-importer',
     name: '预设导入',
     icon: getIconForType('agent-presets', 'module'),
     onClick: () => setIosPresetImporterOpen(true)
   });
 
-  iosDockExtra.push({
-    id: 'ios-filemanager',
+  push({
+    id: 'module-file-manager',
     name: '文件管理',
     icon: getIconForType('file-manager', 'module'),
     onClick: () => setIosFileManagerOpen(true)
@@ -196,6 +215,26 @@ export function MobileView(props: MobileViewProps) {
               setLaunchpadOpen(false);
             }
           },
+          {
+            name: 'model-providers-manager',
+            type: 'module' as const,
+            onClick: () => {
+              recordUsage('app:model-providers-manager');
+              setReturnToLaunchpad(true);
+              setIosModelProvidersManagerOpen(true);
+              setLaunchpadOpen(false);
+            }
+          },
+          {
+            name: 'redis-admin',
+            type: 'module' as const,
+            onClick: () => {
+              recordUsage('app:redis-admin');
+              setReturnToLaunchpad(true);
+              setIosRedisAdminOpen(true);
+              setLaunchpadOpen(false);
+            }
+          },
           ...allItems.map(item => ({
             name: item.name,
             type: item.type,
@@ -267,12 +306,60 @@ export function MobileView(props: MobileViewProps) {
                 关闭
               </div>
             </div>
-            <div style={{ flex: 1, overflow: 'hidden' }}>
+            <div className="ios-app-content" style={{ overflow: 'hidden' }}>
               <IOSFileManager
                 onClose={() => setIosFileManagerOpen(false)}
                 addToast={addToast}
                 theme={theme}
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {iosModelProvidersManagerOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
+          <div className="ios-app-window" style={{ display: 'flex' }}>
+            <div className="ios-app-header">
+              <div className="ios-back-btn" onClick={() => {
+                setIosModelProvidersManagerOpen(false);
+                if (returnToLaunchpad) setLaunchpadOpen(true);
+              }}>
+                <IoChevronBack /> {returnToLaunchpad ? '应用' : '主页'}
+              </div>
+              <div>模型供应商</div>
+              <div style={{ color: '#ff3b30', cursor: 'pointer', fontWeight: 'bold' }} onClick={() => setIosModelProvidersManagerOpen(false)}>
+                关闭
+              </div>
+            </div>
+            <div className="ios-app-content" style={{ overflow: 'hidden' }}>
+              <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
+                <ModelProvidersManager addToast={addToast as any} />
+              </Suspense>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {iosRedisAdminOpen && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
+          <div className="ios-app-window" style={{ display: 'flex' }}>
+            <div className="ios-app-header">
+              <div className="ios-back-btn" onClick={() => {
+                setIosRedisAdminOpen(false);
+                if (returnToLaunchpad) setLaunchpadOpen(true);
+              }}>
+                <IoChevronBack /> {returnToLaunchpad ? '应用' : '主页'}
+              </div>
+              <div>Redis 管理器</div>
+              <div style={{ color: '#ff3b30', cursor: 'pointer', fontWeight: 'bold' }} onClick={() => setIosRedisAdminOpen(false)}>
+                关闭
+              </div>
+            </div>
+            <div className="ios-app-content" style={{ overflow: 'hidden' }}>
+              <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
+                <RedisAdminManager addToast={addToast as any} />
+              </Suspense>
             </div>
           </div>
         </div>

@@ -57,6 +57,50 @@
   backdrop-filter: blur(10px);
 }
 
+.mobileStepBar {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--redis-border);
+  background: var(--redis-topbar-bg);
+  backdrop-filter: blur(10px);
+}
+
+.mobileStepBtn {
+  flex: 1;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid var(--redis-border-soft);
+  background: var(--redis-panel-bg);
+  color: var(--redis-text);
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.mobileStepBtnActive {
+  border-color: var(--redis-accent-border);
+  background: var(--redis-accent);
+  color: var(--redis-accent-text);
+}
+
+.mobileStepCount {
+  min-width: 22px;
+  height: 18px;
+  line-height: 18px;
+  border-radius: 999px;
+  padding: 0 6px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.55);
+  color: inherit;
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .connectionCard {
   margin: 10px 12px 0;
   border: 1px solid var(--redis-border);
@@ -323,6 +367,16 @@
   box-sizing: border-box;
 }
 
+.workspaceMobile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mobileHidden {
+  display: none !important;
+}
+
 .sidebar,
 .main,
 .inspector {
@@ -333,6 +387,45 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.workspaceMobile > .sidebar,
+.workspaceMobile > .main,
+.workspaceMobile > .inspector {
+  flex: 1;
+  min-height: 0;
+}
+
+.mobileBackRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px;
+  border-bottom: 1px solid var(--redis-border-soft);
+  background: var(--redis-panel-bg-strong);
+}
+
+.mobileBackBtn {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid var(--redis-border);
+  background: var(--redis-panel-bg);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--redis-text);
+}
+
+.mobileBackTitle {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--redis-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebarBody {
@@ -469,6 +562,38 @@
   padding: 6px;
 }
 
+.keyCard {
+  border: 1px solid var(--redis-border-soft);
+  background: var(--redis-panel-bg-strong);
+  border-radius: 14px;
+  padding: 10px;
+  cursor: pointer;
+}
+
+.keyCardActive {
+  border-color: var(--redis-selected-border);
+  background: var(--redis-selected-bg);
+}
+
+.keyCardTop {
+  display: grid;
+  gap: 8px;
+}
+
+.keyCardKey {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--redis-text);
+  word-break: break-all;
+}
+
+.keyCardMetaLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .tableRowMain {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 84px 64px 64px 64px;
@@ -521,6 +646,26 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   box-sizing: border-box;
+}
+
+.previewPre {
+  margin: 8px 0 0;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--redis-border-soft);
+  background: var(--redis-panel-bg);
+  color: var(--redis-text);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+  box-sizing: border-box;
+  max-height: 56vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .inspectorBody {

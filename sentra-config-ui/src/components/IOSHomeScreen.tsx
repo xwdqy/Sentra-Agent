@@ -18,16 +18,50 @@ export const IOSHomeScreen: React.FC<IOSHomeScreenProps> = ({ icons, folders, on
     // Use real icons for the grid (limit to 24 to prevent overflow)
     const gridItems = allItems.slice(0, 24);
 
+    const computeDockCapacity = React.useCallback(() => {
+        const w = window.innerWidth || 390;
+        const dockIconSize = Math.min(54, Math.max(44, Math.round(w * 0.12)));
+        const leftRight = 40; // ios.css: left/right = 20px
+        const padding = 24; // ios.css: padding = 0 12px
+        const gap = 10; // ios.css: gap = 10px
+        const available = Math.max(0, w - leftRight - padding);
+        const cap = Math.floor((available + gap) / (dockIconSize + gap));
+        return Math.max(3, Math.min(8, cap));
+    }, []);
+
+    const [dockCapacity, setDockCapacity] = React.useState<number>(() => {
+        if (typeof window === 'undefined') return 5;
+        return computeDockCapacity();
+    });
+
+    React.useEffect(() => {
+        const onResize = () => setDockCapacity(computeDockCapacity());
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, [computeDockCapacity]);
+
     const [openFolderId, setOpenFolderId] = React.useState<string | null>(null);
 
     // Dock: Launchpad + dynamic top-used apps from props
+    const uniqueDockExtra = React.useMemo(() => {
+        const out: { id: string; name: string; icon: React.ReactNode; onClick: () => void }[] = [];
+        const seen = new Set<string>();
+        for (const it of dockExtra || []) {
+            if (!it || !it.id) continue;
+            if (seen.has(it.id)) continue;
+            seen.add(it.id);
+            out.push(it);
+        }
+        return out;
+    }, [dockExtra]);
+
     const dockIcons = [
         {
             id: 'launchpad',
             name: '启动台',
             icon: <div style={{
-                width: 54,
-                height: 54,
+                width: 'var(--ios-dock-icon-size)',
+                height: 'var(--ios-dock-icon-size)',
                 background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
                 borderRadius: 12,
                 display: 'flex',
@@ -39,7 +73,7 @@ export const IOSHomeScreen: React.FC<IOSHomeScreenProps> = ({ icons, folders, on
             </div>,
             onClick: onLaunchpadOpen
         },
-        ...dockExtra
+        ...uniqueDockExtra.slice(0, Math.max(0, dockCapacity - 1))
     ];
 
     // Long-press to show name on Dock icons
@@ -116,7 +150,7 @@ export const IOSHomeScreen: React.FC<IOSHomeScreenProps> = ({ icons, folders, on
                         {showId === icon.id && (
                             <div style={{
                                 position: 'absolute',
-                                bottom: 64,
+                                bottom: 'calc(var(--ios-dock-icon-size) + 10px)',
                                 left: '50%',
                                 transform: 'translateX(-50%)',
                                 background: 'rgba(0,0,0,0.8)',

@@ -429,16 +429,22 @@
   --dw-online-border: rgba(87, 242, 135, 0.30);
   --dw-online-text: #57f287;
 
-  --dw-toggle-bg: rgba(79, 84, 92, 0.60);
-  --dw-toggle-fg: #b9bbbe;
-  --dw-toggle-track: #72767d;
-  --dw-toggle-thumb: #ffffff;
+  --dw-toggle-bg: rgba(255, 255, 255, 0.06);
+  --dw-toggle-fg: rgba(255, 255, 255, 0.86);
+  --dw-toggle-track: rgba(255, 255, 255, 0.20);
+  --dw-toggle-track-border: rgba(255, 255, 255, 0.18);
+  --dw-toggle-thumb: rgba(255, 255, 255, 0.95);
+  --dw-toggle-thumb-border: rgba(0, 0, 0, 0.25);
 
-  --dw-meta-border: rgba(148, 163, 184, 0.25);
-  --dw-meta-bg: rgba(148, 163, 184, 0.06);
-  --dw-user-meta-border: rgba(255, 255, 255, 0.22);
-  --dw-user-meta-bg: rgba(255, 255, 255, 0.12);
+  --dw-input-surface: rgba(255, 255, 255, 0.06);
+  --dw-input-border: rgba(255, 255, 255, 0.10);
+  --dw-input-placeholder: rgba(255, 255, 255, 0.52);
 
+  --dw-primary-bg: rgba(var(--sentra-accent-rgb), 0.92);
+  --dw-primary-fg: var(--dw-on-user);
+  --dw-primary-bg-hover: rgba(var(--sentra-accent-rgb), 0.98);
+  --dw-primary-bg-disabled: rgba(255, 255, 255, 0.12);
+  --dw-primary-fg-disabled: rgba(255, 255, 255, 0.55);
   --dw-chip-border: rgba(148, 163, 184, 0.25);
   --dw-chip-bg: rgba(17, 24, 39, 0.22);
   --dw-user-chip-border: rgba(255, 255, 255, 0.18);
@@ -486,6 +492,26 @@
   --dw-user-code-surface: rgba(0, 0, 0, 0.20);
   --dw-user-code-border: rgba(255, 255, 255, 0.18);
   --dw-user-code-header-bg: rgba(255, 255, 255, 0.10);
+
+  --dw-surface-hover: var(--sentra-accent-tint-08);
+  --dw-surface-hover-light: var(--sentra-accent-tint-08);
+
+  --dw-toggle-bg: rgba(17, 24, 39, 0.04);
+  --dw-toggle-fg: rgba(17, 24, 39, 0.86);
+  --dw-toggle-track: rgba(17, 24, 39, 0.20);
+  --dw-toggle-track-border: rgba(17, 24, 39, 0.18);
+  --dw-toggle-thumb: rgba(255, 255, 255, 0.98);
+  --dw-toggle-thumb-border: rgba(17, 24, 39, 0.18);
+
+  --dw-input-surface: rgba(17, 24, 39, 0.03);
+  --dw-input-border: rgba(17, 24, 39, 0.10);
+  --dw-input-placeholder: rgba(17, 24, 39, 0.45);
+
+  --dw-primary-bg: rgba(var(--sentra-accent-rgb), 0.92);
+  --dw-primary-fg: var(--dw-on-user);
+  --dw-primary-bg-hover: rgba(var(--sentra-accent-rgb), 0.98);
+  --dw-primary-bg-disabled: rgba(17, 24, 39, 0.12);
+  --dw-primary-fg-disabled: rgba(17, 24, 39, 0.45);
 }
 
 .header {
@@ -585,13 +611,25 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
-  border-radius: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 10px;
   background: var(--dw-toggle-bg);
   color: var(--dw-toggle-fg);
   font-size: 12px;
   cursor: pointer;
-  border: none;
+  border: 1px solid var(--dw-border);
+  user-select: none;
+}
+
+.toggleStream:hover {
+  background: var(--dw-surface-hover);
+}
+
+.toggleStream:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(var(--sentra-accent-rgb), 0.18);
+  border-color: rgba(var(--sentra-accent-rgb), 0.32);
 }
 
 .toggleDotTrack {
@@ -600,6 +638,7 @@
   border-radius: 999px;
   background: var(--dw-toggle-track);
   position: relative;
+  border: 1px solid var(--dw-toggle-track-border);
 }
 
 .toggleDotThumb {
@@ -611,10 +650,13 @@
   top: 1px;
   left: 1px;
   transition: transform 0.18s ease;
+  border: 1px solid var(--dw-toggle-thumb-border);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.20);
 }
 
 .toggleOn .toggleDotTrack {
-  background: var(--dw-accent);
+  background: rgba(var(--sentra-accent-rgb), 0.85);
+  border-color: rgba(var(--sentra-accent-rgb), 0.55);
 }
 
 .toggleOn .toggleDotThumb {
@@ -1263,15 +1305,16 @@
 }
 
 .inputBox {
-  background: #40444b;
-  border-radius: 8px;
-  border: 1px solid transparent;
+  background: var(--dw-input-surface);
+  border-radius: 12px;
+  border: 1px solid var(--dw-input-border);
   display: flex;
   flex-direction: column;
 }
 
 .inputBoxFocused {
-  border-color: #5865f2;
+  border-color: rgba(var(--sentra-accent-rgb), 0.35);
+  box-shadow: 0 0 0 3px rgba(var(--sentra-accent-rgb), 0.18);
 }
 
 .attachmentsRow {
@@ -1279,7 +1322,7 @@
   flex-wrap: wrap;
   gap: 6px;
   padding: 6px 10px 4px 10px;
-  border-bottom: 1px solid #40444b;
+  border-bottom: 1px solid var(--dw-input-border);
 }
 
 .attachmentChip {
@@ -1288,8 +1331,8 @@
   gap: 6px;
   padding: 4px 8px;
   border-radius: 999px;
-  background: #36393f;
-  border: 1px solid #40444b;
+  background: var(--dw-chip-bg);
+  border: 1px solid var(--dw-chip-border);
   font-size: 11px;
 }
 
@@ -1301,13 +1344,13 @@
 }
 
 .attachmentSize {
-  color: #8e9297;
+  color: var(--dw-muted);
 }
 
 .attachmentRemove {
   border: none;
   background: transparent;
-  color: #b9bbbe;
+  color: var(--dw-muted);
   cursor: pointer;
   padding: 0;
   font-size: 12px;
@@ -1331,7 +1374,7 @@
   outline: none;
   padding: 10px 12px;
   background: transparent;
-  color: #dcddde;
+  color: var(--dw-text);
   font-family: inherit;
   font-size: 14px;
 }
@@ -1352,7 +1395,7 @@
 }
 
 .textarea::placeholder {
-  color: #72767d;
+  color: var(--dw-input-placeholder);
 }
 
 .inputFooter {
@@ -1374,12 +1417,13 @@
 }
 
 .refChip {
-  background: rgba(17, 24, 39, 0.35);
+  background: var(--dw-chip-bg);
+  border-color: var(--dw-chip-border);
 }
 
 .root[data-theme='light'] .refChip {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: rgba(37, 99, 235, 0.22);
+  background: var(--dw-chip-bg);
+  border-color: var(--dw-chip-border);
 }
 
 .iconButton {
@@ -1395,46 +1439,49 @@
 }
 
 .sendButton {
-  background: #5865f2;
-  color: #ffffff;
+  background: var(--dw-primary-bg);
+  color: var(--dw-primary-fg);
 }
 
 .sendButton:disabled {
-  background: #4f545c;
+  background: var(--dw-primary-bg-disabled);
+  color: var(--dw-primary-fg-disabled);
   cursor: not-allowed;
   transform: none;
 }
 
 .sendButton:not(:disabled):hover {
-  background: #4752c4;
+  background: var(--dw-primary-bg-hover);
   transform: scale(1.05);
 }
 
 .attachButton {
-  background: #4f545c;
-  color: #dcddde;
+  background: var(--dw-toggle-bg);
+  color: var(--dw-text);
+  border: 1px solid var(--dw-border);
 }
 
 .attachButton:hover {
-  background: #5b5f67;
+  background: var(--dw-surface-hover);
 }
 
 .refButton {
-  background: rgba(79, 84, 92, 0.6);
-  color: #dcddde;
+  background: var(--dw-toggle-bg);
+  color: var(--dw-text);
+  border: 1px solid var(--dw-border);
 }
 
 .root[data-theme='light'] .refButton {
-  background: rgba(17, 24, 39, 0.06);
+  background: var(--dw-toggle-bg);
   color: var(--dw-text);
 }
 
 .refButton:hover {
-  background: rgba(91, 95, 103, 0.9);
+  background: var(--dw-surface-hover);
 }
 
 .root[data-theme='light'] .refButton:hover {
-  background: rgba(17, 24, 39, 0.10);
+  background: var(--dw-surface-hover);
 }
 
 .refModalOverlay {

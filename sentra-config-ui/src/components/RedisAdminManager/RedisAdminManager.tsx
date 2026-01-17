@@ -12,6 +12,7 @@ import {
   deleteRedisAdminGroupStatePairs,
   deleteRedisAdminByPattern,
 } from '../../services/redisAdminApi';
+import { useDevice } from '../../hooks/useDevice';
 
 type ToastFn = (type: 'success' | 'error' | 'info', title: string, message?: string) => void;
 
@@ -136,6 +137,10 @@ function fmtDateInput(d: Date): string {
 
 export function RedisAdminManager(props: { addToast: ToastFn }) {
   const { addToast } = props;
+
+  const { isMobile, isTablet } = useDevice();
+  const isCompact = isMobile || isTablet;
+  const [mobilePane, setMobilePane] = useState<'filters' | 'keys' | 'detail'>('filters');
   const [uiTheme, setUiTheme] = useState<'light' | 'dark'>(() => readThemeAttr());
   const [sentraRoot, setSentraRoot] = useState<string>('');
   const [redisInfo, setRedisInfo] = useState<any>(null);
@@ -428,7 +433,8 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
     setRightTab('detail');
     setPairSelectedId('');
     setDetailFocus('preview');
-  }, []);
+    if (isCompact) setMobilePane('detail');
+  }, [isCompact]);
 
   const onPickQuickPattern = useCallback((ptn: string, label?: string, count?: number | null) => {
     const v = String(ptn || '').trim();
@@ -790,10 +796,24 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
     const t = String((inspect as any).type || '').toLowerCase();
     if (!t) return null;
 
+    const renderMobilePre = (title: string, text: string) => {
+      return (
+        <div className={styles.previewBox}>
+          <div className={styles.previewTitle}>{title}</div>
+          <pre className={styles.previewPre}>{text}</pre>
+        </div>
+      );
+    };
+
     if (t === 'string') {
       const v = (inspect as any).valuePreview;
       const isJson = !!(inspect as any).isJson;
       const json = (inspect as any).json;
+
+      if (isCompact) {
+        const text = isJson ? stringifyForPreview(json ?? {}) : normalizeMultilineText(v);
+        return renderMobilePre('文本预览', text);
+      }
       return (
         <div className={styles.previewBox}>
           <div className={styles.previewTitle}>文本预览</div>
@@ -826,6 +846,10 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
     if (t === 'list') {
       const len = (inspect as any).len;
       const head = Array.isArray((inspect as any).head) ? (inspect as any).head : [];
+
+      if (isCompact) {
+        return renderMobilePre(`列表预览（共 ${len ?? '-'} 条）`, stringifyForPreview(head));
+      }
       return (
         <div className={styles.previewBox}>
           <div className={styles.previewTitle}>列表预览（共 {len ?? '-'} 条）</div>
@@ -858,6 +882,10 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
     if (t === 'hash') {
       const len = (inspect as any).len;
       const fields = (inspect as any).fields;
+
+      if (isCompact) {
+        return renderMobilePre(`字典预览（共 ${len ?? '-'} 个字段）`, stringifyForPreview(fields));
+      }
       return (
         <div className={styles.previewBox}>
           <div className={styles.previewTitle}>字典预览（共 {len ?? '-'} 个字段）</div>
@@ -890,6 +918,10 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
     if (t === 'zset') {
       const len = (inspect as any).len;
       const top = (inspect as any).top;
+
+      if (isCompact) {
+        return renderMobilePre(`排序集预览（共 ${len ?? '-'} 条）`, stringifyForPreview(top));
+      }
       return (
         <div className={styles.previewBox}>
           <div className={styles.previewTitle}>排序集预览（共 {len ?? '-'} 条）</div>
@@ -922,6 +954,10 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
     if (t === 'set') {
       const len = (inspect as any).len;
       const sample = (inspect as any).sample;
+
+      if (isCompact) {
+        return renderMobilePre(`集合预览（共 ${len ?? '-'} 条）`, stringifyForPreview(sample));
+      }
       return (
         <div className={styles.previewBox}>
           <div className={styles.previewTitle}>集合预览（共 {len ?? '-'} 条）</div>
@@ -952,7 +988,7 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
     }
 
     return null;
-  }, [inspect, uiTheme]);
+  }, [inspect, uiTheme, isCompact]);
 
   const overviewRows = useMemo(() => {
     return Object.entries(groups)
@@ -987,8 +1023,35 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
         </div>
       </div>
 
-      <div className={styles.workspace}>
-        <div className={styles.sidebar}>
+      {isCompact ? (
+        <div className={styles.mobileStepBar}>
+          <button
+            className={`${styles.mobileStepBtn} ${mobilePane === 'filters' ? styles.mobileStepBtnActive : ''}`}
+            type="button"
+            onClick={() => setMobilePane('filters')}
+          >
+            筛选
+          </button>
+          <button
+            className={`${styles.mobileStepBtn} ${mobilePane === 'keys' ? styles.mobileStepBtnActive : ''}`}
+            type="button"
+            onClick={() => setMobilePane('keys')}
+          >
+            Keys
+            <span className={styles.mobileStepCount}>{filteredItems.length}</span>
+          </button>
+          <button
+            className={`${styles.mobileStepBtn} ${mobilePane === 'detail' ? styles.mobileStepBtnActive : ''}`}
+            type="button"
+            onClick={() => setMobilePane('detail')}
+          >
+            详情
+          </button>
+        </div>
+      ) : null}
+
+      <div className={`${styles.workspace} ${isCompact ? styles.workspaceMobile : ''}`}>
+        <div className={`${styles.sidebar} ${isCompact && mobilePane !== 'filters' ? styles.mobileHidden : ''}`}>
           <div className={styles.panelHeader}>
             <div>
               <div className={styles.panelTitle}>筛选与定位</div>
@@ -1027,7 +1090,18 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
               <div className={styles.sidebarSectionTitle}>Pattern</div>
               <div className={styles.inputRow} style={{ padding: 0, borderBottom: 'none' }}>
                 <input className={styles.input} value={pattern} onChange={(e) => setPattern(e.target.value)} placeholder="例如: sentra:memory:* 或 sentra:mcp:ctx*" />
-                <button className={styles.btn} onClick={() => { setRightTab('detail'); runList(); }} disabled={busy || !pattern.trim()} type="button">列出</button>
+                <button
+                  className={styles.btn}
+                  onClick={() => {
+                    setRightTab('detail');
+                    runList();
+                    if (isCompact) setMobilePane('keys');
+                  }}
+                  disabled={busy || !pattern.trim()}
+                  type="button"
+                >
+                  列出
+                </button>
               </div>
 
               <div className={styles.profileQuickHeader}>
@@ -1144,7 +1218,7 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
           </div>
         </div>
 
-        <div className={styles.main}>
+        <div className={`${styles.main} ${isCompact && mobilePane !== 'keys' ? styles.mobileHidden : ''}`}>
           <div className={styles.panelHeader}>
             <div>
               <div className={styles.panelTitle}>Keys</div>
@@ -1153,13 +1227,15 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
             <div className={styles.small}>keys={filteredItems.length} / raw={items.length}</div>
           </div>
 
-          <div className={styles.tableHeaderMain}>
-            <div>Key</div>
-            <div>分类</div>
-            <div>TTL</div>
-            <div>类型</div>
-            <div>大小</div>
-          </div>
+          {!isCompact ? (
+            <div className={styles.tableHeaderMain}>
+              <div>Key</div>
+              <div>分类</div>
+              <div>TTL</div>
+              <div>类型</div>
+              <div>大小</div>
+            </div>
+          ) : null}
 
           <div className={styles.listMain}>
             {busy && !filteredItems.length ? (
@@ -1180,31 +1256,58 @@ export function RedisAdminManager(props: { addToast: ToastFn }) {
             ) : null}
 
             {filteredItems.map((it) => (
-              <div
-                key={it.key}
-                className={`${styles.tableRowMain} ${selectedKey === it.key ? styles.rowActive : ''}`}
-                onClick={() => openPreview(it.key)}
-                title={it.key}
-              >
-                <div className={styles.keyCell}>{it.key}</div>
-                <div>
-                  <span className={styles.badge}>{it.category || '其他'}</span>
+              isCompact ? (
+                <div
+                  key={it.key}
+                  className={`${styles.keyCard} ${selectedKey === it.key ? styles.keyCardActive : ''}`}
+                  onClick={() => openPreview(it.key)}
+                  title={it.key}
+                >
+                  <div className={styles.keyCardTop}>
+                    <div className={styles.keyCardKey}>{it.key}</div>
+                    <div className={styles.keyCardMetaLine}>
+                      <span className={styles.badge}>{it.category || '其他'}</span>
+                      <span className={`${styles.badge} ${styles[`badgeTtl_${ttlTone(it.ttl)}`]}`}>{formatTtl(it.ttl)}</span>
+                      <span className={styles.badge}>{formatRedisType(it.redisType)}</span>
+                      <span className={styles.badge}>{it.len == null ? '-' : String(it.len)}</span>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <span className={`${styles.badge} ${styles[`badgeTtl_${ttlTone(it.ttl)}`]}`}>{formatTtl(it.ttl)}</span>
+              ) : (
+                <div
+                  key={it.key}
+                  className={`${styles.tableRowMain} ${selectedKey === it.key ? styles.rowActive : ''}`}
+                  onClick={() => openPreview(it.key)}
+                  title={it.key}
+                >
+                  <div className={styles.keyCell}>{it.key}</div>
+                  <div>
+                    <span className={styles.badge}>{it.category || '其他'}</span>
+                  </div>
+                  <div>
+                    <span className={`${styles.badge} ${styles[`badgeTtl_${ttlTone(it.ttl)}`]}`}>{formatTtl(it.ttl)}</span>
+                  </div>
+                  <div>
+                    <span className={styles.badge}>{formatRedisType(it.redisType)}</span>
+                  </div>
+                  <div>
+                    <span className={styles.badge}>{it.len == null ? '-' : String(it.len)}</span>
+                  </div>
                 </div>
-                <div>
-                  <span className={styles.badge}>{formatRedisType(it.redisType)}</span>
-                </div>
-                <div>
-                  <span className={styles.badge}>{it.len == null ? '-' : String(it.len)}</span>
-                </div>
-              </div>
+              )
             ))}
           </div>
         </div>
 
-        <div className={styles.inspector}>
+        <div className={`${styles.inspector} ${isCompact && mobilePane !== 'detail' ? styles.mobileHidden : ''}`}>
+          {isCompact ? (
+            <div className={styles.mobileBackRow}>
+              <button className={styles.mobileBackBtn} type="button" onClick={() => setMobilePane('keys')}>
+                返回
+              </button>
+              <div className={styles.mobileBackTitle}>{selectedKey ? (selectedKey.length > 28 ? `${selectedKey.slice(0, 28)}…` : selectedKey) : '未选择'}</div>
+            </div>
+          ) : null}
           <div className={styles.tabs}>
             <button className={`${styles.tabBtn} ${rightTab === 'detail' ? styles.tabBtnActive : ''}`} onClick={() => setRightTab('detail')} type="button">详情</button>
             <button className={`${styles.tabBtn} ${rightTab === 'overview' ? styles.tabBtnActive : ''}`} onClick={() => setRightTab('overview')} type="button">概览</button>

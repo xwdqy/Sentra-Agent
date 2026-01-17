@@ -49,7 +49,6 @@ class WindowErrorBoundary extends Component<
 export type DesktopViewProps = {
   isSolidColor: boolean;
   currentWallpaper: string;
-  wallpaperFit: 'cover' | 'contain';
   brightness: number;
   setBrightness: (val: number) => void;
   theme: 'light' | 'dark';
@@ -117,7 +116,6 @@ export type DesktopViewProps = {
   handleWallpaperSelect: (wp: string) => void;
   handleUploadWallpaper: () => void;
   handleDeleteWallpaper: () => void;
-  setWallpaperFit: (v: 'cover' | 'contain') => void;
   wallpaperInterval: number;
   setWallpaperInterval: Dispatch<SetStateAction<number>>;
   loadConfigs: () => void | Promise<void>;
@@ -278,7 +276,6 @@ export function DesktopView(props: DesktopViewProps) {
   const {
     isSolidColor,
     currentWallpaper,
-    wallpaperFit,
     brightness,
     setBrightness,
     theme,
@@ -327,7 +324,6 @@ export function DesktopView(props: DesktopViewProps) {
     handleWallpaperSelect,
     handleUploadWallpaper,
     handleDeleteWallpaper,
-    setWallpaperFit,
     wallpaperInterval,
     setWallpaperInterval,
     loadConfigs,
@@ -362,6 +358,91 @@ export function DesktopView(props: DesktopViewProps) {
     modelProvidersManagerMinimized,
     setModelProvidersManagerMinimized,
   } = props;
+
+  const shortHash = useCallback((s: string) => {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+      h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    }
+    return h.toString(16).toUpperCase().slice(0, 6);
+  }, []);
+
+  const getWallpaperDisplayName = useCallback((wp: string) => {
+    if (!wp) return '';
+    if (wp.startsWith('/wallpapers/')) {
+      const base = decodeURIComponent(wp.split('/').pop() || wp);
+      const noExt = base.replace(/\.(png|jpe?g|webp|gif|bmp)$/i, '');
+      const pretty = noExt.replace(/[-_]+/g, ' ').trim();
+      return pretty || base;
+    }
+    if (wp.startsWith('data:image/')) {
+      return `自定义 ${shortHash(wp)}`;
+    }
+    try {
+      const u = new URL(wp);
+      const base = decodeURIComponent(u.pathname.split('/').pop() || u.hostname);
+      const noExt = base.replace(/\.(png|jpe?g|webp|gif|bmp)$/i, '');
+      const pretty = noExt.replace(/[-_]+/g, ' ').trim();
+      return pretty || base || wp;
+    } catch {
+      return wp;
+    }
+  }, [shortHash]);
+
+  const menuEllipsisStyle = useMemo(() => {
+    return {
+      maxWidth: 180,
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      display: 'block',
+    } as const;
+  }, []);
+
+  const [recentSolidColors, setRecentSolidColors] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('sentra_recent_solid_colors');
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const upsertRecentSolidColor = useCallback((hex: string) => {
+    const v = String(hex || '').trim();
+    if (!/^#[0-9a-fA-F]{6}$/.test(v)) return;
+    setRecentSolidColors(prev => {
+      const next = [v, ...prev.filter(x => x !== v)].slice(0, 8);
+      try {
+        localStorage.setItem('sentra_recent_solid_colors', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
+  const selectSolidColor = useCallback((hex: string) => {
+    upsertRecentSolidColor(hex);
+    handleWallpaperSelect(hex);
+  }, [handleWallpaperSelect, upsertRecentSolidColor]);
+
+  const openColorPicker = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.value = (() => {
+      const base = String(currentWallpaper || '').trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(base)) return base;
+      return '#1a1a2e';
+    })();
+    input.onchange = (e) => {
+      const val = String((e.target as HTMLInputElement).value || '').trim();
+      if (!/^#[0-9a-fA-F]{6}$/.test(val)) return;
+      selectSolidColor(val);
+    };
+    input.click();
+  }, [currentWallpaper, selectSolidColor]);
 
   // Folder & window state
   const [openFolder, setOpenFolder] = useState<{
@@ -865,7 +946,7 @@ export function DesktopView(props: DesktopViewProps) {
         style={{
           backgroundImage: isSolidColor ? 'none' : `url(${currentWallpaper})`,
           backgroundColor: isSolidColor ? currentWallpaper : '#000',
-          backgroundSize: wallpaperFit,
+          backgroundSize: 'cover',
           backgroundPosition: 'center',
           backgroundRepeat: 'no-repeat',
           height: '100%',
@@ -1397,32 +1478,55 @@ export function DesktopView(props: DesktopViewProps) {
 
         <Menu id="desktop-menu" theme="light" animation="scale">
           <Submenu label="切换壁纸">
-            {wallpapers.map((wp, i) => (
-              <Item key={i} onClick={() => handleWallpaperSelect(wp)}>
-                壁纸 {i + 1}
-              </Item>
-            ))}
+            {wallpapers.map((wp, i) => {
+              const name = getWallpaperDisplayName(wp);
+              const isCurrent = wp === currentWallpaper;
+              const key = wp.startsWith('data:image/') ? `data:${i}:${shortHash(wp)}` : `${wp}:${i}`;
+              return (
+                <Item key={key} onClick={() => handleWallpaperSelect(wp)}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ width: 14, display: 'inline-block', textAlign: 'center' }} aria-hidden="true">
+                      {isCurrent ? '✓' : ''}
+                    </span>
+                    <span style={menuEllipsisStyle} title={name}>{name}</span>
+                  </div>
+                </Item>
+              );
+            })}
             <Item onClick={() => handleWallpaperSelect(BING_WALLPAPER)}>Bing 每日壁纸</Item>
             <Submenu label="纯色背景">
+              {recentSolidColors.length ? (
+                <>
+                  {recentSolidColors.map((hex) => (
+                    <Item key={`recent:${hex}`} onClick={() => selectSolidColor(hex)}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ width: 12, height: 12, background: hex, border: '1px solid #ddd' }} />
+                        <span style={menuEllipsisStyle} title={hex}>{hex}</span>
+                      </div>
+                    </Item>
+                  ))}
+                </>
+              ) : null}
               {SOLID_COLORS.map(c => (
-                <Item key={c.name} onClick={() => handleWallpaperSelect(c.value)}>
+                <Item key={c.name} onClick={() => selectSolidColor(c.value)}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div style={{ width: 12, height: 12, background: c.value, border: '1px solid #ddd' }} />
-                    {c.name}
+                    <span style={menuEllipsisStyle} title={c.name}>{c.name}</span>
                   </div>
                 </Item>
               ))}
+
+              <Item onClick={openColorPicker}>
+                自定义颜色...
+              </Item>
             </Submenu>
           </Submenu>
           <Item onClick={handleUploadWallpaper}>上传壁纸...</Item>
           <Item
             onClick={() => handleDeleteWallpaper()}
-            disabled={defaultWallpapers.includes(currentWallpaper) || currentWallpaper === BING_WALLPAPER || SOLID_COLORS.some(c => c.value === currentWallpaper)}
+            disabled={defaultWallpapers.includes(currentWallpaper) || currentWallpaper === BING_WALLPAPER || String(currentWallpaper || '').startsWith('#')}
           >
             删除当前壁纸
-          </Item>
-          <Item onClick={() => setWallpaperFit(wallpaperFit === 'cover' ? 'contain' : 'cover')}>
-            壁纸填充: {wallpaperFit === 'cover' ? '覆盖 (Cover)' : '包含 (Contain)'}
           </Item>
           <Item onClick={() => setWallpaperInterval(i => (i === 0 ? 60 : 0))}>
             {wallpaperInterval > 0 ? '停止壁纸轮播' : '开启壁纸轮播 (1min)'}
