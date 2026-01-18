@@ -1,9 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { EnvVariable } from '../types/config';
 import styles from './EnvEditor.module.css';
-import { IoAdd, IoSave, IoTrash, IoInformationCircle, IoSearch, IoWarning, IoRefresh } from 'react-icons/io5';
-import { motion, AnimatePresence } from 'framer-motion';
-import { SafeInput } from './SafeInput';
+import { ExclamationCircleOutlined, InfoCircleOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined, DeleteOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
+import { Button, Empty, Input, InputNumber, Modal, Select, Switch, Table, Tag, Tooltip } from 'antd';
 
 type EnvValueType = 'string' | 'number' | 'boolean' | 'enum' | 'array';
 
@@ -129,7 +128,6 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [deleteConfirm, setDeleteConfirm] = useState<{ index: number; key: string } | null>(null);
   const [restoreConfirm, setRestoreConfirm] = useState(false);
-  const [openEnumIndex, setOpenEnumIndex] = useState<number | null>(null);
 
   const filteredVars = useMemo(() => {
     const term = searchTerm.toLowerCase();
@@ -155,24 +153,6 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // 点击页面其他位置时关闭当前打开的枚举下拉菜单
-  useEffect(() => {
-    if (openEnumIndex === null) return;
-
-    const handleClickOutside = (event: MouseEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (!target) return;
-      // 如果点击在任意 macSelect 容器内部，则不关闭
-      if (target.closest(`.${styles.macSelect}`)) return;
-      setOpenEnumIndex(null);
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [openEnumIndex]);
-
   return (
     <div
       className={`${styles.container} ${isMobile ? styles.mobileContainer : ''}`}
@@ -185,14 +165,14 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
         <div className={styles.sidebar}>
           <div className={styles.sidebarHeader}>
             <div className={styles.searchWrapper}>
-              <IoSearch className={styles.searchIcon} />
-              <SafeInput
+              <SearchOutlined className={styles.searchIcon} />
+              <Input
                 id="env-search-input"
-                type="text"
                 placeholder="搜索配置..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className={styles.searchInput}
+                allowClear
               />
             </div>
           </div>
@@ -211,24 +191,22 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
           {isMobile ? (
             <>
               <div className={styles.mobileSearchInputBox}>
-                <IoSearch className={styles.searchIcon} />
-                <SafeInput
-                  type="text"
+                <SearchOutlined className={styles.searchIcon} />
+                <Input
                   placeholder="搜索配置..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className={styles.searchInput}
+                  allowClear
                 />
               </div>
               <div className={styles.actions}>
-                <button className={styles.macBtn} onClick={onAdd}>
-                  <IoAdd size={14} style={{ marginRight: 4 }} />
+                <Button size="small" icon={<PlusOutlined />} onClick={onAdd}>
                   新增
-                </button>
-                <button className={`${styles.macBtn} ${styles.primary}`} onClick={onSave} disabled={saving}>
-                  <IoSave size={14} style={{ marginRight: 4 }} />
-                  {saving ? '...' : '保存'}
-                </button>
+                </Button>
+                <Button type="primary" size="small" icon={<SaveOutlined />} onClick={onSave} loading={saving}>
+                  保存
+                </Button>
               </div>
             </>
           ) : (
@@ -239,19 +217,16 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
               </div>
               <div className={styles.actions}>
                 {onRestore && (
-                  <button className={styles.macBtn} onClick={() => setRestoreConfirm(true)} title="重置为默认配置">
-                    <IoRefresh size={14} style={{ marginRight: 4 }} />
+                  <Button size="small" icon={<ReloadOutlined />} onClick={() => setRestoreConfirm(true)}>
                     重置
-                  </button>
+                  </Button>
                 )}
-                <button className={styles.macBtn} onClick={onAdd}>
-                  <IoAdd size={14} style={{ marginRight: 4 }} />
+                <Button size="small" icon={<PlusOutlined />} onClick={onAdd}>
                   新增
-                </button>
-                <button className={`${styles.macBtn} ${styles.primary}`} onClick={onSave} disabled={saving}>
-                  <IoSave size={14} style={{ marginRight: 4 }} />
-                  {saving ? '...' : '保存'}
-                </button>
+                </Button>
+                <Button type="primary" size="small" icon={<SaveOutlined />} onClick={onSave} loading={saving}>
+                  保存
+                </Button>
               </div>
             </>
           )}
@@ -268,7 +243,7 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
             alignItems: 'center',
             gap: '8px'
           }}>
-            <IoInformationCircle size={16} />
+            <InfoCircleOutlined />
             <span>当前正在预览默认配置 (.env.example)。保存后将创建新的 .env 配置文件。</span>
           </div>
         )}
@@ -276,239 +251,201 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
         <div className={styles.scrollArea}>
           {vars.length === 0 ? (
             <div className={styles.emptyState}>
-              <IoInformationCircle size={48} style={{ marginBottom: 16 }} />
-              <div style={{ fontWeight: 500 }}>配置文件为空</div>
-              <div style={{ fontSize: 12, marginTop: 4 }}>点击右上角"新增"按钮添加配置项</div>
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="配置文件为空，点击右上角“新增”添加配置项" />
             </div>
           ) : (
-            <div className={styles.settingsGroup}>
-              {filteredVars.map((v) => {
-                const meta = parseEnvMeta(v.comment);
-                const type: EnvValueType = meta?.type || 'string';
-                const description = meta?.description || firstNonMetaLine(v.comment) || '';
-                const displayName = String(v.displayName ?? '').trim();
-                const rawValue = v.value ?? '';
-                const lowerValue = rawValue.toLowerCase();
-                const boolValue = rawValue === 'true' || rawValue === '1' || lowerValue === 'yes' || lowerValue === 'on';
-                const handleBooleanChange = (next: boolean) => {
-                  onUpdate(v.originalIndex, 'value', next ? 'true' : 'false');
-                };
+            <Table
+              className={styles.envListAntd}
+              dataSource={filteredVars}
+              rowKey={(v: any) => String(v.originalIndex)}
+              pagination={false}
+              size="small"
+              showHeader={false}
+              columns={[
+                {
+                  key: 'row',
+                  render: (_: any, v: any) => {
+                    const meta = parseEnvMeta(v.comment);
+                    const type: EnvValueType = meta?.type || 'string';
+                    const description = meta?.description || firstNonMetaLine(v.comment) || '';
+                    const displayName = String(v.displayName ?? '').trim();
+                    const rawValue = String(v.value ?? '');
+                    const lowerValue = rawValue.toLowerCase();
+                    const boolValue = rawValue === 'true' || rawValue === '1' || lowerValue === 'yes' || lowerValue === 'on';
+                    const hasCnName = Boolean(displayName);
 
-                // 数字类型：允许直接输入，由浏览器原生 number 控件和后端校验负责约束
-                const handleNumberChange = (raw: string) => {
-                  onUpdate(v.originalIndex, 'value', raw);
-                };
+                    // 数字类型：允许直接输入，由浏览器原生 number 控件和后端校验负责约束
+                    // 只有纯文本/数字使用带边框的编辑容器，其余类型使用更轻量的 inline 容器，避免“外面一个大文本框”的观感
 
-                // 只有纯文本/数字使用带边框的编辑容器，其余类型使用更轻量的 inline 容器，避免“外面一个大文本框”的观感
-                const wrapperClassName =
-                  type === 'string' || type === 'number'
-                    ? styles.editorWrapper
-                    : styles.inlineEditorBody;
+                    const keyUpper = String(v.key || '').toUpperCase();
+                    const isSecret = /KEY|TOKEN|SECRET|PASSWORD/.test(keyUpper);
+                    const numberStep = type === 'number' ? inferNumberStep(meta?.range) : undefined;
+                    const numberMin = type === 'number' && meta?.range?.min !== undefined ? meta.range.min : undefined;
+                    const numberMax = type === 'number' && meta?.range?.max !== undefined ? meta.range.max : undefined;
 
-                const isEnumOpen = openEnumIndex === v.originalIndex;
-                const numberStep = type === 'number' ? inferNumberStep(meta?.range) : undefined;
-
-                return (
-                  <div key={v.originalIndex} className={styles.settingsRow}>
-                    <div className={styles.rowTop}>
-                      <div className={styles.keyBlock}>
-                        {displayName && !v.isNew ? (
-                          <div className={styles.displayName}>{displayName}</div>
-                        ) : null}
-                        <div className={styles.keyLine}>
-                          {v.isNew ? (
-                            <SafeInput
-                              className={styles.newKeyInput}
-                              value={v.key}
-                              onChange={(e) => onUpdate(v.originalIndex, 'key', e.target.value)}
-                              placeholder="NEW_KEY"
-                              autoFocus
-                            />
-                          ) : (
-                            <div className={styles.keyName}>{v.key}</div>
-                          )}
-                          <div className={styles.typeTag}>{typeLabelMap[type]}</div>
-                        </div>
-                        <div className={styles.descLine}>{description || '未填写说明'}</div>
-                        <div className={styles.metaLine}>
-                          {type === 'number' && meta?.range && (
-                            <span className={`${styles.chip} ${styles.chipSoft}`}>
-                              范围 {meta.range.min ?? '−∞'} ~ {meta.range.max ?? '∞'}
-                            </span>
-                          )}
-                          {type === 'enum' && meta?.options && (
-                            <div className={styles.optionChips}>
-                              {meta.options.map(opt => (
-                                <span key={opt} className={styles.optionChip}>{opt}</span>
-                              ))}
-                            </div>
-                          )}
-                          {type === 'array' && (
-                            <span className={`${styles.chip} ${styles.chipSoft}`}>数组 / JSON</span>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        className={styles.deleteBtn}
-                        onClick={() => setDeleteConfirm({ index: v.originalIndex, key: v.key })}
-                        title="删除"
-                      >
-                        <IoTrash size={16} />
-                      </button>
-                    </div>
-
-                    <div className={wrapperClassName}>
-                      {type === 'boolean' ? (
-                        <div className={styles.booleanRow}>
-                          <button
-                            type="button"
-                            className={styles.toggle}
-                            data-checked={boolValue}
-                            onClick={() => handleBooleanChange(!boolValue)}
-                          >
-                            <span className={styles.toggleKnob} />
-                          </button>
-                          <span className={styles.toggleLabel}>{boolValue ? '已启用' : '已关闭'}</span>
-                        </div>
+                    const control = (
+                      type === 'boolean' ? (
+                        <Switch
+                          checked={boolValue}
+                          onChange={(next) => onUpdate(v.originalIndex, 'value', next ? 'true' : 'false')}
+                          size="small"
+                        />
                       ) : type === 'enum' && meta?.options && meta.options.length > 0 ? (
-                        <div className={styles.macSelect}>
-                          <button
-                            type="button"
-                            className={styles.macSelectButton}
-                            onClick={() => setOpenEnumIndex(isEnumOpen ? null : v.originalIndex)}
-                          >
-                            <span className={styles.macSelectLabel}>{v.value || meta.options[0] || '请选择'}</span>
-                            <span className={styles.macSelectArrow}>▾</span>
-                          </button>
-                          {isEnumOpen && (
-                            <div className={styles.macSelectMenu}>
-                              {meta.options.map(opt => (
-                                <div
-                                  key={opt}
-                                  className={`${styles.macSelectOption} ${v.value === opt ? styles.macSelectOptionActive : ''}`}
-                                  onClick={() => {
-                                    onUpdate(v.originalIndex, 'value', opt);
-                                    setOpenEnumIndex(null);
-                                  }}
-                                >
-                                  {opt}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                        <Select
+                          value={rawValue || undefined}
+                          onChange={(next) => onUpdate(v.originalIndex, 'value', String(next ?? ''))}
+                          options={meta.options.map(opt => ({ value: opt, label: opt }))}
+                          showSearch
+                          allowClear
+                          styles={{ popup: { root: { minWidth: 240 } } }}
+                          popupMatchSelectWidth={false}
+                          style={{ width: 260, maxWidth: '100%' }}
+                        />
                       ) : type === 'array' ? (
-                        <textarea
-                          className={styles.valueTextarea}
-                          value={v.value}
+                        <Input.TextArea
+                          value={rawValue}
                           onChange={(e) => onUpdate(v.originalIndex, 'value', e.target.value)}
                           placeholder="输入数组或 JSON..."
+                          autoSize={{ minRows: 2, maxRows: 6 }}
                           spellCheck={false}
+                          style={{ width: 280, maxWidth: '100%' }}
+                        />
+                      ) : type === 'number' ? (
+                        <InputNumber
+                          value={Number.isFinite(Number(rawValue)) ? Number(rawValue) : null}
+                          onChange={(next) => onUpdate(v.originalIndex, 'value', next == null ? '' : String(next))}
+                          placeholder="输入数字..."
+                          step={numberStep}
+                          min={numberMin}
+                          max={numberMax}
+                          style={{ width: 240, maxWidth: '100%' }}
+                        />
+                      ) : isSecret ? (
+                        <Input.Password
+                          value={rawValue}
+                          onChange={(e) => onUpdate(v.originalIndex, 'value', e.target.value)}
+                          placeholder="输入密钥..."
+                          allowClear
+                          style={{ width: 260, maxWidth: '100%' }}
+                          autoComplete="new-password"
+                          iconRender={(visible) => (visible ? <EyeOutlined /> : <EyeInvisibleOutlined />)}
                         />
                       ) : (
-                        <input
-                          type={type === 'number' ? 'number' : 'text'}
-                          className={type === 'number' ? styles.valueInputNumber : styles.valueInput}
-                          value={v.value}
-                          onChange={(e) => {
-                            if (type === 'number') {
-                              handleNumberChange(e.target.value);
-                            } else {
-                              onUpdate(v.originalIndex, 'value', e.target.value);
-                            }
-                          }}
-                          placeholder={type === 'number' ? '输入数字...' : '输入值...'}
-                          spellCheck={false}
-                          min={type === 'number' && meta?.range?.min !== undefined ? meta.range.min : undefined}
-                          max={type === 'number' && meta?.range?.max !== undefined ? meta.range.max : undefined}
-                          step={numberStep}
+                        <Input
+                          value={rawValue}
+                          onChange={(e) => onUpdate(v.originalIndex, 'value', e.target.value)}
+                          placeholder="输入值..."
+                          allowClear
+                          style={{ width: 260, maxWidth: '100%' }}
+                          type="text"
                         />
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                      )
+                    );
+
+                    return (
+                      <div className={styles.envListItem}>
+                        <div className={styles.envMetaTitle}>
+                          <div className={styles.envMetaName}>
+                            {v.isNew ? (
+                              <Input
+                                value={v.key}
+                                onChange={(e) => onUpdate(v.originalIndex, 'key', e.target.value)}
+                                placeholder="NEW_KEY"
+                                autoFocus
+                                style={{ width: 260 }}
+                              />
+                            ) : (
+                              <Tooltip
+                                trigger={isMobile ? ['click'] : ['hover']}
+                                placement="topLeft"
+                                title={<span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>{v.key}</span>}
+                              >
+                                <div className={styles.envMetaCnName}>{hasCnName ? displayName : '未提供中文名称'}</div>
+                              </Tooltip>
+                            )}
+                          </div>
+                          <div className={styles.envMetaTags}>
+                            <Tag color="blue">{typeLabelMap[type]}</Tag>
+                            {type === 'number' && meta?.range ? (
+                              <Tag color="gold">范围 {meta.range.min ?? '−∞'} ~ {meta.range.max ?? '∞'}</Tag>
+                            ) : null}
+                            {type === 'enum' && meta?.options?.length ? (
+                              <Tag color="purple">{meta.options.length} 选项</Tag>
+                            ) : null}
+                            {type === 'array' ? <Tag color="cyan">数组/JSON</Tag> : null}
+                            {isSecret ? <Tag color="volcano">敏感</Tag> : null}
+                          </div>
+                        </div>
+
+                        <div className={styles.envMetaDesc}>
+                          <div className={styles.envMetaHelp}>{description || '未填写说明'}</div>
+                        </div>
+
+                        <div className={styles.envListAction}>
+                          <div className={styles.envControlRow}>{control}</div>
+                          <Button
+                            size="small"
+                            type="text"
+                            danger
+                            icon={<DeleteOutlined />}
+                            onClick={() => setDeleteConfirm({ index: v.originalIndex, key: v.key })}
+                            aria-label="删除"
+                            title="删除"
+                          />
+                        </div>
+                      </div>
+                    );
+                  },
+                },
+              ]}
+            />
           )}
         </div>
       </div>
 
-      <AnimatePresence>
-        {deleteConfirm && (
-          <div className={styles.modalOverlay} onClick={() => setDeleteConfirm(null)}>
-            <motion.div
-              className={styles.modalContent}
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              onClick={e => e.stopPropagation()}
-            >
-              <div className={styles.modalIcon}>
-                <IoWarning size={48} color="#FF3B30" />
-              </div>
-              <h3 className={styles.modalTitle}>确认删除?</h3>
-              <p className={styles.modalText}>
-                您确定要删除配置项 <span className={styles.highlight}>{deleteConfirm.key || '未命名'}</span> 吗？此操作无法撤销。
-              </p>
-              <div className={styles.modalActions}>
-                <button
-                  className={styles.cancelBtn}
-                  onClick={() => setDeleteConfirm(null)}
-                >
-                  取消
-                </button>
-                <button
-                  className={styles.confirmBtn}
-                  onClick={() => {
-                    onDelete(deleteConfirm.index);
-                    setDeleteConfirm(null);
-                  }}
-                >
-                  删除
-                </button>
-              </div>
-            </motion.div>
+      <Modal
+        title="确认删除"
+        open={!!deleteConfirm}
+        onCancel={() => setDeleteConfirm(null)}
+        onOk={() => {
+          if (!deleteConfirm) return;
+          onDelete(deleteConfirm.index);
+          setDeleteConfirm(null);
+        }}
+        okText="删除"
+        cancelText="取消"
+        okButtonProps={{ danger: true }}
+        destroyOnHidden
+      >
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          <ExclamationCircleOutlined style={{ color: '#ff4d4f', marginTop: 2 }} />
+          <div>
+            确定要删除配置项 <span className={styles.highlight}>{deleteConfirm?.key || '未命名'}</span> 吗？此操作无法撤销。
           </div>
-        )}
+        </div>
+      </Modal>
 
-        {restoreConfirm && (
-          <div className={styles.modalOverlay} onClick={() => setRestoreConfirm(false)}>
-            <motion.div
-              className={styles.modalContent}
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              onClick={e => e.stopPropagation()}
-            >
-              <div className={styles.modalIcon}>
-                <IoWarning size={48} color="#FF3B30" />
-              </div>
-              <h3 className={styles.modalTitle}>确认重置?</h3>
-              <p className={styles.modalText}>
-                您确定要将当前配置重置为默认值 (.env.example) 吗？<br />
-                <span style={{ color: '#FF3B30', fontWeight: 500 }}>当前的所有修改都将丢失！</span>
-              </p>
-              <div className={styles.modalActions}>
-                <button
-                  className={styles.cancelBtn}
-                  onClick={() => setRestoreConfirm(false)}
-                >
-                  取消
-                </button>
-                <button
-                  className={styles.confirmBtn}
-                  onClick={() => {
-                    if (onRestore) onRestore();
-                    setRestoreConfirm(false);
-                  }}
-                >
-                  确认重置
-                </button>
-              </div>
-            </motion.div>
+      <Modal
+        title="确认重置"
+        open={restoreConfirm}
+        onCancel={() => setRestoreConfirm(false)}
+        onOk={() => {
+          if (onRestore) onRestore();
+          setRestoreConfirm(false);
+        }}
+        okText="确认重置"
+        cancelText="取消"
+        okButtonProps={{ danger: true }}
+        destroyOnHidden
+      >
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+          <InfoCircleOutlined style={{ color: '#faad14', marginTop: 2 }} />
+          <div>
+            您确定要将当前配置重置为默认值 (.env.example) 吗？
+            <div style={{ color: '#ff4d4f', fontWeight: 700, marginTop: 8 }}>当前的所有修改都将丢失！</div>
           </div>
-        )}
-      </AnimatePresence>
+        </div>
+      </Modal>
     </div>
   );
 };

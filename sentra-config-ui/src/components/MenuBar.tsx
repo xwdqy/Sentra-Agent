@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { SentraIcon } from './SentraIcon';
@@ -18,6 +18,8 @@ import { BsController } from 'react-icons/bs';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MacAlert } from './MacAlert';
 import styles from './MenuBar.module.css';
+import { CheckOutlined, FontSizeOutlined } from '@ant-design/icons';
+import { fontFiles } from 'virtual:sentra-fonts';
 
 interface MenuBarProps {
   title?: string;
@@ -65,7 +67,81 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   const [showControlCenter, setShowControlCenter] = useState(false);
   const [showSpotlight, setShowSpotlight] = useState(false);
   const [showAccentPicker, setShowAccentPicker] = useState(false);
+  const [showFontPicker, setShowFontPicker] = useState(false);
   const [spotlightQuery, setSpotlightQuery] = useState('');
+  const fontButtonRef = useRef<HTMLDivElement | null>(null);
+  const [fontPickerPos, setFontPickerPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [activeFontFile, setActiveFontFile] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('sentra_font_file');
+    } catch {
+      return null;
+    }
+  });
+
+  const computeFontPickerPos = () => {
+    const rect = fontButtonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const panelWidth = 244;
+    const gap = 8;
+    const margin = 12;
+    const top = Math.round(rect.bottom + gap);
+    let left = Math.round(rect.right - panelWidth);
+    const maxLeft = Math.max(margin, window.innerWidth - panelWidth - margin);
+    if (left < margin) left = margin;
+    if (left > maxLeft) left = maxLeft;
+
+    setFontPickerPos({ top, left, width: panelWidth });
+  };
+
+  const setSystemFont = async (fileName: string | null) => {
+    const fallback = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+    if (!fileName) {
+      const next = fallback;
+      document.documentElement.style.setProperty('--system-font', next);
+      try {
+        localStorage.setItem('sentra_system_font', next);
+        localStorage.removeItem('sentra_font_file');
+      } catch {}
+
+      setActiveFontFile(null);
+      return;
+    }
+
+    const baseName = String(fileName).replace(/\.[^/.]+$/, '');
+    const family = `SentraFont_${baseName.replace(/[^a-zA-Z0-9_-]+/g, '_')}`;
+
+    try {
+      const face = new FontFace(family, `url(/fonts/${encodeURIComponent(fileName)})`);
+      await face.load();
+      document.fonts.add(face);
+    } catch {}
+
+    const next = `"${family}", ${fallback}`;
+    document.documentElement.style.setProperty('--system-font', next);
+    try {
+      localStorage.setItem('sentra_system_font', next);
+      localStorage.setItem('sentra_font_file', fileName);
+    } catch {}
+
+    setActiveFontFile(fileName);
+  };
+
+  useEffect(() => {
+    const storedFile = (() => {
+      try {
+        return localStorage.getItem('sentra_font_file');
+      } catch {
+        return null;
+      }
+    })();
+
+    if (storedFile && Array.isArray(fontFiles) && fontFiles.includes(storedFile as any)) {
+      void setSystemFont(storedFile);
+    }
+  }, []);
 
   const accentPresets = [
     '#007AFF',
@@ -106,10 +182,24 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       setShowControlCenter(false);
       setShowSpotlight(false);
       setShowAccentPicker(false);
+      setShowFontPicker(false);
     };
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!showFontPicker) return;
+    computeFontPickerPos();
+
+    const handle = () => computeFontPickerPos();
+    window.addEventListener('resize', handle);
+    window.addEventListener('scroll', handle, true);
+    return () => {
+      window.removeEventListener('resize', handle);
+      window.removeEventListener('scroll', handle, true);
+    };
+  }, [showFontPicker]);
 
   const handleSpotlightSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,6 +262,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               setActiveMenu(null);
               setShowControlCenter(false);
               setShowSpotlight(false);
+              setShowFontPicker(false);
               setShowAccentPicker(v => !v);
             }}
             title="切换应用主题颜色（Accent）"
@@ -179,6 +270,30 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             <div className={styles.accentButton}>
               <span className={styles.accentDot} />
               <IoChevronDown className={styles.accentChevron} size={14} />
+            </div>
+          </div>
+
+          <div
+            className={`${styles.menuItem} ${styles.fontMenuItem} ${showFontPicker ? styles.active : ''}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setActiveMenu(null);
+              setShowControlCenter(false);
+              setShowAccentPicker(false);
+              setShowSpotlight(false);
+              if (showFontPicker) {
+                setShowFontPicker(false);
+              } else {
+                computeFontPickerPos();
+                setShowFontPicker(true);
+              }
+            }}
+            title="切换字体"
+            ref={fontButtonRef}
+          >
+            <div className={styles.fontButton}>
+              <FontSizeOutlined style={{ fontSize: 14, opacity: 0.85 }} />
+              <IoChevronDown className={styles.fontChevron} size={14} />
             </div>
           </div>
           <div className={styles.menuItem}>
@@ -237,7 +352,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
 
       {/* Restarting Overlay */}
       <AnimatePresence>
-        {isRestarting && (
+        {isRestarting ? (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -271,7 +386,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             <div style={{ fontSize: 18, fontWeight: 500 }}>系统重启中...</div>
             <div style={{ fontSize: 14, opacity: 0.7, marginTop: 8 }}>页面将自动刷新</div>
           </motion.div>
-        )}
+        ) : null}
       </AnimatePresence>
 
       {/* Spotlight Search */}
@@ -314,7 +429,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
 
       {/* Control Center */}
       <AnimatePresence>
-        {showControlCenter && (
+        {showControlCenter ? (
           <motion.div
             className={styles.controlCenter}
             initial={{ opacity: 0, scale: 0.9, x: 20, y: -20 }}
@@ -361,12 +476,12 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               </div>
             </div>
           </motion.div>
-        )}
+        ) : null}
       </AnimatePresence>
 
       {/* Accent Picker */}
       <AnimatePresence>
-        {showAccentPicker && (
+        {showAccentPicker ? (
           <motion.div
             className={styles.accentPicker}
             initial={{ opacity: 0, scale: 0.96, x: 10, y: -10 }}
@@ -424,7 +539,58 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               </div>
             </div>
           </motion.div>
-        )}
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showFontPicker && fontPickerPos ? (
+          <motion.div
+            className={styles.fontPicker}
+            style={fontPickerPos ? { top: fontPickerPos.top, left: fontPickerPos.left, width: fontPickerPos.width } : undefined}
+            initial={{ opacity: 0, scale: 0.96, x: 10, y: -10 }}
+            animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
+            exit={{ opacity: 0, scale: 0.96 }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className={styles.fontHeader}>
+              <div className={styles.fontTitle}>字体</div>
+            </div>
+
+            <div className={styles.fontList}>
+              <button
+                type="button"
+                className={`${styles.fontItem} ${!activeFontFile ? styles.fontItemActive : ''}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void setSystemFont(null);
+                  setShowFontPicker(false);
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                  <span>系统默认</span>
+                  {!activeFontFile ? <CheckOutlined /> : null}
+                </span>
+              </button>
+              {(Array.isArray(fontFiles) ? fontFiles : []).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  className={`${styles.fontItem} ${activeFontFile === String(f) ? styles.fontItemActive : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void setSystemFont(String(f));
+                    setShowFontPicker(false);
+                  }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                    <span>{String(f).replace(/\.[^/.]+$/, '')}</span>
+                    {activeFontFile === String(f) ? <CheckOutlined /> : null}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </motion.div>
+        ) : null}
       </AnimatePresence>
     </>
   );

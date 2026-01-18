@@ -357,7 +357,18 @@ export async function fetchPresetFile(path: string): Promise<{ content: string }
     headers: getAuthHeaders()
   });
   if (!response.ok) throw new Error('Failed to fetch preset file');
-  return response.json();
+  const data: any = await response.json();
+  if (typeof data === 'string') {
+    return { content: data };
+  }
+  if (data && typeof data === 'object') {
+    const content = (data as any).content
+      ?? (data as any).data?.content
+      ?? (data as any).file?.content
+      ?? (data as any).text;
+    if (typeof content === 'string') return { content };
+  }
+  return { content: '' };
 }
 
 export async function savePresetFile(path: string, content: string): Promise<void> {

@@ -4,7 +4,7 @@
   width: 100%;
   background: var(--bg-primary);
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--system-font);
   transition: background-color 0.3s, color 0.3s;
 }
 
@@ -254,6 +254,179 @@
   border-top: 1px solid var(--panel-subtle-border);
 }
 
+.envListAntd {
+  background: transparent;
+  container-type: inline-size;
+}
+
+.envListAntd :global(.ant-list-item) {
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--panel-subtle-border);
+  flex-wrap: wrap;
+  row-gap: 10px;
+}
+
+.envListAntd :global(.ant-list-item-action) {
+  margin-inline-start: auto;
+  max-width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.envListItem :global(.ant-list-item-meta) {
+  margin: 0;
+}
+
+.envListItem :global(.ant-list-item-meta-title) {
+  margin: 0;
+}
+
+.envListItem :global(.ant-list-item-meta-description) {
+  margin: 0;
+}
+
+.envListAction {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 260px;
+  gap: 10px;
+}
+
+.envControlRow {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.envMetaTitle {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.envMetaName {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.envMetaCnName {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-color);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.envMetaKeyInline {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.envMetaTags {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.envMetaDesc {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.envMetaKey {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  opacity: 0.9;
+}
+
+.envMetaKeyMuted {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.envMetaHelp {
+  font-size: 13px;
+  color: var(--text-primary);
+  opacity: 0.9;
+  line-height: 1.35;
+}
+
+@media (max-width: 920px) {
+  .envListAntd :global(.ant-list-item-action) {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+
+  .envListAction {
+    min-width: 0;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .envControlRow {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .envControlRow :global(.ant-input),
+  .envControlRow :global(.ant-input-number),
+  .envControlRow :global(.ant-select),
+  .envControlRow :global(.ant-select-selector),
+  .envControlRow :global(.ant-input-textarea) {
+    width: 100% !important;
+  }
+}
+
+@container (max-width: 640px) {
+  .envListAntd :global(.ant-list-item) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .envListAntd :global(.ant-list-item-meta) {
+    width: 100%;
+  }
+
+  .envListAntd :global(.ant-list-item-action) {
+    width: 100%;
+    margin-inline-start: 0;
+  }
+
+  .envListAction {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .envControlRow {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
 .settingsRow {
   background: transparent;
   padding: 14px 4px;
@@ -340,11 +513,12 @@
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
-  opacity: 0;
+  opacity: 0.72;
   transition: all 0.1s;
 }
 
-.settingsRow:hover .deleteBtn {
+.settingsRow:hover .deleteBtn,
+.envListItem:hover .deleteBtn {
   opacity: 1;
 }
 

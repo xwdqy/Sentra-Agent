@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import styles from './RedisEditor.module.css';
-import { IoServer, IoKey, IoTerminal, IoTrash, IoRefresh } from 'react-icons/io5';
+import { Button, Input, Segmented, Space } from 'antd';
+import { CloudServerOutlined, DeleteOutlined, LinkOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useRedisEditor } from '../../hooks/useRedisEditor';
 import Editor from '@monaco-editor/react';
 import '../../utils/monacoSetup';
@@ -165,8 +166,8 @@ export const RedisEditor: React.FC<RedisEditorProps> = React.memo(({ theme, stat
                         }}
                     />
                     <div style={{ padding: '10px 0', display: 'flex', gap: 8 }}>
-                        <button onClick={handleSaveValue} className={styles.saveBtn}>保存</button>
-                        <button onClick={() => setEditMode(false)} className={styles.cancelBtn}>取消</button>
+                        <Button size="small" type="primary" onClick={handleSaveValue}>保存</Button>
+                        <Button size="small" onClick={() => setEditMode(false)}>取消</Button>
                     </div>
                 </div>
             );
@@ -266,7 +267,7 @@ export const RedisEditor: React.FC<RedisEditorProps> = React.memo(({ theme, stat
                     // fall through to plain textarea
                 }
             }
-            return <textarea value={strValue} readOnly className={styles.valueContent} />;
+            return <Input.TextArea value={strValue} readOnly className={styles.valueContent} autoSize={{ minRows: 6, maxRows: 16 }} />;
         }
 
         return <div className={styles.emptyState}>不支持的数据类型</div>;
@@ -286,19 +287,20 @@ export const RedisEditor: React.FC<RedisEditorProps> = React.memo(({ theme, stat
                             onClick={() => setActiveConnectionId(c.id)}
                             className={`${styles.connectionItem} ${activeConnectionId === c.id ? styles.active : ''}`}
                         >
-                            <IoServer className={styles.connectionIcon} size={16} />
+                            <CloudServerOutlined className={styles.connectionIcon} />
                             <span className={styles.connectionName}>{c.name}</span>
                         </div>
                     ))}
                 </div>
                 {activeConnectionId && (
                     <div className={styles.sidebarActions}>
-                        <button
+                        <Button
+                            size="small"
+                            type="link"
                             onClick={() => disconnect(activeConnectionId)}
-                            className={styles.disconnectBtn}
                         >
                             断开连接
-                        </button>
+                        </Button>
                     </div>
                 )}
             </div>
@@ -310,65 +312,59 @@ export const RedisEditor: React.FC<RedisEditorProps> = React.memo(({ theme, stat
                         <h3 className={styles.formTitle}>新建 Redis 连接</h3>
                         <div className={styles.formGroup}>
                             <label className={styles.formLabel}>连接名称</label>
-                            <input
+                            <Input
                                 placeholder="例如: Local Redis"
                                 value={name}
                                 onChange={e => setName(e.target.value)}
-                                className={styles.formInput}
+                                size="small"
                             />
                         </div>
                         <div className={styles.formRow}>
                             <div className={styles.formGroup}>
                                 <label className={styles.formLabel}>主机</label>
-                                <input
+                                <Input
                                     placeholder="127.0.0.1"
                                     value={host}
                                     onChange={e => setHost(e.target.value)}
-                                    className={styles.formInput}
+                                    size="small"
                                 />
                             </div>
                             <div className={styles.formGroup}>
                                 <label className={styles.formLabel}>端口</label>
-                                <input
+                                <Input
                                     placeholder="6379"
                                     value={port}
                                     onChange={e => setPort(e.target.value)}
-                                    className={styles.formInput}
+                                    size="small"
                                 />
                             </div>
                         </div>
                         <div className={styles.formGroup}>
                             <label className={styles.formLabel}>密码（可选）</label>
-                            <input
-                                type="password"
+                            <Input.Password
                                 placeholder="留空表示无密码"
                                 value={password}
                                 onChange={e => setPassword(e.target.value)}
-                                className={styles.formInput}
+                                size="small"
                             />
                         </div>
-                        <button onClick={handleConnect} className={styles.connectBtn}>
+                        <Button type="primary" size="small" icon={<LinkOutlined />} onClick={handleConnect}>
                             连接 Redis
-                        </button>
+                        </Button>
                     </div>
                 ) : (
                     <>
                         {/* Toolbar */}
                         <div className={styles.toolbar}>
-                            <div
-                                onClick={() => setActiveTab('keys')}
-                                className={`${styles.tab} ${activeTab === 'keys' ? styles.active : ''}`}
-                            >
-                                <IoKey size={14} />
-                                键值浏览
-                            </div>
-                            <div
-                                onClick={() => setActiveTab('terminal')}
-                                className={`${styles.tab} ${activeTab === 'terminal' ? styles.active : ''}`}
-                            >
-                                <IoTerminal size={14} />
-                                终端控制台
-                            </div>
+                            <Segmented
+                                size="small"
+                                value={activeTab}
+                                onChange={(v) => setActiveTab(v as any)}
+                                options={[
+                                    { label: '键值浏览', value: 'keys' },
+                                    { label: '终端控制台', value: 'terminal' },
+                                ]}
+                            />
                         </div>
 
                         {/* Content Area */}
@@ -377,15 +373,19 @@ export const RedisEditor: React.FC<RedisEditorProps> = React.memo(({ theme, stat
                                 <>
                                     <div className={styles.keysList}>
                                         <div className={styles.keysHeader}>
-                                            <input
-                                                value={filter}
-                                                onChange={e => setFilter(e.target.value)}
-                                                placeholder="Pattern *"
-                                                className={styles.filterInput}
-                                            />
-                                            <button onClick={refreshKeys} className={styles.refreshBtn}>
-                                                <IoRefresh size={14} />
-                                            </button>
+                                            <Space.Compact style={{ width: '100%' }} size="small">
+                                                <Input
+                                                    value={filter}
+                                                    onChange={e => setFilter(e.target.value)}
+                                                    placeholder="Pattern *"
+                                                    size="small"
+                                                />
+                                                <Button
+                                                    size="small"
+                                                    icon={<ReloadOutlined />}
+                                                    onClick={refreshKeys}
+                                                />
+                                            </Space.Compact>
                                         </div>
                                         <div className={styles.keysListContent}>
                                             {keys.map(k => (
@@ -409,15 +409,9 @@ export const RedisEditor: React.FC<RedisEditorProps> = React.memo(({ theme, stat
                                                     </div>
                                                     <div className={styles.keyActions}>
                                                         {!editMode && (keyType === 'string' || keyType === 'hash') && (
-                                                            <button onClick={() => setEditMode(true)} className={styles.editBtn}>
-                                                                <IoKey size={16} />
-                                                                编辑键值
-                                                            </button>
+                                                            <Button size="small" onClick={() => setEditMode(true)}>编辑键值</Button>
                                                         )}
-                                                        <button onClick={handleDeleteKey} className={styles.deleteBtn}>
-                                                            <IoTrash size={16} />
-                                                            删除键
-                                                        </button>
+                                                        <Button size="small" danger icon={<DeleteOutlined />} onClick={handleDeleteKey}>删除键</Button>
                                                     </div>
                                                 </div>
                                                 {renderValue}
@@ -440,11 +434,11 @@ export const RedisEditor: React.FC<RedisEditorProps> = React.memo(({ theme, stat
                                     </div>
                                     <div className={styles.terminalInputArea}>
                                         <span className={styles.terminalPrompt}>redis&gt;</span>
-                                        <input
+                                        <Input
                                             value={command}
                                             onChange={e => setCommand(e.target.value)}
-                                            onKeyDown={e => e.key === 'Enter' && runCommand()}
-                                            className={styles.terminalInput}
+                                            onPressEnter={() => runCommand()}
+                                            size="small"
                                             autoFocus
                                         />
                                     </div>

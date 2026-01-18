@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useCallback } from 'react';
 import styles from './FileManager.module.css';
 import {
     IoRefresh, IoFolderOpen, IoDocumentText,
@@ -9,17 +9,31 @@ import {
     SiPython, SiJavascript, SiTypescript, SiHtml5, SiCss3,
     SiJson, SiGo, SiReact, SiGnubash, SiVite
 } from 'react-icons/si';
-import { VscNewFile, VscNewFolder, VscTrash, VscEdit, VscCopy, VscPreview } from 'react-icons/vsc';
-import Editor from '@monaco-editor/react';
+import { VscNewFile, VscNewFolder, VscTrash, VscEdit, VscCopy, VscPreview, VscCode } from 'react-icons/vsc';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import '../utils/monacoSetup';
 import {
     fetchFileTree, fetchFileContent, saveFileContent,
     createFile, renameFile, deleteFile,
     FileNode
 } from '../services/fileApi';
 import { ToastMessage } from './Toast';
+
+const MonacoEditor = lazy(async () => {
+    await import('../utils/monacoSetup');
+    const mod = await import('@monaco-editor/react');
+    return { default: mod.default };
+});
+
+const readUseMonaco = () => {
+    try {
+        const v = localStorage.getItem('sentra_file_manager_use_monaco');
+        if (v == null) return false;
+        return v === 'true';
+    } catch {
+        return false;
+    }
+};
 
 interface FileManagerProps {
     onClose: () => void;
@@ -144,27 +158,34 @@ type FileManagerPersistedState = {
     previewByPath?: Record<string, boolean>;
 };
 
-export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme, performanceMode = false }) => {
+export const FileManager: React.FC<FileManagerProps> = ({ onClose, addToast, theme, performanceMode = false }) => {
     const [fileTree, setFileTree] = useState<FileNode[]>([]);
 
     // Multi-tab state
     const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
     const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
+    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, node: FileNode } | null>(null);
     const [loading, setLoading] = useState(false);
-
-    const restoreRequestedRef = React.useRef(false);
 
     // Race condition prevention
     const loadingPathRef = React.useRef<string | null>(null);
+    const restoreRequestedRef = React.useRef(false);
 
     // Modal State
     const [modalOpen, setModalOpen] = useState(false);
     const [modalType, setModalType] = useState<'createFile' | 'createFolder' | 'rename'>('createFile');
     const [modalInput, setModalInput] = useState('');
-    const [targetNode, setTargetNode] = useState<FileNode | null>(null);
 
-    // Context Menu State
-    const [contextMenu, setContextMenu] = useState<{ x: number, y: number, node: FileNode } | null>(null);
+    const [useMonaco, setUseMonaco] = useState(() => readUseMonaco());
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('sentra_file_manager_use_monaco', String(useMonaco));
+        } catch {
+            // ignore
+        }
+    }, [useMonaco]);
+    const [targetNode, setTargetNode] = useState<FileNode | null>(null);
 
     const activeFilePathRef = React.useRef<string | null>(null);
     const latestContentRef = React.useRef<Record<string, string>>({});
@@ -544,6 +565,9 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme, perfo
                     <button className={styles.refreshBtn} onClick={loadTree} title="刷新">
                         <IoRefresh />
                     </button>
+                    <button className={styles.refreshBtn} onClick={onClose} title="关闭">
+                        <IoClose />
+                    </button>
                 </div>
                 <div className={styles.fileTree}>
                     {fileTree.map(node => (
@@ -589,6 +613,31 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme, perfo
                                 <span style={{ marginLeft: 6 }}>{activeFile.preview ? '编辑' : '预览'}</span>
                             </div>
                         )}
+
+                        {/* Editor Toggle */}
+                        <div
+                            className={styles.tab}
+                            onClick={() => {
+                                setUseMonaco((v: boolean) => {
+                                    const next = !v;
+                                    if (performanceMode && next) {
+                                        const ok = confirm('性能模式已开启，启用高级编辑器会增加内存占用并可能引发卡顿，仍要启用吗？');
+                                        if (!ok) return v;
+                                    }
+                                    return next;
+                                });
+                            }}
+                            style={{
+                                marginLeft: activeFile && activeFile.node.name.endsWith('.md') ? 0 : 'auto',
+                                borderLeft: '1px solid #333',
+                                minWidth: 'auto',
+                                borderRight: 'none'
+                            }}
+                            title={useMonaco ? '已启用高级编辑器（占用更高）' : '轻量编辑器（更省内存）'}
+                        >
+                            <IoCodeSlash />
+                            <span style={{ marginLeft: 6 }}>{useMonaco ? '高级' : '轻量'}</span>
+                        </div>
                     </div>
                 )}
 
@@ -605,10 +654,8 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme, perfo
                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeFile.content}</ReactMarkdown>
                             </div>
                         ) : (
-                            <Editor
-                                height="100%"
-                                path={activeFile.node.path} // Important for Monaco to treat different files differently
-                                defaultLanguage={
+                            (() => {
+                                const defaultLanguage =
                                     activeFile.node.name.endsWith('.json') ? 'json' :
                                         activeFile.node.name.endsWith('.ts') ? 'typescript' :
                                             activeFile.node.name.endsWith('.tsx') ? 'typescript' :
@@ -617,24 +664,57 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme, perfo
                                                         activeFile.node.name.endsWith('.html') ? 'html' :
                                                             activeFile.node.name.endsWith('.py') ? 'python' :
                                                                 activeFile.node.name.endsWith('.md') ? 'markdown' :
-                                                                    'plaintext'
-                                }
-                                value={activeFile.content}
-                                onChange={(val) => updateActiveFileContent(val || '')}
-                                theme={theme === 'dark' ? 'vs-dark' : 'light'}
-                                options={{
-                                    minimap: { enabled: !performanceMode },
-                                    fontSize: 14,
-                                    wordWrap: 'on',
-                                    automaticLayout: true,
-                                    contextmenu: true,
-                                    find: {
-                                        addExtraSpaceOnTop: true,
-                                        autoFindInSelection: 'never',
-                                        seedSearchStringFromSelection: 'always'
-                                    }
-                                }}
-                            />
+                                                                    'plaintext';
+
+                                const fallback = (
+                                    <textarea
+                                        value={activeFile.content}
+                                        onChange={(e) => updateActiveFileContent(e.target.value)}
+                                        spellCheck={false}
+                                        style={{
+                                            width: '100%',
+                                            height: '100%',
+                                            resize: 'none',
+                                            border: 'none',
+                                            outline: 'none',
+                                            background: theme === 'dark' ? '#0b0f14' : '#ffffff',
+                                            color: theme === 'dark' ? 'rgba(255,255,255,0.92)' : '#111827',
+                                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+                                            fontSize: 13,
+                                            lineHeight: 1.45,
+                                            padding: 12,
+                                            boxSizing: 'border-box',
+                                        }}
+                                    />
+                                );
+
+                                if (!useMonaco) return fallback;
+
+                                return (
+                                    <Suspense fallback={fallback}>
+                                        <MonacoEditor
+                                            height="100%"
+                                            path={activeFile.node.path}
+                                            defaultLanguage={defaultLanguage}
+                                            value={activeFile.content}
+                                            onChange={(val) => updateActiveFileContent(val || '')}
+                                            theme={theme === 'dark' ? 'vs-dark' : 'light'}
+                                            options={{
+                                                minimap: { enabled: !performanceMode },
+                                                fontSize: 14,
+                                                wordWrap: 'on',
+                                                automaticLayout: true,
+                                                contextmenu: true,
+                                                find: {
+                                                    addExtraSpaceOnTop: true,
+                                                    autoFindInSelection: 'never',
+                                                    seedSearchStringFromSelection: 'always'
+                                                }
+                                            }}
+                                        />
+                                    </Suspense>
+                                );
+                            })()
                         )
                     ) : (
                         <div className={styles.emptyState}>
@@ -745,6 +825,3 @@ export const FileManager: React.FC<FileManagerProps> = ({ addToast, theme, perfo
         </div>
     );
 };
-
-// Helper component for toggle icon
-const VscCode = () => <IoCodeSlash />;

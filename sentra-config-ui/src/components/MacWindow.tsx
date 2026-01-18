@@ -142,6 +142,11 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     if (target && target.closest('.window-controls')) return;
     e.preventDefault();
 
+    // Apply dragging styles immediately to avoid a frame of delay before React state updates.
+    if (nodeRef.current) {
+      nodeRef.current.classList.add(styles.dragging);
+    }
+
     setIsDragging(true);
 
     const startPos = pos || defaultPos;
@@ -168,6 +173,11 @@ export const MacWindow: React.FC<MacWindowProps> = ({
         window.cancelAnimationFrame(dragRafRef.current);
         dragRafRef.current = null;
       }
+
+      if (nodeRef.current) {
+        nodeRef.current.classList.remove(styles.dragging);
+      }
+
       setIsDragging(false);
       setPos(last);
       onMove(last.x, last.y);

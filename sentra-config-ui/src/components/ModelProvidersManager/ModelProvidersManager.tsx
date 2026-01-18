@@ -1,18 +1,43 @@
 import { Component, type PropsWithChildren, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { fetchConfigs, fetchFileContent, saveFileContent, saveModuleConfig, savePluginConfig } from '../../services/api.ts';
 import { testProviderModels } from '../../services/llmProvidersApi.ts';
 import type { ConfigData, EnvVariable } from '../../types/config.ts';
 import type { ToastMessage } from '../Toast';
 import { getDisplayName } from '../../utils/icons.tsx';
-import { Select } from 'antd';
+import { Button, Checkbox, Collapse, Empty, Form, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Upload } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import styles from './ModelProvidersManager.module.css';
 import modelVendorMap from './modelVendorMap.json';
 import llmEnvMapping from './llmEnvMapping.json';
-import * as LobeIcons from '@lobehub/icons';
-import { IoAdd, IoBulbOutline, IoChatbubbleEllipsesOutline, IoChevronBack, IoChevronDown, IoChevronForward, IoCheckmarkOutline, IoCodeSlashOutline, IoConstructOutline, IoCopyOutline, IoDocumentTextOutline, IoEyeOffOutline, IoEyeOutline, IoFlashOutline, IoGlobeOutline, IoImageOutline, IoLayersOutline, IoLaptopOutline, IoLanguageOutline, IoMicOutline, IoMusicalNotesOutline, IoPlayCircleOutline, IoPulseOutline, IoRefresh, IoSave, IoSearch, IoSettingsOutline, IoShieldCheckmarkOutline, IoShuffleOutline, IoTimeOutline, IoTrashOutline, IoVideocamOutline, IoBrushOutline, IoVolumeHighOutline } from 'react-icons/io5';
-import { AiOutlineEye } from 'react-icons/ai';
+import {
+  ArrowLeftOutlined,
+  ApiOutlined,
+  AppstoreOutlined,
+  BgColorsOutlined,
+  BulbOutlined,
+  CheckOutlined,
+  CopyOutlined,
+  DeleteOutlined,
+  DownOutlined,
+  EyeInvisibleOutlined,
+  EyeOutlined,
+  KeyOutlined,
+  LinkOutlined,
+  LockOutlined,
+  NumberOutlined,
+  PictureOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  RightOutlined,
+  SaveOutlined,
+  SearchOutlined,
+  SettingOutlined,
+  SlidersOutlined,
+  ThunderboltOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
+import { IoBulbOutline, IoChatbubbleEllipsesOutline, IoCodeSlashOutline, IoConstructOutline, IoDocumentTextOutline, IoEyeOutline, IoFlashOutline, IoGlobeOutline, IoLayersOutline, IoLaptopOutline, IoLanguageOutline, IoMicOutline, IoMusicalNotesOutline, IoPlayCircleOutline, IoPulseOutline, IoShieldCheckmarkOutline, IoShuffleOutline, IoTimeOutline, IoVideocamOutline, IoVolumeHighOutline } from 'react-icons/io5';
 import { useDevice } from '../../hooks/useDevice';
 
 // ProviderType is intentionally extensible: new vendors can be added via JSON/UX without changing TS.
@@ -280,63 +305,33 @@ type CapabilityMeta = {
 type ModelVendor = { key: string; label: string; iconName: string };
 
 const LOBE_ICON_STATIC_MAP: Record<string, any> = {
-  Ai21: (LobeIcons as any).Ai21,
-  AlibabaCloud: (LobeIcons as any).AlibabaCloud,
-  Anthropic: (LobeIcons as any).Anthropic,
-  Anyscale: (LobeIcons as any).Anyscale,
-  Aws: (LobeIcons as any).Aws,
-  Azure: (LobeIcons as any).Azure,
-  BAAI: (LobeIcons as any).BAAI,
-  Baichuan: (LobeIcons as any).Baichuan,
-  Baidu: (LobeIcons as any).Baidu,
-  Cerebras: (LobeIcons as any).Cerebras,
-  ChatGLM: (LobeIcons as any).ChatGLM,
-  Cloudflare: (LobeIcons as any).Cloudflare,
-  Cohere: (LobeIcons as any).Cohere,
-  Dbrx: (LobeIcons as any).Dbrx,
-  DeepInfra: (LobeIcons as any).DeepInfra,
-  DeepSeek: (LobeIcons as any).DeepSeek,
-  Doubao: (LobeIcons as any).Doubao,
-  Fireworks: (LobeIcons as any).Fireworks,
-  Gemini: (LobeIcons as any).Gemini,
-  Github: (LobeIcons as any).Github,
-  Groq: (LobeIcons as any).Groq,
-  HuggingFace: (LobeIcons as any).HuggingFace,
-  Hunyuan: (LobeIcons as any).Hunyuan,
-  IBM: (LobeIcons as any).IBM,
-  IFlyTekCloud: (LobeIcons as any).IFlyTekCloud,
-  InternLM: (LobeIcons as any).InternLM,
-  Jina: (LobeIcons as any).Jina,
-  Kling: (LobeIcons as any).Kling,
-  LeptonAI: (LobeIcons as any).LeptonAI,
-  LmStudio: (LobeIcons as any).LmStudio,
-  Meta: (LobeIcons as any).Meta,
-  Microsoft: (LobeIcons as any).Microsoft,
-  Minimax: (LobeIcons as any).Minimax,
-  Mistral: (LobeIcons as any).Mistral,
-  Moonshot: (LobeIcons as any).Moonshot,
-  Novita: (LobeIcons as any).Novita,
-  Nvidia: (LobeIcons as any).Nvidia,
-  Ollama: (LobeIcons as any).Ollama,
-  OpenAI: (LobeIcons as any).OpenAI,
-  OpenRouter: (LobeIcons as any).OpenRouter,
-  Perplexity: (LobeIcons as any).Perplexity,
-  Qwen: (LobeIcons as any).Qwen,
-  Replicate: (LobeIcons as any).Replicate,
-  SambaNova: (LobeIcons as any).SambaNova,
-  SenseNova: (LobeIcons as any).SenseNova,
-  SiliconCloud: (LobeIcons as any).SiliconCloud,
-  Stability: (LobeIcons as any).Stability,
-  Stepfun: (LobeIcons as any).Stepfun,
-  Suno: (LobeIcons as any).Suno,
-  TencentCloud: (LobeIcons as any).TencentCloud,
-  Together: (LobeIcons as any).Together,
-  Volcengine: (LobeIcons as any).Volcengine,
-  Voyage: (LobeIcons as any).Voyage,
-  Wenxin: (LobeIcons as any).Wenxin,
-  XAI: (LobeIcons as any).XAI,
-  Yi: (LobeIcons as any).Yi,
+  
 };
+
+let LOBE_ICON_FULL_LIB: Record<string, any> | null = null;
+let LOBE_ICON_FULL_KEY_BY_LOWER: Map<string, string> | null = null;
+let LOBE_ICON_FULL_VALID_KEYS: string[] | null = null;
+
+function ensureLobeIconsLoaded() {
+  if (LOBE_ICON_FULL_LIB) return Promise.resolve();
+  return import('@lobehub/icons').then((mod) => {
+    const lib = ((mod as any) || {}) as Record<string, any>;
+    const merged: Record<string, any> = { ...(LOBE_ICON_STATIC_MAP as any), ...(lib as any) };
+    LOBE_ICON_FULL_LIB = merged;
+
+    const m = new Map<string, string>();
+    for (const k of Object.keys(merged)) m.set(k.toLowerCase(), k);
+    LOBE_ICON_FULL_KEY_BY_LOWER = m;
+
+    const keys = Object.keys(merged);
+    LOBE_ICON_FULL_VALID_KEYS = keys.filter((k) => {
+      const v = (merged as any)[k];
+      if (!v) return false;
+      const color = (v as any)?.Color;
+      return isValidElementType(color) || isValidElementType(v);
+    });
+  });
+}
 
 const modelVendorRules: ModelVendorRule[] = Array.isArray((modelVendorMap as any)?.rules) ? (modelVendorMap as any).rules : [];
 const capabilityRules: CapabilityRule[] = Array.isArray((modelVendorMap as any)?.capabilityRules) ? (modelVendorMap as any).capabilityRules : [];
@@ -398,15 +393,17 @@ function inferModelCapabilities(modelId: string): { key: string; label: string }
 }
 
 function safeInferModelCapabilities(modelId: string) {
+  const id = String(modelId || '').trim();
+  if (!id) return [] as any[];
+  const cached = (safeInferModelCapabilities as any)._cache as Map<string, any[]> | undefined;
+  if (cached && cached.has(id)) return cached.get(id) as any[];
   try {
-    return inferModelCapabilities(modelId);
+    const res = inferModelCapabilities(id);
+    const map = cached || new Map<string, any[]>();
+    map.set(id, res as any);
+    (safeInferModelCapabilities as any)._cache = map;
+    return res;
   } catch (e) {
-    try {
-      // eslint-disable-next-line no-console
-      console.warn('[ModelProvidersManager] inferModelCapabilities failed', { modelId, error: e });
-    } catch {
-      // ignore
-    }
     return [];
   }
 }
@@ -428,12 +425,12 @@ function capStyleVars(capKey: string) {
 
 const CAPABILITY_ICON_MAP: Record<string, ReactNode> = {
   chatbubble: <IoChatbubbleEllipsesOutline />,
-  eye: <AiOutlineEye />,
+  eye: <EyeOutlined />,
   globe: <IoGlobeOutline />,
   mic: <IoMicOutline />,
   eye_outline: <IoEyeOutline />,
-  image: <IoImageOutline />,
-  brush: <IoBrushOutline />,
+  image: <PictureOutlined />,
+  brush: <BgColorsOutlined />,
   music: <IoMusicalNotesOutline />,
   volume: <IoVolumeHighOutline />,
   play: <IoPlayCircleOutline />,
@@ -526,12 +523,14 @@ class BrandLogoErrorBoundary extends Component<
 }
 
 function BrandLogo(props: { iconName: string; size: number }) {
-  const lib = { ...(LOBE_ICON_STATIC_MAP as any), ...(((LobeIcons as any) || {}) as any) };
   const getComp = (name: string) => {
-    const direct = lib?.[name];
-    const ciKey = !direct
-      ? Object.keys(lib).find(k => k.toLowerCase() === String(name || '').toLowerCase())
-      : undefined;
+    const raw = String(name || '').trim();
+    if (!raw) return null;
+
+    const lib = (LOBE_ICON_FULL_LIB || LOBE_ICON_STATIC_MAP) as any;
+    const direct = lib?.[raw];
+    const lowerMap = LOBE_ICON_FULL_KEY_BY_LOWER;
+    const ciKey = !direct ? lowerMap?.get(raw.toLowerCase()) : undefined;
     const icon = (direct || (ciKey ? lib[ciKey] : undefined)) as any;
     if (!icon) return null;
     const color = (icon as any)?.Color;
@@ -542,7 +541,7 @@ function BrandLogo(props: { iconName: string; size: number }) {
 
   const Comp = props.iconName ? getComp(props.iconName) : null;
   const ultimateFallback = <IoFlashOutline size={props.size} />;
-  if (!Comp && props.iconName) {
+  if (!Comp && props.iconName && LOBE_ICON_FULL_LIB) {
     try {
       // eslint-disable-next-line no-console
       console.warn('[ModelProvidersManager] missing Lobe icon export', { iconName: props.iconName });
@@ -637,39 +636,10 @@ function ProviderLogo(props: { type: ProviderType }) {
 }
 
 function makeLobeIconChoices(query: string) {
-  const lib = { ...(LOBE_ICON_STATIC_MAP as any), ...(((LobeIcons as any) || {}) as any) };
   const q = String(query || '').trim().toLowerCase();
-  const keys = Object.keys(lib);
+  const keys = (LOBE_ICON_FULL_VALID_KEYS || Object.keys(LOBE_ICON_STATIC_MAP));
   const filtered = q ? keys.filter(k => k.toLowerCase().includes(q)) : keys;
-  return filtered
-    .filter(k => {
-      const v = lib[k];
-      if (!v) return false;
-      const color = (v as any)?.Color;
-      return isValidElementType(color) || isValidElementType(v);
-    })
-    .slice(0, 120);
-}
-
-function Switch(props: { checked: boolean; onChange: (next: boolean) => void; ariaLabel: string; onClickCapture?: React.MouseEventHandler }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={props.checked}
-      aria-label={props.ariaLabel}
-      className={styles.switch}
-      onClickCapture={props.onClickCapture}
-      onClick={(e) => {
-        e.stopPropagation();
-        props.onChange(!props.checked);
-      }}
-    >
-      <span className={[styles.switchTrack, props.checked ? styles.switchTrackOn : ''].filter(Boolean).join(' ')}>
-        <span className={[styles.switchThumb, props.checked ? styles.switchThumbOn : ''].filter(Boolean).join(' ')} />
-      </span>
-    </button>
-  );
+  return filtered.slice(0, 120);
 }
 
 function providerTypeFallbackVendor(type: ProviderType): ModelVendor {
@@ -699,6 +669,9 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
   const { isMobile, isTablet } = useDevice();
   const isCompact = isMobile || isTablet;
+
+  const selectNotFound = <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无选项" />;
+  const selectPopupStyles = { popup: { root: { minWidth: 240 } } } as const;
   const [mobilePane, setMobilePane] = useState<'list' | 'detail'>('list');
   const [mobileSection, setMobileSection] = useState<'provider' | 'config' | 'models'>('provider');
 
@@ -755,12 +728,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
   const [providerSearch, setProviderSearch] = useState('');
   const [modelSearch, setModelSearch] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-  const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
-  const [editingProviderName, setEditingProviderName] = useState('');
-  const [draggingProviderId, setDraggingProviderId] = useState<string | null>(null);
-  const [dragOverProviderId, setDragOverProviderId] = useState<string | null>(null);
   const rightRef = useRef<HTMLDivElement | null>(null);
 
   const [configData, setConfigData] = useState<ConfigData | null>(null);
@@ -773,7 +741,11 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [llmGroupCollapsed, setLlmGroupCollapsed] = useState<Record<string, boolean>>({});
   const [showSecretsInEnv, setShowSecretsInEnv] = useState(false);
   const [showAdvancedLlm, setShowAdvancedLlm] = useState(false);
-  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  const [providerEditorOpen, setProviderEditorOpen] = useState(false);
+  const [providerEditorMode, setProviderEditorMode] = useState<'add' | 'edit'>('add');
+  const [providerEditorTargetId, setProviderEditorTargetId] = useState<string | null>(null);
+  const [providerEditorForm] = Form.useForm<Pick<Provider, 'name' | 'type' | 'enabled' | 'baseUrl' | 'apiKey' | 'apiKeyHeader' | 'apiKeyPrefix'>>();
 
   const [mcpPluginName, setMcpPluginName] = useState<string>('');
   const [mcpPluginDrafts, setMcpPluginDrafts] = useState<Record<string, EnvVariable[]>>({});
@@ -781,12 +753,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [mcpPluginSaving, setMcpPluginSaving] = useState(false);
   const [mcpPluginGroupCollapsed, setMcpPluginGroupCollapsed] = useState<Record<string, boolean>>({});
   const [mcpPluginShowAllVars, setMcpPluginShowAllVars] = useState(false);
-
-  const [mcpPluginPickerOpen, setMcpPluginPickerOpen] = useState(false);
-  const [mcpPluginPickerSearch, setMcpPluginPickerSearch] = useState('');
-  const mcpPluginComboRef = useRef<HTMLDivElement | null>(null);
-  const mcpPluginMenuRef = useRef<HTMLDivElement | null>(null);
-  const [mcpPluginMenuPos, setMcpPluginMenuPos] = useState<{ left: number; top: number; width: number } | null>(null);
 
   const [providers, setProviders] = useState<Provider[]>(() => {
     const stored = safeJsonParse<Provider[]>(localStorage.getItem(STORAGE_KEY), []);
@@ -869,13 +835,12 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
   useEffect(() => {
     if (!configData?.modules) return;
+    // Avoid cloning all modules env vars on open (can be thousands of rows).
+    // Keep drafts empty by default; when config reloads, drop non-dirty drafts so UI uses latest configData.
     setLlmDrafts(prev => {
       const next = { ...prev };
-      for (const mo of LLM_MODULES) {
-        const m = configData.modules.find(x => x.name === mo.name);
-        if (!m) continue;
-        if (llmDirty[mo.name]) continue;
-        next[mo.name] = (Array.isArray(m.variables) ? m.variables : []).map(v => ({ ...v }));
+      for (const k of Object.keys(next)) {
+        if (!llmDirty[k]) delete next[k];
       }
       return next;
     });
@@ -913,28 +878,24 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     });
   }, [mcpPluginCandidates]);
 
-  const mcpPluginFilteredOptions = useMemo(() => {
-    const t = mcpPluginPickerSearch.trim().toLowerCase();
-    if (!t) return mcpPluginOptions;
-    return mcpPluginOptions.filter(o => o.name.toLowerCase().includes(t) || o.label.toLowerCase().includes(t));
-  }, [mcpPluginOptions, mcpPluginPickerSearch]);
-
   useEffect(() => {
     if (!configData?.plugins) return;
     if (!mcpPluginName && mcpPluginCandidates.length) {
       setMcpPluginName(mcpPluginCandidates[0]);
     }
+  }, [configData?.plugins, mcpPluginCandidates, mcpPluginDirty, mcpPluginName]);
 
+  useEffect(() => {
+    if (!configData?.plugins) return;
+    // Same as llmDrafts: do not clone all plugin vars on open. Only drop non-dirty drafts on reload.
     setMcpPluginDrafts(prev => {
       const next = { ...prev };
-      for (const p of (Array.isArray(configData.plugins) ? configData.plugins : [])) {
-        if (!p?.name) continue;
-        if (mcpPluginDirty[p.name]) continue;
-        next[p.name] = (Array.isArray(p.variables) ? p.variables : []).map(v => ({ ...v }));
+      for (const k of Object.keys(next)) {
+        if (!mcpPluginDirty[k]) delete next[k];
       }
       return next;
     });
-  }, [configData?.plugins, mcpPluginCandidates, mcpPluginDirty, mcpPluginName]);
+  }, [configData?.plugins, mcpPluginDirty]);
 
   useEffect(() => {
     try {
@@ -962,9 +923,33 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     setProviders(prev => prev.map(p => p.id === activeProvider.id ? { ...p, ...patch } : p));
   }, [activeProvider]);
 
-  const addProvider = useCallback(() => {
-    const p: Provider = {
-      id: uuidv4(),
+  const removeProvider = useCallback((id: string) => {
+    const targetId = String(id || '').trim();
+    if (!targetId) return;
+    setProviders(prev => {
+      const next = prev.filter(px => px.id !== targetId);
+      // keep activeId valid
+      try {
+        if (activeId === targetId) {
+          const nextId = next[0]?.id || '';
+          setActiveId(nextId);
+        }
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+    setModelsCache(prev => {
+      const next = { ...prev };
+      delete next[targetId];
+      return next;
+    });
+  }, [activeId]);
+
+  const openAddProvider = useCallback(() => {
+    setProviderEditorMode('add');
+    setProviderEditorTargetId(null);
+    providerEditorForm.setFieldsValue({
       name: '新供应商',
       type: 'custom',
       enabled: true,
@@ -972,26 +957,53 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
       apiKey: '',
       apiKeyHeader: 'Authorization',
       apiKeyPrefix: 'Bearer ',
-    };
-    setProviders(prev => [p, ...prev]);
-    setActiveId(p.id);
-  }, []);
-
-  const requestRemoveProvider = useCallback((id: string) => {
-    setDeleteTargetId(id);
-  }, []);
-
-  const confirmRemoveProvider = useCallback(() => {
-    if (!deleteTargetId) return;
-    const id = deleteTargetId;
-    setDeleteTargetId(null);
-    setProviders(prev => prev.filter(px => px.id !== id));
-    setModelsCache(prev => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
     });
-  }, [deleteTargetId]);
+    setProviderEditorOpen(true);
+  }, [providerEditorForm]);
+
+  const openEditProvider = useCallback((id: string) => {
+    const p = providers.find(x => x.id === id);
+    if (!p) return;
+    setProviderEditorMode('edit');
+    setProviderEditorTargetId(p.id);
+    providerEditorForm.setFieldsValue({
+      name: p.name,
+      type: p.type,
+      enabled: p.enabled,
+      baseUrl: p.baseUrl,
+      apiKey: p.apiKey,
+      apiKeyHeader: p.apiKeyHeader,
+      apiKeyPrefix: p.apiKeyPrefix,
+    });
+    setProviderEditorOpen(true);
+  }, [providerEditorForm, providers]);
+
+  const saveProviderEditor = useCallback(async () => {
+    const values = await providerEditorForm.validateFields();
+    const payload = {
+      name: String(values.name || '').trim() || '未命名供应商',
+      type: String(values.type || '').trim() || 'custom',
+      enabled: values.enabled !== false,
+      baseUrl: normalizeBaseUrl(String(values.baseUrl || '')),
+      apiKey: String(values.apiKey || ''),
+      apiKeyHeader: String(values.apiKeyHeader || 'Authorization'),
+      apiKeyPrefix: String(values.apiKeyPrefix || 'Bearer '),
+    };
+
+    if (providerEditorMode === 'add') {
+      const id = uuidv4();
+      const p: Provider = { id, ...payload };
+      setProviders(prev => [p, ...prev]);
+      setActiveId(id);
+      setProviderEditorOpen(false);
+      return;
+    }
+
+    const id = providerEditorTargetId;
+    if (!id) return;
+    setProviders(prev => prev.map(px => (px.id === id ? { ...px, ...payload } : px)));
+    setProviderEditorOpen(false);
+  }, [providerEditorForm, providerEditorMode, providerEditorTargetId]);
 
   const copyText = useCallback(async (text: string) => {
     try {
@@ -1071,23 +1083,104 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     });
   }, [providers, providerSearch]);
 
-  const commitProviderName = useCallback((id: string, nextName: string) => {
-    const name = String(nextName || '').trim() || '未命名供应商';
-    setProviders(prev => prev.map(p => (p.id === id ? { ...p, name } : p)));
+  const providerTypeOptions = useMemo(() => {
+    const labelOf = (k0: string) => {
+      const k = String(k0 || '').trim();
+      const lower = k.toLowerCase();
+      const known: Record<string, string> = {
+        custom: '自定义',
+        openai: 'OpenAI 兼容',
+        azure: 'Azure OpenAI',
+        gemini: 'Gemini',
+        anthropic: 'Anthropic',
+        qwen: '通义千问',
+        wenxin: '文心一言',
+        hunyuan: '混元',
+        chatglm: '智谱 ChatGLM',
+        openrouter: 'OpenRouter',
+        xai: 'xAI',
+        ollama: 'Ollama',
+      };
+      const fromRules = modelVendorRules.find(r => String(r.key || '').toLowerCase() === lower)?.label;
+      const baseLabel = String(fromRules || known[lower] || k || lower);
+      if (!k) return baseLabel;
+      if (baseLabel.toLowerCase() === lower) return k;
+      return `${baseLabel}（${k}）`;
+    };
+
+    const set = new Set<string>();
+    set.add('custom');
+    set.add('openai');
+    for (const r of modelVendorRules) {
+      const k = String((r as any)?.key || '').trim();
+      if (k) set.add(k);
+    }
+    return Array.from(set.values()).sort((a, b) => a.localeCompare(b)).map(k => ({ value: k, label: labelOf(k) }));
   }, []);
 
-  const reorderProviders = useCallback((fromId: string, toId: string) => {
-    if (!fromId || !toId || fromId === toId) return;
-    setProviders(prev => {
-      const fromIndex = prev.findIndex(p => p.id === fromId);
-      const toIndex = prev.findIndex(p => p.id === toId);
-      if (fromIndex < 0 || toIndex < 0) return prev;
-      const next = prev.slice();
-      const [moved] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, moved);
-      return next;
-    });
-  }, []);
+  const providerTableColumns: ColumnsType<Provider> = useMemo(() => {
+    return [
+      {
+        title: '供应商',
+        key: 'provider',
+        render: (_: any, p) => (
+          <div className={styles.providerTableRow}>
+            <div className={styles.providerMain}>
+              <div className={styles.logoRound}>
+                <ProviderLogo type={p.type} />
+              </div>
+              <div className={styles.providerText}>
+                <div className={styles.providerName}>{p.name}</div>
+                <div className={styles.providerSub}>{p.baseUrl || '未配置 Base URL'}</div>
+              </div>
+            </div>
+            <div className={styles.providerRowActions}>
+              <Switch
+                size="small"
+                checked={p.enabled}
+                onChange={(next) => setProviders(prev => prev.map(x => x.id === p.id ? { ...x, enabled: next } : x))}
+                onClick={(_checked, e) => {
+                  try { (e as any)?.stopPropagation?.(); } catch {}
+                }}
+              />
+              <Button
+                size="small"
+                type="text"
+                icon={<SettingOutlined />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openEditProvider(p.id);
+                }}
+                title="编辑供应商"
+              />
+              <Popconfirm
+                title="删除供应商"
+                description={(
+                  <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                    <div>确定删除供应商「{p.name || '未命名'}」？</div>
+                    <div style={{ marginTop: 6 }}>此操作会同时清空该供应商的模型缓存。</div>
+                  </div>
+                )}
+                okText="删除"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+                onConfirm={() => removeProvider(p.id)}
+              >
+                <Button
+                  size="small"
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={(e) => e.stopPropagation()}
+                  title="删除供应商"
+                />
+              </Popconfirm>
+            </div>
+          </div>
+        )
+      }
+    ];
+  }, [openEditProvider, removeProvider]);
 
   const llmModuleConfig = useMemo(() => {
     return configData?.modules?.find(x => x.name === llmModule) || null;
@@ -1168,8 +1261,16 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [modelSettingsIcon, setModelSettingsIcon] = useState<CustomIconRef | null>(null);
   const [modelSettingsCaps, setModelSettingsCaps] = useState<string[]>([]);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [lobeIconLibReady, setLobeIconLibReady] = useState(false);
   const [iconSearch, setIconSearch] = useState('');
   const [capabilitySearch, setCapabilitySearch] = useState('');
+  const [capabilityView, setCapabilityView] = useState<'all' | 'selected' | 'inferred' | 'unselected'>('all');
+  const [capabilityCategory, setCapabilityCategory] = useState<string>('all');
+
+  const inferredModelSettingsCaps = useMemo(() => {
+    if (!modelSettingsModelId) return [] as string[];
+    return safeInferModelCapabilities(modelSettingsModelId).map(c => String(c.key));
+  }, [modelSettingsModelId]);
 
   const capabilityChoices = useMemo(() => {
     const uniq = new Map<string, string>();
@@ -1180,20 +1281,190 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     return Array.from(uniq.entries()).map(([key, label]) => ({ key, label }));
   }, []);
 
+  const capabilityLabelByKey = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of capabilityChoices) m.set(String(c.key), String(c.label || c.key));
+    return m;
+  }, [capabilityChoices]);
+
+  const toggleModelSettingsCap = useCallback((key: string) => {
+    const k = String(key || '').trim();
+    if (!k) return;
+    setModelSettingsCaps((prev) => {
+      const next = new Set(prev.map(String));
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return Array.from(next);
+    });
+  }, []);
+
   const filteredCapabilityChoices = useMemo(() => {
     const q = String(capabilitySearch || '').trim().toLowerCase();
-    if (!q) return capabilityChoices;
-    return capabilityChoices.filter(c => {
-      const k = String(c.key || '').toLowerCase();
-      const l = String(c.label || '').toLowerCase();
-      return k.includes(q) || l.includes(q);
-    });
-  }, [capabilityChoices, capabilitySearch]);
+    const inferred = new Set(inferredModelSettingsCaps.map(String));
+    const selected = new Set(modelSettingsCaps.map(String));
 
-  const inferredModelSettingsCaps = useMemo(() => {
-    if (!modelSettingsModelId) return [] as string[];
-    return safeInferModelCapabilities(modelSettingsModelId).map(c => String(c.key));
-  }, [modelSettingsModelId]);
+    const categoryOf = (capKey: string) => {
+      const k = String(capKey || '').toLowerCase();
+      if (k === 'chat' || k === 'reasoning' || k === 'long_context' || k === 'translation') return '核心';
+      if (k === 'moderation') return '安全';
+      if (k === 'local') return '本地';
+      if (k === 'realtime') return '实时';
+      if (k.includes('vision') || k.includes('image')) return '图像/视觉';
+      if (k.includes('audio') || k.includes('speech') || k.includes('music')) return '音频';
+      if (k.includes('video')) return '视频';
+      if (k === 'web') return '联网';
+      if (k === 'embedding' || k === 'rerank') return '向量/检索';
+      if (k === 'function_call' || k === 'json_mode' || k === 'code') return '工具/结构化';
+      return '其他';
+    };
+
+    return capabilityChoices.filter((c) => {
+      const k0 = String(c.key);
+      const k = k0.toLowerCase();
+      const l = String(c.label || '').toLowerCase();
+      if (q && !(k.includes(q) || l.includes(q))) return false;
+      if (capabilityCategory !== 'all' && categoryOf(k0) !== capabilityCategory) return false;
+      if (capabilityView === 'selected') return selected.has(k0);
+      if (capabilityView === 'unselected') return !selected.has(k0);
+      if (capabilityView === 'inferred') return inferred.has(k0);
+      return true;
+    });
+  }, [capabilityCategory, capabilityChoices, capabilitySearch, capabilityView, inferredModelSettingsCaps, modelSettingsCaps]);
+
+  const capabilityCategoryOptions = useMemo(() => {
+    const categoryOf = (capKey: string) => {
+      const k = String(capKey || '').toLowerCase();
+      if (k === 'chat' || k === 'reasoning' || k === 'long_context' || k === 'translation') return '核心';
+      if (k === 'moderation') return '安全';
+      if (k === 'local') return '本地';
+      if (k === 'realtime') return '实时';
+      if (k.includes('vision') || k.includes('image')) return '图像/视觉';
+      if (k.includes('audio') || k.includes('speech') || k.includes('music')) return '音频';
+      if (k.includes('video')) return '视频';
+      if (k === 'web') return '联网';
+      if (k === 'embedding' || k === 'rerank') return '向量/检索';
+      if (k === 'function_call' || k === 'json_mode' || k === 'code') return '工具/结构化';
+      return '其他';
+    };
+
+    const counts = new Map<string, number>();
+    for (const c of capabilityChoices) {
+      const cat = categoryOf(String(c.key));
+      counts.set(cat, (counts.get(cat) || 0) + 1);
+    }
+
+    const cats = Array.from(counts.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], 'zh-Hans-CN'))
+      .map(([cat, n]) => ({ value: cat, label: `${cat} (${n})` }));
+    return [{ value: 'all', label: `全部 (${capabilityChoices.length})` }, ...cats];
+  }, [capabilityChoices]);
+
+  const capabilityViewCounts = useMemo(() => {
+    const all = capabilityChoices.length;
+    const selected = modelSettingsCaps.length;
+    const inferred = new Set(inferredModelSettingsCaps.map(String));
+    const inferredCount = Array.from(inferred.values()).length;
+    const unselected = Math.max(0, all - selected);
+    return { all, selected, inferred: inferredCount, unselected };
+  }, [capabilityChoices.length, inferredModelSettingsCaps, modelSettingsCaps.length]);
+
+  const capGridCols = isCompact ? 3 : 5;
+  const capGridRows = useMemo(() => {
+    const rows: { key: string; cells: any[] }[] = [];
+    for (let i = 0; i < filteredCapabilityChoices.length; i += capGridCols) {
+      rows.push({ key: `r${i}`, cells: filteredCapabilityChoices.slice(i, i + capGridCols) as any[] });
+    }
+    return rows;
+  }, [capGridCols, filteredCapabilityChoices]);
+
+  const capGridColumns = useMemo(() => {
+    const inferred = new Set(inferredModelSettingsCaps.map(String));
+    return Array.from({ length: capGridCols }).map((_, idx) => ({
+      key: `c${idx}`,
+      render: (_v: any, rec: any) => {
+        const cap = (rec?.cells || [])[idx];
+        if (!cap) return null;
+        const capKey = String(cap.key);
+        const on = modelSettingsCaps.includes(capKey);
+        const hint = inferred.has(capKey) && !on;
+        return (
+          <div
+            className={[styles.capPill, on ? styles.capPillOn : styles.capPillOff].filter(Boolean).join(' ')}
+            style={capStyleVars(capKey)}
+            role="button"
+            tabIndex={0}
+            onClick={() => toggleModelSettingsCap(capKey)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleModelSettingsCap(capKey);
+              }
+            }}
+          >
+            <Checkbox
+              checked={on}
+              onChange={() => toggleModelSettingsCap(capKey)}
+              onClick={(e) => {
+                try { (e as any).stopPropagation(); } catch {}
+              }}
+            />
+            <span className={styles.capPillIcon} aria-label={capKey}><CapabilityIcon capKey={capKey} /></span>
+            <span className={styles.capPillLabel}>{String(cap.label || cap.key)}</span>
+            {hint ? <span className={styles.capPillHint}><BulbOutlined /> 推断</span> : null}
+          </div>
+        );
+      }
+    }));
+  }, [capGridCols, inferredModelSettingsCaps, modelSettingsCaps, toggleModelSettingsCap]);
+
+  const lobeIconChoices = useMemo(() => {
+    if (!iconPickerOpen) return [] as string[];
+    return makeLobeIconChoices(iconSearch);
+  }, [iconPickerOpen, iconSearch, lobeIconLibReady]);
+
+  useEffect(() => {
+    if (!iconPickerOpen) return;
+    if (LOBE_ICON_FULL_LIB) {
+      if (!lobeIconLibReady) setLobeIconLibReady(true);
+      return;
+    }
+    void ensureLobeIconsLoaded().then(() => {
+      setLobeIconLibReady(true);
+    });
+  }, [iconPickerOpen, lobeIconLibReady]);
+
+  useEffect(() => {
+    if (LOBE_ICON_FULL_LIB) {
+      if (!lobeIconLibReady) setLobeIconLibReady(true);
+      return;
+    }
+    let canceled = false;
+    const nav = navigator as any;
+    const mem = typeof nav?.deviceMemory === 'number' ? nav.deviceMemory : null;
+    const cores = typeof nav?.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : null;
+    const lowEnd = (mem != null && mem <= 4) || (cores != null && cores <= 4);
+    if (lowEnd) return;
+
+    const ric = (window as any).requestIdleCallback as undefined | ((cb: () => void) => number);
+    const cic = (window as any).cancelIdleCallback as undefined | ((id: number) => void);
+    const id = ric
+      ? ric(() => {
+        void ensureLobeIconsLoaded().then(() => {
+          if (!canceled) setLobeIconLibReady(true);
+        });
+      })
+      : window.setTimeout(() => {
+        void ensureLobeIconsLoaded().then(() => {
+          if (!canceled) setLobeIconLibReady(true);
+        });
+      }, 120);
+
+    return () => {
+      canceled = true;
+      if (ric && cic) cic(id as any);
+      else window.clearTimeout(id as any);
+    };
+  }, [lobeIconLibReady]);
 
   const openModelSettings = useCallback((providerId: string, modelId: string) => {
     setModelSettingsProviderId(providerId);
@@ -1249,58 +1520,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     }
     return profiles[0] || null;
   }, [llmModuleMapping, llmVarsMap]);
-
-  useEffect(() => {
-    setMcpPluginPickerOpen(false);
-  }, [llmModule, llmTab, llmActiveProfile?.key, activeProvider?.id, mcpPluginName]);
-
-  useEffect(() => {
-    if (!mcpPluginPickerOpen) {
-      setMcpPluginMenuPos(null);
-      return;
-    }
-
-    const updatePos = () => {
-      const el = mcpPluginComboRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-
-      const safePad = 8;
-      const estimatedMenuHeight = 360;
-      const maxLeft = Math.max(safePad, window.innerWidth - rect.width - safePad);
-      const left = Math.min(Math.max(rect.left, safePad), maxLeft);
-
-      const openDownTop = rect.bottom + 8;
-      const openUpTop = rect.top - 8 - estimatedMenuHeight;
-      const shouldOpenUp = (openDownTop + estimatedMenuHeight > window.innerHeight) && (openUpTop > safePad);
-      const top = shouldOpenUp ? openUpTop : openDownTop;
-
-      setMcpPluginMenuPos({ left, top, width: rect.width });
-    };
-
-    updatePos();
-
-    const onDown = (e: MouseEvent) => {
-      const el = mcpPluginComboRef.current;
-      const menu = mcpPluginMenuRef.current;
-      if (!el) return;
-      if (e.target && el.contains(e.target as Node)) return;
-      if (menu && e.target && menu.contains(e.target as Node)) return;
-      setMcpPluginPickerOpen(false);
-    };
-
-    const onScroll = () => updatePos();
-    const onResize = () => updatePos();
-
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('scroll', onScroll, true);
-    window.addEventListener('resize', onResize);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('scroll', onScroll, true);
-      window.removeEventListener('resize', onResize);
-    };
-  }, [mcpPluginPickerOpen]);
 
   const activeMcpPluginConfig = useMemo(() => {
     if (!mcpPluginName) return null;
@@ -1605,6 +1824,14 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     return Array.from(groups.values()).sort((a, b) => a.vendor.label.localeCompare(b.vendor.label));
   }, [activeProviderType, filteredModels]);
 
+  const expandedVendorKeys = useMemo(() => {
+    const keys = groupedModels.map(g => String(g.vendor.key || g.vendor.label || 'models'));
+    // When searching, auto-expand matched groups (groupedModels is already filtered by search).
+    if (String(modelSearch || '').trim()) return keys;
+    // Default: treat undefined as collapsed.
+    return keys.filter(k => collapsedGroups[k] === false);
+  }, [groupedModels, collapsedGroups, modelSearch]);
+
   const formatModelTitle = (m: any) => {
     const id = m?.id != null ? String(m.id) : '';
     const owned = m?.owned_by != null ? String(m.owned_by) : '';
@@ -1630,211 +1857,151 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
           <div className={styles.sidebarTitle}>供应商</div>
         </div>
 
-        <div className={styles.searchBox}>
-          <div className={styles.searchInputWrap}>
-            <span className={styles.searchIcon}>
-              <IoSearch size={16} />
-            </span>
-            <input
-              className={styles.searchInputWithIcon}
-              value={providerSearch}
-              onChange={(e) => setProviderSearch(e.target.value)}
-              placeholder="搜索供应商 / Base URL"
-            />
-          </div>
+        <div className={styles.providerSearchRow}>
+          <Input
+            className={styles.providerSearchInput}
+            value={providerSearch}
+            onChange={(e) => setProviderSearch(e.target.value)}
+            placeholder="搜索供应商 / Base URL"
+            allowClear
+            prefix={<SearchOutlined />}
+            size="small"
+          />
         </div>
 
         <div className={styles.providerListScroll}>
-          <div className={styles.providerList}>
-            {filteredProviders.map(p => {
-            const isActive = p.id === activeId;
-            return (
-              <div
-                key={p.id}
-                onClick={() => {
-                  setActiveId(p.id);
-                  if (isCompact) setMobilePane('detail');
-                }}
-                className={[
-                  styles.providerItem,
-                  isActive ? styles.providerItemActive : '',
-                  draggingProviderId === p.id ? styles.providerItemDragging : '',
-                  dragOverProviderId === p.id ? styles.providerItemDragOver : '',
-                ].filter(Boolean).join(' ')}
-                draggable={!providerSearch.trim() && editingProviderId !== p.id}
-                onDragStart={(e) => {
-                  if (providerSearch.trim() || editingProviderId === p.id) return;
-                  setDraggingProviderId(p.id);
-                  try {
-                    e.dataTransfer.setData('text/plain', p.id);
-                  } catch {
-                    // ignore
-                  }
-                  e.dataTransfer.effectAllowed = 'move';
-                }}
-                onDragEnd={() => {
-                  setDraggingProviderId(null);
-                  setDragOverProviderId(null);
-                }}
-                onDragOver={(e) => {
-                  if (!draggingProviderId || draggingProviderId === p.id) return;
-                  e.preventDefault();
-                  setDragOverProviderId(p.id);
-                }}
-                onDragLeave={() => {
-                  if (dragOverProviderId === p.id) setDragOverProviderId(null);
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const from = draggingProviderId || (() => {
-                    try {
-                      return e.dataTransfer.getData('text/plain');
-                    } catch {
-                      return '';
-                    }
-                  })();
-                  if (from) reorderProviders(from, p.id);
-                  setDraggingProviderId(null);
-                  setDragOverProviderId(null);
-                }}
-              >
-                <div className={styles.providerMain}>
-                  <div className={styles.logoRound}>
-                    <ProviderLogo type={p.type} />
-                  </div>
-                  <div className={styles.providerText}>
-                    {editingProviderId === p.id ? (
-                      <input
-                        className={styles.providerNameInput}
-                        value={editingProviderName}
-                        onChange={(e) => setEditingProviderName(e.target.value)}
-                        autoFocus
-                        onClick={(e) => e.stopPropagation()}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            commitProviderName(p.id, editingProviderName);
-                            setEditingProviderId(null);
-                          }
-                          if (e.key === 'Escape') {
-                            setEditingProviderId(null);
-                          }
-                        }}
-                        onBlur={() => {
-                          commitProviderName(p.id, editingProviderName);
-                          setEditingProviderId(null);
-                        }}
-                      />
-                    ) : (
-                      <div
-                        className={styles.providerName}
-                        onDoubleClick={(e) => {
-                          e.stopPropagation();
-                          setEditingProviderId(p.id);
-                          setEditingProviderName(p.name || '');
-                        }}
-                        title="双击改名"
-                      >
-                        {p.name}
-                      </div>
-                    )}
-                    <div className={styles.providerSub}>{p.baseUrl || '未配置 Base URL'}</div>
-                  </div>
-                </div>
-
-                <div className={styles.providerItemActions}>
-                  <span
-                    className={[p.enabled ? styles.badgeOn : styles.badgeOff, styles.badgeClickable].join(' ')}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setProviders(prev => prev.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x));
-                    }}
-                    title="点击切换"
-                  >
-                    {p.enabled ? 'ON' : 'OFF'}
-                  </span>
-                </div>
-              </div>
-            );
+          <Table
+            className={styles.providerTable}
+            dataSource={filteredProviders}
+            columns={providerTableColumns}
+            rowKey={(r) => r.id}
+            pagination={false}
+            size="small"
+            showHeader={false}
+            locale={{
+              emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无供应商" />,
+            }}
+            rowClassName={(r) => (r.id === activeId ? styles.providerTableRowActive : '')}
+            onRow={(r) => ({
+              onClick: () => {
+                setActiveId(r.id);
+                if (isCompact) setMobilePane('detail');
+              }
             })}
-          </div>
+          />
         </div>
 
         <div className={styles.addBar}>
-          <button onClick={addProvider} className={styles.addBarButton} type="button">
-            <IoAdd />
-            添加
-          </button>
+          <Button type="primary" size="small" icon={<PlusOutlined />} onClick={openAddProvider} block>
+            添加供应商
+          </Button>
         </div>
       </div>
 
-      <div className={[styles.right, (isCompact && mobilePane === 'list') ? styles.mobileHidden : ''].filter(Boolean).join(' ')} ref={rightRef}>
+      <div className={[styles.right, isCompact ? styles.rightMobile : '', (isCompact && mobilePane === 'list') ? styles.mobileHidden : ''].filter(Boolean).join(' ')} ref={rightRef}>
         {isCompact ? (
           <div className={styles.mobileBackRow}>
-            <button
-              type="button"
-              className={styles.mobileBackBtn}
-              onClick={() => setMobilePane('list')}
-            >
-              <IoChevronBack />
+            <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => setMobilePane('list')}>
               供应商
-            </button>
+            </Button>
             <div className={styles.mobileBackTitle}>{activeProvider?.name || '模型供应商'}</div>
           </div>
         ) : null}
 
         {isCompact && activeProvider ? (
-          <div className={styles.mobileSectionBar}>
-            <button
-              type="button"
-              className={[styles.mobileSectionBtn, mobileSection === 'provider' ? styles.mobileSectionBtnActive : ''].filter(Boolean).join(' ')}
-              onClick={() => setMobileSection('provider')}
-            >
-              供应商
-            </button>
-            <button
-              type="button"
-              className={[styles.mobileSectionBtn, mobileSection === 'config' ? styles.mobileSectionBtnActive : ''].filter(Boolean).join(' ')}
-              onClick={() => setMobileSection('config')}
-            >
-              配置中心
-            </button>
-            <button
-              type="button"
-              className={[styles.mobileSectionBtn, mobileSection === 'models' ? styles.mobileSectionBtnActive : ''].filter(Boolean).join(' ')}
-              onClick={() => setMobileSection('models')}
-            >
-              模型
-            </button>
+          <div className={styles.mobileTopPanel}>
+            <Segmented
+              size="small"
+              value={mobileSection}
+              style={{ width: '100%' }}
+              options={[
+                { label: '供应商', value: 'provider' },
+                { label: '配置中心', value: 'config' },
+                { label: '模型', value: 'models' },
+              ]}
+              onChange={(v) => setMobileSection(v as any)}
+            />
+
+            <div className={styles.mobileProviderActions}>
+              <Space size={8} wrap align="center">
+                <Space size={6} align="center">
+                  <Switch checked={activeProvider.enabled} onChange={(next) => updateActive({ enabled: next })} size="small" />
+                  <span style={{ fontSize: 12, fontWeight: 800, opacity: 0.85 }}>启用</span>
+                </Space>
+
+                <Button
+                  onClick={() => openEditProvider(activeProvider.id)}
+                  icon={<SettingOutlined />}
+                  size="small"
+                >
+                  编辑
+                </Button>
+
+                <Popconfirm
+                  title="删除供应商"
+                  description={(
+                    <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                      <div>确定删除供应商「{activeProvider.name || '未命名'}」？</div>
+                      <div style={{ marginTop: 6 }}>此操作会同时清空该供应商的模型缓存。</div>
+                    </div>
+                  )}
+                  okText="删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => removeProvider(activeProvider.id)}
+                >
+                  <Button danger icon={<DeleteOutlined />} size="small">删除</Button>
+                </Popconfirm>
+              </Space>
+            </div>
           </div>
         ) : null}
         {!activeProvider ? (
-          <div className={styles.emptyState}>请先新增或选择一个供应商。</div>
+          <div className={styles.emptyState}>
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先新增或选择一个供应商" />
+          </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, width: '100%' }}>
-            <div className={styles.header}>
-              <div>
-                <div className={styles.headerTitle}>模型供应商管理</div>
-                <div className={styles.headerSub}>统一管理供应商、连接信息与模型列表</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: isCompact ? 12 : 16, width: '100%' }}>
+            {!isCompact ? (
+              <div className={styles.header}>
+                <div>
+                  <div className={styles.headerTitle}>模型供应商管理</div>
+                  <div className={styles.headerSub}>统一管理供应商、连接信息与模型列表</div>
+                </div>
+                <div className={styles.toolbar}>
+                  <Space size={8} wrap align="center">
+                    <Space size={6} align="center">
+                      <Switch checked={activeProvider.enabled} onChange={(next) => updateActive({ enabled: next })} size="small" />
+                      <span style={{ fontSize: 12, fontWeight: 800, opacity: 0.85 }}>启用</span>
+                    </Space>
+
+                    <Button
+                      onClick={() => openEditProvider(activeProvider.id)}
+                      icon={<SettingOutlined />}
+                      size="small"
+                    >
+                      编辑
+                    </Button>
+
+                    <Popconfirm
+                      title="删除供应商"
+                      description={(
+                        <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                          <div>确定删除供应商「{activeProvider.name || '未命名'}」？</div>
+                          <div style={{ marginTop: 6 }}>此操作会同时清空该供应商的模型缓存。</div>
+                        </div>
+                      )}
+                      okText="删除"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => removeProvider(activeProvider.id)}
+                    >
+                      <Button danger icon={<DeleteOutlined />} size="small">删除</Button>
+                    </Popconfirm>
+                  </Space>
+                </div>
               </div>
-              <div className={styles.toolbar}>
-                <span
-                  className={[activeProvider.enabled ? styles.badgeOn : styles.badgeOff, styles.badgeClickable].join(' ')}
-                  onClick={() => updateActive({ enabled: !activeProvider.enabled })}
-                  title="点击切换"
-                >
-                  {activeProvider.enabled ? 'ON' : 'OFF'}
-                </span>
-                <button
-                  className={styles.dangerButton}
-                  type="button"
-                  onClick={() => requestRemoveProvider(activeProvider.id)}
-                  title="删除当前供应商"
-                >
-                  <IoTrashOutline />
-                  删除
-                </button>
-              </div>
-            </div>
+            ) : null}
 
             {errorText ? <div className={styles.errorBox}>{errorText}</div> : null}
 
@@ -1848,30 +2015,19 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
               <div className={styles.formGridSingle}>
                 <div className={styles.field}>
                   <div className={styles.fieldLabel}>API 密钥</div>
-                  <div className={styles.inputRow}>
-                    <input
-                      className={styles.input}
-                      type={showApiKey ? 'text' : 'password'}
-                      value={activeProvider.apiKey}
-                      onChange={(e) => updateActive({ apiKey: e.target.value })}
-                      placeholder="sk-..."
-                    />
-                    <button
-                      className={styles.inputSuffixBtn}
-                      onClick={() => setShowApiKey(s => !s)}
-                      aria-label={showApiKey ? '隐藏 API Key' : '显示 API Key'}
-                      title={showApiKey ? '隐藏' : '显示'}
-                      type="button"
-                    >
-                      {showApiKey ? <IoEyeOffOutline /> : <IoEyeOutline />}
-                    </button>
-                  </div>
+                  <Input.Password
+                    className={styles.antdInput}
+                    value={activeProvider.apiKey}
+                    onChange={(e) => updateActive({ apiKey: e.target.value })}
+                    placeholder="sk-..."
+                    visibilityToggle
+                  />
                 </div>
 
                 <div className={styles.field}>
                   <div className={styles.fieldLabel}>API 地址</div>
-                  <input
-                    className={styles.input}
+                  <Input
+                    className={styles.antdInput}
                     value={activeProvider.baseUrl}
                     onChange={(e) => updateActive({ baseUrl: e.target.value })}
                     onBlur={(e) => updateActive({ baseUrl: normalizeBaseUrlV1(e.target.value) })}
@@ -1896,164 +2052,118 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                   </div>
                 </div>
                 <div className={styles.llmTopRight}>
-                  <div className={styles.moduleTabs}>
-                    {LLM_TABS.map(m => (
-                      <button
-                        key={m.name}
-                        type="button"
-                        className={[styles.moduleTab, llmTab === m.name ? styles.moduleTabActive : ''].filter(Boolean).join(' ')}
-                        onClick={() => {
-                          setLlmTab(m.name);
-                          if (m.name !== 'mcp-plugins') setLlmModule(m.name);
-                        }}
-                      >
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
+                  <Tabs
+                    size="small"
+                    activeKey={String(llmTab)}
+                    className={styles.llmTabsAntd}
+                    onChange={(k) => {
+                      const next = k as LlmConfigTabName;
+                      setLlmTab(next);
+                      if (next !== 'mcp-plugins') setLlmModule(next);
+                    }}
+                    items={LLM_TABS.map(m => ({ key: m.name, label: m.label }))}
+                  />
                 </div>
               </div>
 
               <div className={styles.llmToolbar}>
                 <div className={styles.llmToolbarLeft}>
-                  <button
-                    className={styles.secondaryButton}
-                    type="button"
+                  <Button
+                    size="small"
+                    icon={<ReloadOutlined />}
                     onClick={loadConfigData}
                     disabled={configLoading || llmSaving || mcpPluginSaving}
                     title="重新加载配置"
                   >
-                    <IoRefresh />
                     刷新
-                  </button>
+                  </Button>
 
                   {llmTab === 'mcp-plugins' ? (
                     <>
-                      <button
-                        className={styles.secondaryButton}
-                        type="button"
+                      <Button
+                        size="small"
                         onClick={() => setMcpPluginShowAllVars(s => !s)}
                         disabled={mcpPluginSaving}
                       >
                         {mcpPluginShowAllVars ? '仅显示 LLM 字段' : '显示全部字段'}
-                      </button>
+                      </Button>
 
-                      <button
-                        className={styles.secondaryButton}
-                        type="button"
-                        onClick={fillMcpPluginSecretsFromActiveProvider}
-                        disabled={!activeProvider || mcpPluginSaving || !mcpPluginName}
-                        title="一键把当前供应商的 BaseURL(/v1) / API Key 填入插件内所有 *_BASE_URL/*_API_KEY 字段"
-                      >
-                        一键配置
-                      </button>
-
-                      <div className={styles.comboWrap} ref={mcpPluginComboRef}>
-                        <button
-                          type="button"
-                          className={styles.comboButton}
-                          onClick={() => {
-                            if (mcpPluginPickerOpen) {
-                              setMcpPluginPickerOpen(false);
-                              return;
-                            }
-                            const el = mcpPluginComboRef.current;
-                            if (el) {
-                              const rect = el.getBoundingClientRect();
-                              setMcpPluginMenuPos({ left: rect.left, top: rect.bottom + 8, width: rect.width });
-                            }
-                            setMcpPluginPickerOpen(true);
-                          }}
-                          disabled={mcpPluginSaving}
-                          title="选择 MCP 插件"
+                      <Tooltip title="一键把当前供应商的 BaseURL(/v1) / API Key 填入插件内所有 *_BASE_URL/*_API_KEY 字段">
+                        <Button
+                          size="small"
+                          icon={<ThunderboltOutlined />}
+                          onClick={fillMcpPluginSecretsFromActiveProvider}
+                          disabled={!activeProvider || mcpPluginSaving || !mcpPluginName}
                         >
-                          <span className={styles.comboButtonText}>
-                            {mcpPluginName ? (mcpPluginDisplayName || '未知插件') : '选择插件'}
-                          </span>
-                          <IoChevronDown />
-                        </button>
+                          一键配置
+                        </Button>
+                      </Tooltip>
 
-                        {(mcpPluginPickerOpen && mcpPluginMenuPos) ? createPortal((
-                          <div
-                            ref={mcpPluginMenuRef}
-                            className={styles.comboMenu}
-                            style={{ left: mcpPluginMenuPos.left, top: mcpPluginMenuPos.top, width: mcpPluginMenuPos.width }}
-                          >
-                            <input
-                              className={styles.comboSearch}
-                              value={mcpPluginPickerSearch}
-                              onChange={(e) => setMcpPluginPickerSearch(e.target.value)}
-                              placeholder="搜索插件（名称）"
-                              autoFocus
-                            />
-                            <div className={styles.comboList}>
-                              {mcpPluginFilteredOptions.length ? mcpPluginFilteredOptions.map((op) => (
-                                <button
-                                  key={op.name}
-                                  type="button"
-                                  className={[styles.comboItem, op.name === mcpPluginName ? styles.comboItemActive : ''].filter(Boolean).join(' ')}
-                                  onClick={() => {
-                                    setMcpPluginName(op.name);
-                                    setMcpPluginPickerOpen(false);
-                                    setMcpPluginPickerSearch('');
-                                  }}
-                                >
-                                  <div className={styles.comboItemTitle}>{op.label}</div>
-                                </button>
-                              )) : (
-                                <div className={styles.cardMeta}>没有匹配的插件。</div>
-                              )}
-                            </div>
-                          </div>
-                        ), document.body) : null}
-                      </div>
+                      <Select
+                        className={styles.antdSelect}
+                        size="small"
+                        value={mcpPluginName || undefined}
+                        onChange={(v) => setMcpPluginName(String(v || ''))}
+                        options={mcpPluginOptions.map((o) => ({ value: o.name, label: o.label }))}
+                        showSearch
+                        optionFilterProp="label"
+                        allowClear
+                        placeholder="选择 MCP 插件"
+                        disabled={mcpPluginSaving}
+                        notFoundContent={selectNotFound}
+                        styles={selectPopupStyles}
+                        popupMatchSelectWidth={false}
+                        style={{ width: 220, maxWidth: '100%' }}
+                      />
                     </>
                   ) : (
-                    <button
-                      className={styles.secondaryButton}
-                      type="button"
-                      onClick={fillLlmSecretsFromActiveProvider}
-                      disabled={!activeProvider || llmSaving}
-                      title="一键把当前供应商的 BaseURL(/v1) / API Key 填入本模块支持的 BaseURL/API_KEY 字段"
-                    >
-                      一键配置
-                    </button>
+                    <Tooltip title="一键把当前供应商的 BaseURL(/v1) / API Key 填入本模块支持的 BaseURL/API_KEY 字段">
+                      <Button
+                        size="small"
+                        icon={<ThunderboltOutlined />}
+                        onClick={fillLlmSecretsFromActiveProvider}
+                        disabled={!activeProvider || llmSaving}
+                      >
+                        一键配置
+                      </Button>
+                    </Tooltip>
                   )}
 
-                  <button
-                    className={styles.secondaryButton}
-                    type="button"
+                  <Button
+                    size="small"
+                    icon={showSecretsInEnv ? <EyeInvisibleOutlined /> : <EyeOutlined />}
                     onClick={() => setShowSecretsInEnv(s => !s)}
                     disabled={llmSaving || mcpPluginSaving}
                   >
                     {showSecretsInEnv ? '隐藏密钥' : '显示密钥'}
-                  </button>
+                  </Button>
+
                   {(String(llmTab) !== 'mcp-plugins' && llmHasAdvancedItems) ? (
-                    <button
-                      className={[styles.secondaryButton, showAdvancedLlm ? styles.secondaryButtonActive : ''].filter(Boolean).join(' ')}
-                      type="button"
+                    <Button
+                      size="small"
+                      icon={<SlidersOutlined />}
+                      type={showAdvancedLlm ? 'primary' : 'default'}
                       onClick={() => setShowAdvancedLlm(s => !s)}
                       disabled={llmSaving}
                       title="显示/隐藏 JSON 映射中标记为 advanced 的参数"
                     >
                       {showAdvancedLlm ? '隐藏高级参数' : '高级参数'}
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
-                <button
-                  className={[styles.primaryButton, styles.llmSaveBtn].filter(Boolean).join(' ')}
-                  type="button"
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<SaveOutlined />}
                   onClick={llmTab === 'mcp-plugins' ? saveMcpPlugin : saveLlmModule}
+                  loading={llmTab === 'mcp-plugins' ? mcpPluginSaving : llmSaving}
                   disabled={llmTab === 'mcp-plugins'
-                    ? (mcpPluginSaving || !mcpPluginName || !mcpPluginDirty[mcpPluginName])
-                    : (configLoading || llmSaving || !llmDirty[llmModule])}
+                    ? (!mcpPluginName || !mcpPluginDirty[mcpPluginName])
+                    : (configLoading || !llmDirty[llmModule])}
                   title={llmTab === 'mcp-plugins' ? (mcpPluginName ? '保存' : '请选择插件') : '写入该模块 .env'}
                 >
-                  <IoSave />
-                  {llmTab === 'mcp-plugins'
-                    ? (mcpPluginSaving ? '保存中...' : '保存')
-                    : (llmSaving ? '保存中...' : '保存')}
-                </button>
+                  保存
+                </Button>
               </div>
 
               {llmTab === 'mcp-plugins' ? (
@@ -2078,54 +2188,70 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                 <span className={styles.badgeOff}>{items.length}</span>
                               </div>
                               <div className={styles.llmGroupHeaderRight}>
-                                <button
-                                  className={styles.groupToggleBtn}
-                                  type="button"
+                                <Button
+                                  size="small"
+                                  type="text"
+                                  icon={collapsed ? <RightOutlined /> : <DownOutlined />}
                                   onClick={() => setMcpPluginGroupCollapsed(prev => ({ ...prev, [k]: !prev[k] }))}
                                   aria-label={collapsed ? '展开' : '折叠'}
                                   title={collapsed ? '展开' : '折叠'}
-                                >
-                                  {collapsed ? <IoChevronForward /> : <IoChevronDown />}
-                                </button>
+                                />
                               </div>
                             </div>
 
                             {!collapsed ? (
-                              <div className={styles.envList}>
-                                {items.map((it) => {
-                                  const v = mcpPluginVarsMap.get(it.key);
-                                  const meta = parseEnvMeta(v?.comment);
-                                  const desc = meta?.description || '';
-                                  const displayName = String(v?.displayName ?? '').trim();
-                                  const value = String(v?.value ?? '');
-                                  const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
-                                  const isSecret = isSensitiveKeyKind(it.kind, it.key);
+                              <Table
+                                className={styles.envListAntd}
+                                dataSource={items}
+                                rowKey={(r) => String((r as any).key || '')}
+                                pagination={false}
+                                size="small"
+                                showHeader={false}
+                                columns={[
+                                  {
+                                    key: 'row',
+                                    render: (_: any, it: any) => {
+                                      const v = mcpPluginVarsMap.get(it.key);
+                                      const meta = parseEnvMeta(v?.comment);
+                                      const desc = meta?.description || '';
+                                      const displayName = String(v?.displayName ?? '').trim();
+                                      const value = String(v?.value ?? '');
+                                      const hasCnName = Boolean(displayName);
+                                      const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
+                                      const isSecret = isSensitiveKeyKind(it.kind, it.key);
 
-                                  return (
-                                    <div
-                                      className={styles.envRow}
-                                      key={it.key}
-                                    >
-                                      <div className={styles.envLeft}>
-                                        {displayName ? <div className={styles.envName}>{displayName}</div> : null}
-                                        <div className={styles.envKey}>{it.key}</div>
-                                        {desc ? <div className={styles.envDesc}>{desc}</div> : null}
-                                      </div>
-                                      <div className={styles.envRight}>
-                                        {it.kind === 'boolean' ? (
+                                      const kindTag = (() => {
+                                        if (it.kind === 'api_key') return <Tag icon={<KeyOutlined />} color="red">密钥</Tag>;
+                                        if (it.kind === 'base_url') return <Tag icon={<LinkOutlined />} color="blue">Base URL</Tag>;
+                                        if (it.kind === 'boolean') return <Tag icon={<CheckOutlined />} color="green">开关</Tag>;
+                                        if (it.kind === 'number') return <Tag icon={<NumberOutlined />} color="gold">数字</Tag>;
+                                        if (it.kind === 'enum') return <Tag icon={<AppstoreOutlined />} color="purple">选项</Tag>;
+                                        if (it.kind === 'model') return <Tag icon={<ApiOutlined />} color="cyan">模型</Tag>;
+                                        return <Tag>文本</Tag>;
+                                      })();
+
+                                      const secretTag = isSecret ? <Tag icon={<LockOutlined />} color="volcano">敏感</Tag> : null;
+                                      const requiredTag = /必填|required/i.test(desc) ? <Tag color="magenta">必填</Tag> : null;
+
+                                      const control = (
+                                        it.kind === 'boolean' ? (
                                           <Switch
-                                            ariaLabel={it.key}
+                                            aria-label={it.key}
                                             checked={isTruthyString(value)}
                                             onChange={(next) => updateMcpPluginVar(it.key, next ? 'true' : 'false')}
+                                            size="small"
                                           />
                                         ) : it.kind === 'enum' ? (
                                           <Select
                                             className={styles.antdSelect}
                                             value={value}
                                             onChange={(next) => updateMcpPluginVar(it.key, String(next ?? ''))}
-                                            options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map(op => ({ value: op, label: op }))}
+                                            options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map((op: string) => ({ value: op, label: op }))}
                                             showSearch
                                             allowClear
+                                            notFoundContent={selectNotFound}
+                                            styles={selectPopupStyles}
+                                            popupMatchSelectWidth={false}
                                           />
                                         ) : it.kind === 'model' ? (
                                           <Select
@@ -2143,6 +2269,9 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                                 return modelHasCaps(activeProvider.id, id, requireCaps);
                                               })
                                               .map(id => ({ value: id, label: id })) : [])}
+                                            notFoundContent={selectNotFound}
+                                            styles={selectPopupStyles}
+                                            popupMatchSelectWidth={false}
                                             onChange={(vals) => {
                                               const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
                                               const next = list.length ? list[list.length - 1] : '';
@@ -2158,21 +2287,17 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                             tokenSeparators={[',']}
                                             value={parseMultiTextValue(value)}
                                             placeholder="输入多个值（回车/逗号）"
+                                            notFoundContent={selectNotFound}
+                                            styles={selectPopupStyles}
+                                            popupMatchSelectWidth={false}
                                             onChange={(vals) => {
                                               const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
                                               updateMcpPluginVar(it.key, formatMultiTextValue(list));
                                             }}
                                           />
-                                        ) : it.kind === 'api_key' ? (
-                                          <input
-                                            className={styles.input}
-                                            value={value}
-                                            onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
-                                            type={isSecret && !showSecretsInEnv ? 'password' : 'text'}
-                                          />
                                         ) : it.kind === 'base_url' ? (
-                                          <input
-                                            className={styles.input}
+                                          <Input
+                                            className={styles.antdInput}
                                             value={value}
                                             onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
                                             onBlur={(e) => updateMcpPluginVar(it.key, normalizeBaseUrlV1(e.target.value))}
@@ -2180,26 +2305,63 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                             placeholder="https://.../v1"
                                           />
                                         ) : (
-                                          <input
-                                            className={styles.input}
+                                          <Input
+                                            className={styles.antdInput}
                                             value={value}
                                             onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
                                             type={isSecret && !showSecretsInEnv ? 'password' : (type === 'number' ? 'number' : 'text')}
+                                            placeholder={it.kind === 'api_key' ? 'sk-...' : undefined}
                                           />
-                                        )}
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
+                                        )
+                                      );
+
+                                      return (
+                                        <div className={styles.envRow}>
+                                          <div className={styles.envLeft}>
+                                            <Tooltip
+                                              trigger={isCompact ? ['click'] : ['hover']}
+                                              placement="topLeft"
+                                              title={(
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                                  <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>{it.key}</span>
+                                                  <Button
+                                                    size="small"
+                                                    type="text"
+                                                    icon={<CopyOutlined />}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      copyText(String(it.key || ''));
+                                                    }}
+                                                    aria-label="复制 Key"
+                                                    title="复制 Key"
+                                                  />
+                                                </div>
+                                              )}
+                                            >
+                                              <div className={styles.envName}>{hasCnName ? displayName : '未提供中文名称'}</div>
+                                            </Tooltip>
+                                            {desc ? <div className={styles.envDesc}>{desc}</div> : null}
+                                            <div className={styles.envMetaTags}>
+                                              {requiredTag}
+                                              {secretTag}
+                                              {kindTag}
+                                            </div>
+                                          </div>
+                                          <div className={styles.envRight}>{control}</div>
+                                        </div>
+                                      );
+                                    },
+                                  },
+                                ]}
+                              />
                             ) : null}
                           </div>
                         );
                       })}
                     </div>
                   </BrandLogoErrorBoundary>
-                ))
-              : (!llmModuleConfig ? (
+                )
+              ) : (!llmModuleConfig ? (
                 <div className={styles.cardMeta}>该模块未找到配置。</div>
               ) : !llmModuleMapping || !llmActiveProfile ? (
                 <div className={styles.cardMeta}>该模块未配置 LLM 映射规则（请更新 llmEnvMapping.json）。</div>
@@ -2218,65 +2380,81 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                             <span className={styles.badgeOff}>{items.length}</span>
                           </div>
                           <div className={styles.llmGroupHeaderRight}>
-                            <button
-                              className={styles.iconOnlyButton}
-                              type="button"
-                              onClick={() => quickFillGroupFromProvider(g)}
-                              aria-label="一键配置该分组 BaseURL/Key"
-                              title="一键配置该分组 BaseURL/Key"
-                              disabled={llmSaving}
-                            >
-                              <IoFlashOutline />
-                            </button>
-                            <button
-                              className={styles.groupToggleBtn}
-                              type="button"
+                            <Tooltip title="一键配置该分组 BaseURL/Key">
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<ThunderboltOutlined />}
+                                onClick={() => quickFillGroupFromProvider(g)}
+                                disabled={llmSaving}
+                              />
+                            </Tooltip>
+
+                            <Button
+                              size="small"
+                              type="text"
+                              icon={collapsed ? <RightOutlined /> : <DownOutlined />}
                               onClick={() => setLlmGroupCollapsed(prev => ({ ...prev, [k]: !prev[k] }))}
                               aria-label={collapsed ? '展开' : '折叠'}
                               title={collapsed ? '展开' : '折叠'}
-                            >
-                              {collapsed ? <IoChevronForward /> : <IoChevronDown />}
-                            </button>
+                            />
                           </div>
                         </div>
 
                         {!collapsed ? (
-                          <div className={styles.envList}>
-                            {items.map((it) => {
-                              const v = llmVarsMap.get(it.key);
-                              const meta = parseEnvMeta(v?.comment);
-                              const desc = meta?.description || '';
-                              const displayName = String(v?.displayName ?? '').trim();
-                              const value = String(v?.value ?? '');
-                              const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
-                              const isSecret = isSensitiveKeyKind(it.kind, it.key);
-                              const isModelMultiCsv = it.kind === 'model' && it.picker === 'model' && it.multiple === true && it.valueFormat === 'csv';
+                          <Table
+                            className={styles.envListAntd}
+                            dataSource={items}
+                            rowKey={(r) => String((r as any).key || '')}
+                            pagination={false}
+                            size="small"
+                            showHeader={false}
+                            columns={[
+                              {
+                                key: 'row',
+                                render: (_: any, it: any) => {
+                                  const v = llmVarsMap.get(it.key);
+                                  const meta = parseEnvMeta(v?.comment);
+                                  const desc = meta?.description || '';
+                                  const displayName = String(v?.displayName ?? '').trim();
+                                  const value = String(v?.value ?? '');
+                                  const hasCnName = Boolean(displayName);
+                                  const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
+                                  const isSecret = isSensitiveKeyKind(it.kind, it.key);
+                                  const isModelMultiCsv = it.kind === 'model' && it.picker === 'model' && it.multiple === true && it.valueFormat === 'csv';
 
-                              return (
-                                <div
-                                  className={styles.envRow}
-                                  key={it.key}
-                                >
-                                  <div className={styles.envLeft}>
-                                    {displayName ? <div className={styles.envName}>{displayName}</div> : null}
-                                    <div className={styles.envKey}>{it.key}</div>
-                                    {desc ? <div className={styles.envDesc}>{desc}</div> : null}
-                                  </div>
-                                  <div className={styles.envRight}>
-                                    {it.kind === 'boolean' ? (
+                                  const kindTag = (() => {
+                                    if (it.kind === 'api_key') return <Tag icon={<KeyOutlined />} color="red">密钥</Tag>;
+                                    if (it.kind === 'base_url') return <Tag icon={<LinkOutlined />} color="blue">Base URL</Tag>;
+                                    if (it.kind === 'boolean') return <Tag icon={<CheckOutlined />} color="green">开关</Tag>;
+                                    if (it.kind === 'number') return <Tag icon={<NumberOutlined />} color="gold">数字</Tag>;
+                                    if (it.kind === 'enum') return <Tag icon={<AppstoreOutlined />} color="purple">选项</Tag>;
+                                    if (it.kind === 'model') return <Tag icon={<ApiOutlined />} color="cyan">模型</Tag>;
+                                    return <Tag>文本</Tag>;
+                                  })();
+
+                                  const secretTag = isSecret ? <Tag icon={<LockOutlined />} color="volcano">敏感</Tag> : null;
+                                  const requiredTag = /必填|required/i.test(desc) ? <Tag color="magenta">必填</Tag> : null;
+
+                                  const control = (
+                                    it.kind === 'boolean' ? (
                                       <Switch
-                                        ariaLabel={it.key}
+                                        aria-label={it.key}
                                         checked={isTruthyString(value)}
                                         onChange={(next) => updateLlmVar(it.key, next ? 'true' : 'false')}
+                                        size="small"
                                       />
                                     ) : it.kind === 'enum' ? (
                                       <Select
                                         className={styles.antdSelect}
                                         value={value}
                                         onChange={(next) => updateLlmVar(it.key, String(next ?? ''))}
-                                        options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map(op => ({ value: op, label: op }))}
+                                        options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map((op: string) => ({ value: op, label: op }))}
                                         showSearch
                                         allowClear
+                                        notFoundContent={selectNotFound}
+                                        styles={selectPopupStyles}
+                                        popupMatchSelectWidth={false}
                                       />
                                     ) : it.kind === 'model' ? (
                                       <Select
@@ -2290,6 +2468,9 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                         options={(activeProvider ? activeModelIds
                                           .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
                                           .map(id => ({ value: id, label: id })) : [])}
+                                        notFoundContent={selectNotFound}
+                                        styles={selectPopupStyles}
+                                        popupMatchSelectWidth={false}
                                         onChange={(vals) => {
                                           const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
                                           if (isModelMultiCsv) {
@@ -2309,21 +2490,32 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                         tokenSeparators={[',']}
                                         value={parseMultiTextValue(value)}
                                         placeholder="输入多个值（回车/逗号）"
+                                        notFoundContent={selectNotFound}
+                                        styles={selectPopupStyles}
+                                        popupMatchSelectWidth={false}
                                         onChange={(vals) => {
                                           const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
                                           updateLlmVar(it.key, formatMultiTextValue(list));
                                         }}
                                       />
+                                    ) : it.kind === 'number' || type === 'number' ? (
+                                      <InputNumber
+                                        style={{ width: '100%' }}
+                                        value={Number.isFinite(Number(value)) ? Number(value) : null}
+                                        onChange={(next) => updateLlmVar(it.key, next == null ? '' : String(next))}
+                                        placeholder="请输入数字"
+                                      />
                                     ) : it.kind === 'api_key' ? (
-                                      <input
-                                        className={styles.input}
+                                      <Input
+                                        className={styles.antdInput}
                                         value={value}
                                         onChange={(e) => updateLlmVar(it.key, e.target.value)}
                                         type={isSecret && !showSecretsInEnv ? 'password' : 'text'}
+                                        placeholder="sk-..."
                                       />
                                     ) : it.kind === 'base_url' ? (
-                                      <input
-                                        className={styles.input}
+                                      <Input
+                                        className={styles.antdInput}
                                         value={value}
                                         onChange={(e) => updateLlmVar(it.key, e.target.value)}
                                         onBlur={(e) => updateLlmVar(it.key, normalizeBaseUrlV1(e.target.value))}
@@ -2331,18 +2523,54 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                         placeholder="https://.../v1"
                                       />
                                     ) : (
-                                      <input
-                                        className={styles.input}
+                                      <Input
+                                        className={styles.antdInput}
                                         value={value}
                                         onChange={(e) => updateLlmVar(it.key, e.target.value)}
-                                        type={isSecret && !showSecretsInEnv ? 'password' : (type === 'number' ? 'number' : 'text')}
+                                        type={isSecret && !showSecretsInEnv ? 'password' : 'text'}
                                       />
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                                    )
+                                  );
+
+                                  return (
+                                    <div className={styles.envRow}>
+                                      <div className={styles.envLeft}>
+                                        <Tooltip
+                                          trigger={isCompact ? ['click'] : ['hover']}
+                                          placement="topLeft"
+                                          title={(
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                              <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>{it.key}</span>
+                                              <Button
+                                                size="small"
+                                                type="text"
+                                                icon={<CopyOutlined />}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  copyText(String(it.key || ''));
+                                                }}
+                                                aria-label="复制 Key"
+                                                title="复制 Key"
+                                              />
+                                            </div>
+                                          )}
+                                        >
+                                          <div className={styles.envName}>{hasCnName ? displayName : '未提供中文名称'}</div>
+                                        </Tooltip>
+                                        {desc ? <div className={styles.envDesc}>{desc}</div> : null}
+                                        <div className={styles.envMetaTags}>
+                                          {requiredTag}
+                                          {secretTag}
+                                          {kindTag}
+                                        </div>
+                                      </div>
+                                      <div className={styles.envRight}>{control}</div>
+                                    </div>
+                                  );
+                                },
+                              },
+                            ]}
+                          />
                         ) : null}
                       </div>
                     );
@@ -2364,322 +2592,394 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                     {activeModelsEntry?.fetchedAt ? `更新时间：${new Date(activeModelsEntry.fetchedAt).toLocaleString()}` : '尚未获取（点击下方检测 /v1/models）'}
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <button onClick={runTestModels} disabled={busy} className={styles.primaryButton} type="button">
-                    <IoFlashOutline />
+                <div className={styles.modelsHeaderActions}>
+                  <Button
+                    type="primary"
+                    icon={<ApiOutlined />}
+                    onClick={runTestModels}
+                    loading={busy}
+                    size="small"
+                  >
                     {busy ? '检测中...' : '检测 /v1/models'}
-                  </button>
+                  </Button>
 
-                  <div className={styles.modelsSearch}>
-                    <div className={styles.searchInputWrap}>
-                      <span className={styles.searchIcon}>
-                        <IoSearch size={16} />
-                      </span>
-                      <input
-                        className={styles.searchInputWithIcon}
-                        value={modelSearch}
-                        onChange={(e) => setModelSearch(e.target.value)}
-                        placeholder="搜索模型 id / owned_by"
-                      />
-                    </div>
-                  </div>
+                  <Input
+                    className={styles.antdInput}
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    placeholder="搜索模型 id / owned_by"
+                    allowClear
+                    prefix={<SearchOutlined />}
+                    size="small"
+                    style={{ width: 320, maxWidth: '100%' }}
+                  />
                 </div>
               </div>
 
               {filteredModels.length === 0 ? (
-                <div className={styles.cardMeta}>暂无模型数据，点击“检测 /v1/models”获取。</div>
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无模型数据，点击“检测 /v1/models”获取" />
               ) : (
                 <BrandLogoErrorBoundary
                   resetKey={`models:${activeProvider?.id || ''}:${activeModelsEntry?.fetchedAt || 0}`}
                   fallback={<div className={styles.errorBox}>模型列表渲染失败，请重新检测或切换供应商。</div>}
                 >
-                  <div>
-                  {groupedModels.map(({ vendor, models: ms }) => (
-                    <div className={styles.modelGroup} key={vendor.key}>
-                      <div className={styles.modelGroupHeader}>
-                        <div className={styles.groupHeaderLeft}>
-                          <span className={styles.logoRound} style={{ width: 22, height: 22 }}>
-                            <BrandLogo iconName={vendor.iconName} size={16} />
-                          </span>
-                          <span className={styles.vendorLabel}>{vendor.label}</span>
-                          <span className={styles.badgeOff}>{ms.length}</span>
-                        </div>
-                        <button
-                          className={styles.groupToggleBtn}
-                          onClick={() => setCollapsedGroups(prev => ({ ...prev, [vendor.key]: !prev[vendor.key] }))}
-                          aria-label={collapsedGroups[vendor.key] ? '展开' : '折叠'}
-                          title={collapsedGroups[vendor.key] ? '展开' : '折叠'}
-                          type="button"
-                        >
-                          {collapsedGroups[vendor.key] ? <IoChevronForward /> : <IoChevronDown />}
-                        </button>
-                      </div>
+                  <Collapse
+                    className={styles.modelsCollapse}
+                    size="small"
+                    destroyInactivePanel
+                    activeKey={expandedVendorKeys}
+                    onChange={(keys) => {
+                      const arr = Array.isArray(keys) ? keys.map(String) : [String(keys || '')].filter(Boolean);
+                      setCollapsedGroups(() => {
+                        const next: Record<string, boolean> = {};
+                        for (const g of groupedModels) {
+                          const k = String(g.vendor.key || g.vendor.label || 'models');
+                          next[k] = !arr.includes(k);
+                        }
+                        return next;
+                      });
+                    }}
+                    items={groupedModels.map(({ vendor, models: ms }) => {
+                      const key = String(vendor.key || vendor.label || 'models');
+                      const expanded = expandedVendorKeys.includes(key);
+                      return {
+                        key,
+                        label: (
+                          <div className={styles.modelGroupHeaderAntd}>
+                            <div className={styles.groupHeaderLeft}>
+                              <span className={styles.logoRound} style={{ width: 22, height: 22 }}>
+                                <BrandLogo iconName={vendor.iconName} size={16} />
+                              </span>
+                              <span className={styles.vendorLabel}>{vendor.label}</span>
+                              <span className={styles.badgeOff}>{ms.length}</span>
+                            </div>
+                          </div>
+                        ),
+                        children: expanded ? (
+                          <Table
+                            className={styles.modelAntdList}
+                            dataSource={ms}
+                            rowKey={(m) => {
+                              const rawId = (m as any)?.id ?? (m as any)?.model ?? (m as any)?.name;
+                              const id = rawId != null ? String(rawId).trim() : '';
+                              return id ? id : formatModelTitle(m);
+                            }}
+                            pagination={false}
+                            size="small"
+                            showHeader={false}
+                            columns={[
+                              {
+                                key: 'row',
+                                render: (_: any, m: any) => {
+                                  if (!activeProvider) return null;
+                                  const inferred = safeInferModelVendor(m, providerTypeFallbackVendor(activeProviderType));
+                                  const title = m?.id != null ? String(m.id) : formatModelTitle(m);
+                                  const override = getModelOverride(activeProvider.id, title);
+                                  const caps = (override?.caps && override.caps.length)
+                                    ? override.caps.map((k: string) => ({ key: k, label: k }))
+                                    : safeInferModelCapabilities(title);
 
-                      {!collapsedGroups[vendor.key] ? (
-                        <div className={styles.modelList}>
-                          {ms.map((m, idx) => {
-                            const inferred = safeInferModelVendor(m, providerTypeFallbackVendor(activeProviderType));
-                            const title = m?.id != null ? String(m.id) : formatModelTitle(m);
-                            const override = activeProvider ? getModelOverride(activeProvider.id, title) : null;
+                                  return (
+                                    <div className={styles.modelRow}>
+                                      <div className={styles.modelRowMeta}>
+                                        <div className={styles.logoRound}>
+                                          {override?.icon ? (
+                                            <CustomIcon icon={override.icon as any} size={18} />
+                                          ) : (
+                                            <BrandLogo iconName={inferred.iconName} size={18} />
+                                          )}
+                                        </div>
+                                        <div style={{ minWidth: 0 }}>
+                                          <div className={styles.modelTitle}>{title}</div>
+                                          <div className={styles.modelCaps}>
+                                            {caps.map((cap: any) => (
+                                              <span
+                                                key={cap.key}
+                                                className={styles.modelCapIcon}
+                                                style={capStyleVars(cap.key)}
+                                                title={cap.label}
+                                                aria-label={cap.key}
+                                              >
+                                                <CapabilityIcon capKey={cap.key} />
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      </div>
 
-                            return (
-                              <div className={styles.modelRow} key={String(m?.id || idx)} title={title}>
-                                <div className={styles.modelLeft}>
-                                  <div className={styles.logoRound}>
-                                    {override?.icon ? (
-                                      <CustomIcon icon={override.icon as any} size={18} />
-                                    ) : (
-                                      <BrandLogo iconName={inferred.iconName} size={18} />
-                                    )}
-                                  </div>
-                                  <div style={{ minWidth: 0 }}>
-                                    <div className={styles.modelTitle}>{title}</div>
-                                  </div>
-                                </div>
-
-                                <div className={styles.modelRight}>
-                                  <div className={styles.modelCaps}>
-                                    {(override?.caps && override.caps.length ? override.caps.map(k => ({ key: k, label: k })) : safeInferModelCapabilities(title)).map((cap) => (
-                                      <span
-                                        key={cap.key}
-                                        className={styles.modelCapIcon}
-                                        style={capStyleVars(cap.key)}
-                                        title={cap.label}
-                                        aria-label={cap.key}
-                                      >
-                                        <CapabilityIcon capKey={cap.key} />
-                                      </span>
-                                    ))}
-                                  </div>
-
-                                  <div className={styles.modelActions}>
-                                    <button
-                                      className={styles.modelActionBtn}
-                                      onClick={() => openModelSettings(activeProvider.id, title)}
-                                      aria-label="模型设置"
-                                      title="模型设置"
-                                      type="button"
-                                    >
-                                      <IoSettingsOutline />
-                                    </button>
-                                    <button
-                                      className={styles.modelActionBtn}
-                                      onClick={() => copyText(title)}
-                                      aria-label="复制模型 ID"
-                                      title="复制模型 ID"
-                                      type="button"
-                                    >
-                                      <IoCopyOutline />
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                  </div>
+                                      <div className={styles.modelRowActions}>
+                                        <Button
+                                          key="settings"
+                                          size="small"
+                                          type="text"
+                                          icon={<SettingOutlined />}
+                                          onClick={() => openModelSettings(activeProvider.id, title)}
+                                        />
+                                        <Button
+                                          key="copy"
+                                          size="small"
+                                          type="text"
+                                          icon={<CopyOutlined />}
+                                          onClick={() => copyText(title)}
+                                        />
+                                      </div>
+                                    </div>
+                                  );
+                                },
+                              },
+                            ]}
+                          />
+                        ) : null,
+                      };
+                    })}
+                  />
                 </BrandLogoErrorBoundary>
               )}
             </div>
             ) : null}
 
-            {modelSettingsOpen ? (
-              <div
-                className={styles.modalOverlay}
-                onMouseDown={(e) => {
-                  if (e.target === e.currentTarget) setModelSettingsOpen(false);
-                }}
-              >
-                <div className={styles.modalCard} role="dialog" aria-modal="true">
-                  <div className={styles.modalTitle}>模型设置</div>
-                  <div className={styles.modalBody}>
-                    <div className={styles.modelSettingsHeaderRow}>
-                      <span className={styles.logoRound} style={{ width: 34, height: 34 }}>
-                        {modelSettingsIcon ? (
-                          <CustomIcon icon={modelSettingsIcon} size={20} />
-                        ) : (
-                          <BrandLogo iconName={safeInferModelVendor({ id: modelSettingsModelId }, providerTypeFallbackVendor(activeProviderType)).iconName} size={20} />
-                        )}
-                      </span>
-                      <div style={{ minWidth: 0 }}>
-                        <div className={styles.modelSettingsModelId}>{modelSettingsModelId}</div>
-                        <div className={styles.modelSettingsSub}>自定义图标与能力，将写入本地覆盖文件</div>
-                      </div>
-                    </div>
+            <Modal
+              title="模型设置"
+              open={modelSettingsOpen}
+              onCancel={() => { setModelSettingsOpen(false); setIconPickerOpen(false); }}
+              onOk={() => void saveModelSettings()}
+              okText="保存"
+              cancelText="取消"
+              width={820}
+              className={styles.modelSettingsModal}
+              destroyOnHidden={false}
+            >
+              <div className={styles.modelSettingsHeaderRow}>
+                <span className={styles.logoRound} style={{ width: 34, height: 34 }}>
+                  {modelSettingsIcon ? (
+                    <CustomIcon icon={modelSettingsIcon} size={20} />
+                  ) : (
+                    <BrandLogo iconName={safeInferModelVendor({ id: modelSettingsModelId }, providerTypeFallbackVendor(activeProviderType)).iconName} size={20} />
+                  )}
+                </span>
+                <div style={{ minWidth: 0 }}>
+                  <div className={styles.modelSettingsModelId}>{modelSettingsModelId}</div>
+                  <div className={styles.modelSettingsSub}>自定义图标与能力，将写入本地覆盖文件</div>
+                </div>
+              </div>
 
-                    <div className={styles.modelSettingsActionsRow}>
-                      <button className={styles.secondaryButton} type="button" onClick={() => setIconPickerOpen(true)}>
-                        选择图标
-                      </button>
-                      <label className={styles.secondaryButton} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                        上传图片
-                        <input
-                          type="file"
-                          accept="image/*"
-                          style={{ display: 'none' }}
-                          onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            if (!f) return;
-                            const reader = new FileReader();
-                            reader.onload = () => {
-                              const dataUrl = String(reader.result || '');
-                              if (!dataUrl.startsWith('data:image/')) {
-                                addToast('error', '图片格式不支持');
-                                return;
-                              }
-                              setModelSettingsIcon({ type: 'upload', dataUrl });
-                            };
-                            reader.readAsDataURL(f);
-                          }}
-                        />
-                      </label>
-                      <button className={styles.secondaryButton} type="button" onClick={() => setModelSettingsIcon(null)}>
-                        清除
-                      </button>
-                    </div>
-
-                    <div className={styles.modelSettingsSectionTitle}>能力</div>
-                    <div className={styles.modelSettingsCapToolbar}>
-                      <div className={styles.searchInputWrap} style={{ flex: 1, maxWidth: 360 }}>
-                        <span className={styles.searchIcon}><IoSearch size={16} /></span>
-                        <input
-                          className={styles.searchInputWithIcon}
-                          value={capabilitySearch}
-                          onChange={(e) => setCapabilitySearch(e.target.value)}
-                          placeholder="搜索能力，例如 vision / web / embedding"
-                        />
-                      </div>
-                      <button
-                        className={styles.secondaryButton}
-                        type="button"
-                        onClick={() => setModelSettingsCaps(inferredModelSettingsCaps)}
-                      >
-                        按推断
-                      </button>
-                      <button
-                        className={styles.secondaryButton}
-                        type="button"
-                        onClick={() => setModelSettingsCaps(capabilityChoices.map(c => c.key))}
-                      >
-                        全选
-                      </button>
-                      <button
-                        className={styles.secondaryButton}
-                        type="button"
-                        onClick={() => setModelSettingsCaps([])}
-                      >
-                        清空
-                      </button>
-                    </div>
-
-                    <div className={styles.modelSettingsCapGrid}>
-                      {filteredCapabilityChoices.map(c => {
-                        const on = modelSettingsCaps.includes(c.key);
-                        return (
-                          <button
-                            key={c.key}
-                            type="button"
-                            className={[styles.capChip, on ? styles.capChipOn : styles.capChipOff].filter(Boolean).join(' ')}
-                            style={capStyleVars(c.key)}
-                            onClick={() => {
-                              const next = new Set(modelSettingsCaps);
-                              if (next.has(c.key)) next.delete(c.key);
-                              else next.add(c.key);
-                              setModelSettingsCaps(Array.from(next));
-                            }}
-                            title={c.key}
-                          >
-                            <span className={styles.capChipIcon}><CapabilityIcon capKey={c.key} /></span>
-                            <span className={styles.capChipText}>{c.label}</span>
-                            <span className={styles.capChipCheck} aria-hidden="true">
-                              {on ? <IoCheckmarkOutline size={14} /> : null}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className={styles.modalActions}>
-                    <button className={styles.secondaryButton} onClick={() => setModelSettingsOpen(false)} type="button">取消</button>
-                    <button className={styles.primaryButton} onClick={saveModelSettings} type="button">保存</button>
-                  </div>
-
-                  {iconPickerOpen ? (
-                    <div
-                      className={styles.modalOverlay}
-                      style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.25)' }}
-                      onMouseDown={(e) => {
-                        if (e.target === e.currentTarget) setIconPickerOpen(false);
-                      }}
-                    >
-                      <div className={styles.modalCard} role="dialog" aria-modal="true" style={{ width: 'min(720px, calc(100% - 32px))' }}>
-                        <div className={styles.modalTitle}>选择图标（Lobe Icons）</div>
-                        <div className={styles.modalBody}>
-                          <div className={styles.searchInputWrap} style={{ marginBottom: 10 }}>
-                            <span className={styles.searchIcon}><IoSearch size={16} /></span>
-                            <input
-                              className={styles.searchInputWithIcon}
-                              value={iconSearch}
-                              onChange={(e) => setIconSearch(e.target.value)}
-                              placeholder="搜索图标名，例如 OpenAI / Gemini / Qwen"
+              <Tabs
+                className={styles.modelSettingsTabs}
+                items={[
+                  {
+                    key: 'appearance',
+                    label: '外观',
+                    children: (
+                      <>
+                        <div className={styles.modelSettingsActionsRow}>
+                          <Tooltip title="选择图标（Lobe Icons）">
+                            <Button
+                              type="text"
+                              size="small"
+                              icon={<BgColorsOutlined />}
+                              onClick={() => setIconPickerOpen(true)}
                             />
+                          </Tooltip>
+                          <Upload
+                            accept="image/*"
+                            showUploadList={false}
+                            beforeUpload={(file) => {
+                              const f = file as any;
+                              const reader = new FileReader();
+                              reader.onload = () => {
+                                const dataUrl = String(reader.result || '');
+                                if (!dataUrl.startsWith('data:image/')) {
+                                  addToast('error', '图片格式不支持');
+                                  return;
+                                }
+                                setModelSettingsIcon({ type: 'upload', dataUrl });
+                              };
+                              reader.readAsDataURL(f);
+                              return false;
+                            }}
+                          >
+                            <Tooltip title="上传图片">
+                              <Button type="text" size="small" icon={<UploadOutlined />} />
+                            </Tooltip>
+                          </Upload>
+                          <Tooltip title="清除自定义图标">
+                            <Button
+                              type="text"
+                              danger
+                              size="small"
+                              icon={<DeleteOutlined />}
+                              onClick={() => setModelSettingsIcon(null)}
+                            />
+                          </Tooltip>
+                        </div>
+                      </>
+                    )
+                  },
+                  {
+                    key: 'caps',
+                    label: '能力',
+                    children: (
+                      <>
+                        <div className={styles.capSelectedBar}>
+                          <div className={styles.capSelectedLeft}>
+                            <div className={styles.capSelectedTitle}>已选能力</div>
+                            <div className={styles.capSelectedCount}>{modelSettingsCaps.length}</div>
                           </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 10, maxHeight: 360, overflow: 'auto', paddingRight: 4 }}>
-                            {makeLobeIconChoices(iconSearch).map((name) => (
-                              <button
-                                key={name}
-                                type="button"
-                                className={styles.modelActionBtn}
-                                style={{ width: '100%', height: 54, display: 'flex', flexDirection: 'column', gap: 6 }}
-                                onClick={() => {
-                                  setModelSettingsIcon({ type: 'lobe', iconName: name });
-                                  setIconPickerOpen(false);
+                          <div className={styles.capSelectedTags}>
+                            {modelSettingsCaps.slice(0, 40).map((k) => (
+                              <Tag
+                                key={k}
+                                closable
+                                onClose={(e) => {
+                                  e.preventDefault();
+                                  toggleModelSettingsCap(k);
                                 }}
-                                title={name}
+                                className={styles.capSelectedTag}
+                                style={capStyleVars(k)}
                               >
-                                <BrandLogo iconName={name} size={20} />
-                                <span style={{ fontSize: 10, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
-                              </button>
+                                {capabilityLabelByKey.get(String(k)) || String(k)}
+                              </Tag>
                             ))}
                           </div>
                         </div>
-                        <div className={styles.modalActions}>
-                          <button className={styles.secondaryButton} onClick={() => setIconPickerOpen(false)} type="button">关闭</button>
+
+                        <div className={styles.modelSettingsCapToolbarAntd}>
+                          <Input
+                            className={styles.antdInput}
+                            value={capabilitySearch}
+                            onChange={(e) => setCapabilitySearch(e.target.value)}
+                            placeholder="搜索能力，例如 vision / web / embedding"
+                            allowClear
+                            prefix={<SearchOutlined />}
+                          />
+
+                          <Select
+                            className={styles.antdSelect}
+                            value={capabilityCategory}
+                            onChange={(v) => setCapabilityCategory(String(v || 'all'))}
+                            options={capabilityCategoryOptions}
+                            placeholder="按类别"
+                            style={{ width: 160 }}
+                          />
+                          <Segmented
+                            className={styles.capSegmented}
+                            value={capabilityView}
+                            onChange={(v) => setCapabilityView(String(v) as any)}
+                            options={[
+                              { label: `全部(${capabilityViewCounts.all})`, value: 'all' },
+                              { label: `已选(${capabilityViewCounts.selected})`, value: 'selected' },
+                              { label: `推断(${capabilityViewCounts.inferred})`, value: 'inferred' },
+                              { label: `未选(${capabilityViewCounts.unselected})`, value: 'unselected' },
+                            ]}
+                          />
+                          <div className={styles.modelSettingsCapToolbarBtns}>
+                            <Button size="small" onClick={() => setModelSettingsCaps(inferredModelSettingsCaps)}>按推断</Button>
+                            <Button size="small" onClick={() => setModelSettingsCaps(capabilityChoices.map(c => c.key))}>全选</Button>
+                            <Button size="small" onClick={() => setModelSettingsCaps([])}>清空</Button>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+
+                        <Table
+                          className={styles.capGridTable}
+                          size="small"
+                          pagination={false}
+                          showHeader={false}
+                          tableLayout="fixed"
+                          scroll={{ y: isCompact ? 360 : 420 }}
+                          dataSource={capGridRows}
+                          rowKey={(r) => String((r as any).key)}
+                          columns={capGridColumns as any}
+                        />
+                      </>
+                    )
+                  }
+                ]}
+              />
+            </Modal>
+
+            <Modal
+              title="选择图标（Lobe Icons）"
+              open={iconPickerOpen}
+              onCancel={() => setIconPickerOpen(false)}
+              footer={null}
+              width={760}
+              className={styles.iconPickerModal}
+            >
+              <Input
+                className={styles.antdInput}
+                value={iconSearch}
+                onChange={(e) => setIconSearch(e.target.value)}
+                placeholder="搜索图标名，例如 OpenAI / Gemini / Qwen"
+                allowClear
+                prefix={<SearchOutlined />}
+              />
+              <div className={styles.iconGrid}>
+                {!lobeIconLibReady ? (
+                  <div className={styles.cardMeta} style={{ padding: 8 }}>加载图标库中...</div>
+                ) : null}
+                {lobeIconChoices.map((name) => (
+                  <Button
+                    key={name}
+                    type="text"
+                    size="small"
+                    className={styles.iconGridBtn}
+                    onClick={() => {
+                      setModelSettingsIcon({ type: 'lobe', iconName: name });
+                      setIconPickerOpen(false);
+                    }}
+                    title={name}
+                  >
+                    <BrandLogo iconName={name} size={20} />
+                    <span className={styles.iconGridName}>{name}</span>
+                  </Button>
+                ))}
               </div>
-            ) : null}
+            </Modal>
           </div>
         )}
       </div>
 
-      {deleteTargetId ? (
-        <div
-          className={styles.modalOverlay}
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setDeleteTargetId(null);
-          }}
+      <Modal
+        title={providerEditorMode === 'add' ? '添加供应商' : '编辑供应商'}
+        open={providerEditorOpen}
+        onCancel={() => setProviderEditorOpen(false)}
+        onOk={() => void saveProviderEditor()}
+        okText="保存"
+        cancelText="取消"
+      >
+        <Form
+          form={providerEditorForm}
+          layout="vertical"
+          initialValues={{ enabled: true, apiKeyHeader: 'Authorization', apiKeyPrefix: 'Bearer ' }}
         >
-          <div className={styles.modalCard} role="dialog" aria-modal="true">
-            <div className={styles.modalTitle}>删除供应商</div>
-            <div className={styles.modalBody}>
-              确定删除供应商「{providers.find(p => p.id === deleteTargetId)?.name || '未命名'}」？
-              <br />
-              此操作会同时清空该供应商的模型缓存。
-            </div>
-            <div className={styles.modalActions}>
-              <button className={styles.secondaryButton} onClick={() => setDeleteTargetId(null)} type="button">取消</button>
-              <button className={styles.dangerPrimaryButton} onClick={confirmRemoveProvider} type="button">删除</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+          <Form.Item label="供应商名称" name="name" rules={[{ required: true, message: '请输入供应商名称' }]}>
+            <Input placeholder="例如：OpenAI / Gemini / 自建服务" />
+          </Form.Item>
+          <Form.Item label="供应商类型" name="type" rules={[{ required: true, message: '请选择供应商类型' }]}>
+            <Select
+              options={providerTypeOptions}
+              showSearch
+              optionFilterProp="label"
+              placeholder="例如：openai / gemini / custom"
+            />
+          </Form.Item>
+          <Form.Item label="是否启用" name="enabled" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item label="API 地址（Base URL）" name="baseUrl" extra="建议填写到域名根：例如 https://api.openai.com（会在需要时补全 /v1）">
+            <Input placeholder="https://api.openai.com" />
+          </Form.Item>
+          <Form.Item label="API 密钥（API Key）" name="apiKey" extra="不会上传到服务器，仅保存在浏览器本地">
+            <Input.Password placeholder="sk-..." visibilityToggle />
+          </Form.Item>
+          <Form.Item label="API Key 请求头（Header）" name="apiKeyHeader" extra="通常保持默认：Authorization">
+            <Input placeholder="Authorization" />
+          </Form.Item>
+          <Form.Item label="API Key 前缀（Prefix）" name="apiKeyPrefix" extra="通常保持默认：Bearer（注意末尾空格）">
+            <Input placeholder="Bearer " />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

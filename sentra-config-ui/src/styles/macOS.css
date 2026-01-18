@@ -1,5 +1,11 @@
+@font-face {
+    font-family: "SentraLocal";
+    src: url("/fonts/AaRiFuYiRiKeAiYuan-2.ttf") format("truetype");
+    font-display: swap;
+}
+
 :root {
-    --system-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --system-font: "SentraLocal", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 
     --sentra-accent: #007AFF;
     --sentra-accent-rgb: 0, 122, 255;

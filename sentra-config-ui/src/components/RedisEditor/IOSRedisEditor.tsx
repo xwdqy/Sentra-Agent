@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import styles from './IOSRedisEditor.module.css';
-import { IoServer, IoKey, IoTrash, IoRefresh, IoArrowBack } from 'react-icons/io5';
+import { Button, Input, Segmented, Space } from 'antd';
+import { CloudServerOutlined, DeleteOutlined, KeyOutlined, ArrowLeftOutlined, ReloadOutlined, LinkOutlined } from '@ant-design/icons';
 import { useRedisEditor } from '../../hooks/useRedisEditor';
 import Editor from '@monaco-editor/react';
 import '../../utils/monacoSetup';
@@ -157,8 +158,8 @@ export const IOSRedisEditor: React.FC<IOSRedisEditorProps> = ({ state }) => {
                         }}
                     />
                     <div className={styles.editActions}>
-                        <button onClick={handleSaveValue} className={styles.saveBtn}>保存</button>
-                        <button onClick={() => setEditMode(false)} className={styles.cancelBtn}>取消</button>
+                        <Button size="small" type="primary" onClick={handleSaveValue}>保存</Button>
+                        <Button size="small" onClick={() => setEditMode(false)}>取消</Button>
                     </div>
                 </div>
             );
@@ -214,7 +215,7 @@ export const IOSRedisEditor: React.FC<IOSRedisEditorProps> = ({ state }) => {
                     );
                 } catch { }
             }
-            return <textarea value={strValue} readOnly className={styles.valueContent} />;
+            return <Input.TextArea value={strValue} readOnly className={styles.valueContent} autoSize={{ minRows: 6, maxRows: 16 }} />;
         }
 
         return <div className={styles.emptyState}>不支持的数据类型</div>;
@@ -242,7 +243,7 @@ export const IOSRedisEditor: React.FC<IOSRedisEditorProps> = ({ state }) => {
                                 onClick={() => setActiveConnectionId(c.id)}
                                 className={styles.connectionCard}
                             >
-                                <IoServer size={24} color="#dd2476" />
+                                <CloudServerOutlined />
                                 <div className={styles.connectionInfo}>
                                     <div className={styles.connectionName}>{c.name}</div>
                                     <div className={styles.connectionHost}>{c.host}:{c.port}</div>
@@ -255,44 +256,43 @@ export const IOSRedisEditor: React.FC<IOSRedisEditorProps> = ({ state }) => {
                     <h3 className={styles.formTitle}>新建 Redis 连接</h3>
                     <div className={styles.formGroup}>
                         <label className={styles.formLabel}>连接名称</label>
-                        <input
+                        <Input
                             placeholder="例如: Local Redis"
                             value={name}
                             onChange={e => setName(e.target.value)}
-                            className={styles.formInput}
+                            size="small"
                         />
                     </div>
                     <div className={styles.formGroup}>
                         <label className={styles.formLabel}>主机</label>
-                        <input
+                        <Input
                             placeholder="127.0.0.1"
                             value={host}
                             onChange={e => setHost(e.target.value)}
-                            className={styles.formInput}
+                            size="small"
                         />
                     </div>
                     <div className={styles.formGroup}>
                         <label className={styles.formLabel}>端口</label>
-                        <input
+                        <Input
                             placeholder="6379"
                             value={port}
                             onChange={e => setPort(e.target.value)}
-                            className={styles.formInput}
+                            size="small"
                         />
                     </div>
                     <div className={styles.formGroup}>
                         <label className={styles.formLabel}>密码（可选）</label>
-                        <input
-                            type="password"
+                        <Input.Password
                             placeholder="留空表示无密码"
                             value={password}
                             onChange={e => setPassword(e.target.value)}
-                            className={styles.formInput}
+                            size="small"
                         />
                     </div>
-                    <button onClick={handleConnect} className={styles.connectBtn}>
+                    <Button type="primary" size="small" icon={<LinkOutlined />} onClick={handleConnect}>
                         连接 Redis
-                    </button>
+                    </Button>
                 </div>
             </div>
         );
@@ -303,40 +303,35 @@ export const IOSRedisEditor: React.FC<IOSRedisEditorProps> = ({ state }) => {
         return (
             <div className={styles.container}>
                 <div className={styles.toolbar}>
-                    <button onClick={() => setView('connections')} className={styles.backBtn}>
-                        <IoArrowBack /> 连接
-                    </button>
-                    <div className={styles.tabs}>
-                        <div
-                            onClick={() => setActiveTab('keys')}
-                            className={`${styles.tab} ${activeTab === 'keys' ? styles.active : ''}`}
-                        >
-                            键值浏览
-                        </div>
-                        <div
-                            onClick={() => setActiveTab('terminal')}
-                            className={`${styles.tab} ${activeTab === 'terminal' ? styles.active : ''}`}
-                        >
-                            终端
-                        </div>
-                    </div>
-                    <button onClick={() => disconnect(activeConnectionId!)} className={styles.disconnectBtn}>
+                    <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => setView('connections')}>
+                        连接
+                    </Button>
+                    <Segmented
+                        size="small"
+                        value={activeTab}
+                        onChange={(v) => setActiveTab(v as any)}
+                        options={[
+                            { label: '键值浏览', value: 'keys' },
+                            { label: '终端', value: 'terminal' },
+                        ]}
+                    />
+                    <Button size="small" danger onClick={() => disconnect(activeConnectionId!)}>
                         断开
-                    </button>
+                    </Button>
                 </div>
 
                 {activeTab === 'keys' ? (
                     <>
                         <div className={styles.searchBar}>
-                            <input
-                                value={filter}
-                                onChange={e => setFilter(e.target.value)}
-                                placeholder="Pattern *"
-                                className={styles.searchInput}
-                            />
-                            <button onClick={refreshKeys} className={styles.refreshBtn}>
-                                <IoRefresh size={18} />
-                            </button>
+                            <Space.Compact style={{ width: '100%' }} size="small">
+                                <Input
+                                    value={filter}
+                                    onChange={e => setFilter(e.target.value)}
+                                    placeholder="Pattern *"
+                                    size="small"
+                                />
+                                <Button size="small" icon={<ReloadOutlined />} onClick={refreshKeys} />
+                            </Space.Compact>
                         </div>
                         <div className={styles.keysList}>
                             {keys.map(k => (
@@ -345,7 +340,7 @@ export const IOSRedisEditor: React.FC<IOSRedisEditorProps> = ({ state }) => {
                                     onClick={() => handleKeySelect(k)}
                                     className={styles.keyCard}
                                 >
-                                    <IoKey size={16} color="#888" />
+                                    <KeyOutlined />
                                     <span className={styles.keyName}>{k}</span>
                                 </div>
                             ))}
@@ -362,10 +357,11 @@ export const IOSRedisEditor: React.FC<IOSRedisEditorProps> = ({ state }) => {
                         </div>
                         <div className={styles.terminalInputArea}>
                             <span className={styles.terminalPrompt}>redis&gt;</span>
-                            <input
+                            <Input
                                 value={command}
                                 onChange={e => setCommand(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && runCommand()}
+                                onPressEnter={() => runCommand()}
+                                size="small"
                                 className={styles.terminalInput}
                             />
                         </div>
@@ -379,18 +375,12 @@ export const IOSRedisEditor: React.FC<IOSRedisEditorProps> = ({ state }) => {
     return (
         <div className={styles.container}>
             <div className={styles.valueHeader}>
-                <button onClick={() => setView('keys')} className={styles.backBtn}>
-                    <IoArrowBack /> 返回
-                </button>
+                <Button size="small" icon={<ArrowLeftOutlined />} onClick={() => setView('keys')}>返回</Button>
                 <div className={styles.valueActions}>
                     {!editMode && (keyType === 'string' || keyType === 'hash') && (
-                        <button onClick={() => setEditMode(true)} className={styles.editBtn}>
-                            编辑
-                        </button>
+                        <Button size="small" onClick={() => setEditMode(true)}>编辑</Button>
                     )}
-                    <button onClick={handleDeleteKey} className={styles.deleteBtn}>
-                        <IoTrash size={16} />
-                    </button>
+                    <Button size="small" danger icon={<DeleteOutlined />} onClick={handleDeleteKey} />
                 </div>
             </div>
             <div className={styles.keyInfo}>

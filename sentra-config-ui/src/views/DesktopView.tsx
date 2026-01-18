@@ -17,11 +17,34 @@ import { Launchpad } from '../components/Launchpad';
 import { SideTaskbar } from '../components/SideTaskbar';
 import { ToastContainer, ToastMessage } from '../components/Toast';
 import { Dialog } from '../components/Dialog';
+import { Spin } from 'antd';
 import { Menu, Item, Submenu, useContextMenu } from 'react-contexify';
 import { getDisplayName, getIconForType } from '../utils/icons';
 import { IoCubeOutline, IoTerminalOutline, IoBookOutline } from 'react-icons/io5';
 import type { DeskWindow, DesktopIcon, FileItem, TerminalWin, AppFolder } from '../types/ui';
 import { AppFolderModal } from '../components/AppFolderModal';
+
+const LazyWindowFallback = memo((props: { title: string }) => {
+  return (
+    <div
+      style={{
+        height: '100%',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 10,
+        color: 'rgba(0,0,0,0.55)',
+        fontSize: 13,
+      }}
+    >
+      <Spin size="large" />
+      <div style={{ fontWeight: 700 }}>{props.title}</div>
+      <div style={{ opacity: 0.75 }}>首次打开可能较慢，请稍等...</div>
+    </div>
+  );
+});
 
 class WindowErrorBoundary extends Component<
   { resetKey: string; fallback: (err: any) => ReactNode; children: ReactNode },
@@ -272,7 +295,7 @@ const EnvWindowItem = memo(({
   );
 });
 
-export function DesktopView(props: DesktopViewProps) {
+export const DesktopView = (props: DesktopViewProps) => {
   const {
     isSolidColor,
     currentWallpaper,
@@ -502,11 +525,53 @@ export function DesktopView(props: DesktopViewProps) {
     (presetImporterOpen ? 1 : 0) +
     (fileManagerOpen ? 1 : 0);
 
-  const dockPerformanceMode = (openWindows.length + terminalWindows.length + openUtilityCount) > 3;
+  const lowEndDevice = useMemo(() => {
+    try {
+      const nav = navigator as any;
+      const mem = typeof nav?.deviceMemory === 'number' ? nav.deviceMemory : null;
+      const cores = typeof nav?.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : null;
+      // Conservative: treat <=4GB or <=4 cores as low-end.
+      return (mem != null && mem <= 4) || (cores != null && cores <= 4);
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const dockPerformanceMode = lowEndDevice || (openWindows.length + terminalWindows.length + openUtilityCount) > 3;
 
   const performanceMode =
+    lowEndDevice ||
     maximizedWindowIds.length > 0 ||
-    (openWindows.length + terminalWindows.length + openUtilityCount) >= 4;
+    (openWindows.length + terminalWindows.length + openUtilityCount) >= 3;
+
+  useEffect(() => {
+    if (performanceMode) return;
+    try {
+      const nav = navigator as any;
+      const mem = typeof nav?.deviceMemory === 'number' ? nav.deviceMemory : null;
+      const cores = typeof nav?.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : null;
+      // Low-end devices: avoid prefetching heavy apps to reduce memory pressure.
+      if ((mem != null && mem <= 4) || (cores != null && cores <= 4)) return;
+    } catch {
+      // ignore
+    }
+    const w = window as any;
+    const schedule = (cb: () => void) => {
+      if (typeof w.requestIdleCallback === 'function') return w.requestIdleCallback(cb, { timeout: 2000 });
+      return window.setTimeout(cb, 1200);
+    };
+    const cancel = (id: any) => {
+      if (typeof w.cancelIdleCallback === 'function') return w.cancelIdleCallback(id);
+      return window.clearTimeout(id);
+    };
+
+    const id = schedule(() => {
+      void import('../components/RedisAdminManager/RedisAdminManager');
+      void import('../components/ModelProvidersManager/ModelProvidersManager');
+    });
+
+    return () => cancel(id);
+  }, [performanceMode]);
 
   useEffect(() => {
     try {
@@ -1071,7 +1136,8 @@ export function DesktopView(props: DesktopViewProps) {
             isActive={activeUtilityId === 'redis-admin'}
             isMinimized={redisAdminMinimized}
             performanceMode={performanceMode}
-            initialSize={{ width: 1120, height: 720 }}
+            initialSize={{ width: 1360, height: 820 }}
+            initialMaximized={true}
             onClose={() => {
               handleWindowMaximize('redis-admin', false);
               setRedisAdminOpen(false);
@@ -1086,8 +1152,11 @@ export function DesktopView(props: DesktopViewProps) {
             onFocus={() => { bringUtilityToFront('redis-admin'); }}
             onMove={() => { }}
           >
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
-              <RedisAdminManager addToast={addToast} />
+            <Suspense fallback={<LazyWindowFallback title="加载 Redis 管理器" />}>
+              <RedisAdminManager
+                addToast={addToast}
+                performanceMode={performanceMode || redisAdminMinimized || activeUtilityId !== 'redis-admin'}
+              />
             </Suspense>
           </MacWindow>
         )}
@@ -1117,7 +1186,7 @@ export function DesktopView(props: DesktopViewProps) {
             onFocus={() => { bringUtilityToFront('model-providers-manager'); }}
             onMove={() => { }}
           >
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
+            <Suspense fallback={<LazyWindowFallback title="加载 模型供应商" />}>
               <ModelProvidersManager addToast={addToast as any} />
             </Suspense>
           </MacWindow>

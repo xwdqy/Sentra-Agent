@@ -1,5 +1,5 @@
 :root {
-    --ios-font: -apple-system, BlinkMacSystemFont, sans-serif;
+    --ios-font: var(--system-font, -apple-system, BlinkMacSystemFont, sans-serif);
     --ios-icon-size: 60px;
     --ios-dock-height: 90px;
     --ios-dock-icon-size: clamp(44px, 12vw, 54px);
@@ -15,6 +15,7 @@
     display: flex;
     flex-direction: column;
     z-index: 0;
+    font-family: var(--ios-font);
 }
 
 .ios-grid {
@@ -34,6 +35,7 @@
     align-items: center;
     gap: 8px;
     cursor: pointer;
+    font-family: var(--ios-font);
 }
 
 .ios-icon {
@@ -63,6 +65,7 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    font-family: var(--ios-font);
 }
 
 .ios-dock {

@@ -1,21 +1,75 @@
-import React, { useState } from 'react';
+import React, { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import styles from './PresetsEditor.module.css';
-import { IoSearch, IoDocumentText, IoSave, IoReload, IoInformationCircle, IoAdd, IoTrash, IoChevronDown, IoChevronForward, IoFolder, IoFolderOpen, IoCloudDownload } from 'react-icons/io5';
-import Editor from '@monaco-editor/react';
-import { SafeInput } from './SafeInput';
+import { Alert, Button, Empty, Input, Modal, Space } from 'antd';
+import {
+    CloudDownloadOutlined,
+    DeleteOutlined,
+    DownOutlined,
+    FileTextOutlined,
+    FolderOpenOutlined,
+    FolderOutlined,
+    PlusOutlined,
+    ReloadOutlined,
+    RightOutlined,
+    SaveOutlined,
+    SearchOutlined,
+} from '@ant-design/icons';
 import { PresetsEditorState } from '../hooks/usePresetsEditor';
-import '../utils/monacoSetup';
+import type { ToastMessage } from './Toast';
+
+const MonacoEditor = lazy(async () => {
+    await import('../utils/monacoSetup');
+    const mod = await import('@monaco-editor/react');
+    return { default: mod.default };
+});
+
+class EditorErrorBoundary extends React.Component<
+    { children: React.ReactNode },
+    { error: Error | null }
+> {
+    state: { error: Error | null } = { error: null };
+
+    static getDerivedStateFromError(error: Error) {
+        return { error };
+    }
+
+    render() {
+        if (this.state.error) {
+            return (
+                <div style={{ padding: 12 }}>
+                    <Alert
+                        type="error"
+                        message="编辑器渲染失败"
+                        description={this.state.error.message || String(this.state.error)}
+                        showIcon
+                    />
+                </div>
+            );
+        }
+        return this.props.children;
+    }
+}
 
 interface PresetsEditorProps {
     onClose: () => void;
     theme: 'light' | 'dark';
-    addToast: (type: 'success' | 'error', title: string, message?: string) => void;
+    addToast: (type: ToastMessage['type'], title: string, message?: string) => void;
     state: PresetsEditorState;
     performanceMode?: boolean;
     onOpenPresetImporter?: () => void;
 }
 
-export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, performanceMode = false, onOpenPresetImporter }) => {
+const readUseMonaco = () => {
+    try {
+        const v = localStorage.getItem('sentra_presets_use_monaco');
+        if (v == null) return false;
+        return v === 'true';
+    } catch {
+        return false;
+    }
+};
+
+export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, performanceMode = false, onOpenPresetImporter, addToast }) => {
     const {
         folders,
         selectedFile,
@@ -37,6 +91,55 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
     const [showNewFileModal, setShowNewFileModal] = useState(false);
     const [newFileName, setNewFileName] = useState('');
     const [showDeleteModal, setShowDeleteModal] = useState(false);
+
+    const [useMonaco, setUseMonaco] = useState(() => readUseMonaco());
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('sentra_presets_use_monaco', String(useMonaco));
+        } catch {
+            // ignore
+        }
+    }, [useMonaco]);
+
+    const editorContainerRef = useRef<HTMLDivElement | null>(null);
+    const editorRef = useRef<import('monaco-editor').editor.IStandaloneCodeEditor | null>(null);
+    const [editorSize, setEditorSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+    useEffect(() => {
+        const el = editorContainerRef.current;
+        if (!el) return;
+
+        const ro = new ResizeObserver(() => {
+            const rect = el.getBoundingClientRect();
+            setEditorSize({ w: Math.round(rect.width), h: Math.round(rect.height) });
+            const editor = editorRef.current;
+            if (!editor) return;
+            try {
+                editor.layout();
+            } catch {
+                // ignore
+            }
+        });
+
+        ro.observe(el);
+
+        // run once immediately (ResizeObserver can be delayed)
+        try {
+            const rect = el.getBoundingClientRect();
+            setEditorSize({ w: Math.round(rect.width), h: Math.round(rect.height) });
+        } catch {
+            // ignore
+        }
+
+        return () => {
+            try {
+                ro.disconnect();
+            } catch {
+                // ignore
+            }
+        };
+    }, [selectedFile?.path]);
 
     // Filter folders and files based on search term
     const filteredFolders = searchTerm
@@ -81,22 +184,20 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
             <div className={styles.sidebar}>
                 <div className={styles.sidebarHeader}>
                     <div className={styles.searchWrapper}>
-                        <IoSearch className={styles.searchIcon} />
-                        <SafeInput
-                            type="text"
+                        <Input
+                            size="small"
                             placeholder="搜索文件..."
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
-                            className={styles.searchInput}
+                            allowClear
+                            prefix={<SearchOutlined />}
                         />
-                        <button
-                            className={styles.actionBtn}
-                            style={{ marginLeft: 8, padding: '6px 8px' }}
+                        <Button
+                            size="small"
+                            icon={<PlusOutlined />}
                             onClick={() => setShowNewFileModal(true)}
-                            title="新建文件"
-                        >
-                            <IoAdd size={16} />
-                        </button>
+                            style={{ marginLeft: 8 }}
+                        />
                     </div>
                 </div>
                 <div className={styles.fileList}>
@@ -111,13 +212,13 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
                                 >
                                     {expandedFolders.has(folder.name) ? (
                                         <>
-                                            <IoChevronDown size={14} className={styles.folderChevron} />
-                                            <IoFolderOpen size={16} className={styles.folderIcon} />
+                                            <DownOutlined className={styles.folderChevron} />
+                                            <FolderOpenOutlined className={styles.folderIcon} />
                                         </>
                                     ) : (
                                         <>
-                                            <IoChevronForward size={14} className={styles.folderChevron} />
-                                            <IoFolder size={16} className={styles.folderIcon} />
+                                            <RightOutlined className={styles.folderChevron} />
+                                            <FolderOutlined className={styles.folderIcon} />
                                         </>
                                     )}
                                     <span className={styles.folderName}>{folder.name}</span>
@@ -131,7 +232,7 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
                                                 className={`${styles.fileItem} ${selectedFile?.path === file.path ? styles.active : ''}`}
                                                 onClick={() => selectFile(file)}
                                             >
-                                                <IoDocumentText className={styles.fileIcon} />
+                                                <FileTextOutlined className={styles.fileIcon} />
                                                 <div className={styles.fileName}>{file.name}</div>
                                             </div>
                                         ))}
@@ -150,124 +251,169 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
                         <div className={styles.editorToolbar}>
                             <div className={styles.filePath}>{selectedFile.path}</div>
                             <div className={styles.actions}>
-                                <button
-                                    className={styles.actionBtn}
-                                    onClick={() => onOpenPresetImporter && onOpenPresetImporter()}
-                                    title="打开预设导入"
-                                >
-                                    <IoCloudDownload size={14} />
-                                    导入
-                                </button>
-                                <button
-                                    className={styles.actionBtn}
-                                    onClick={() => selectFile(selectedFile)}
-                                    title="重新加载"
-                                >
-                                    <IoReload size={14} />
-                                </button>
-                                <button
-                                    className={`${styles.actionBtn} ${styles.danger}`}
-                                    onClick={() => setShowDeleteModal(true)}
-                                    title="删除文件"
-                                >
-                                    <IoTrash size={14} />
-                                </button>
-                                <button
-                                    className={`${styles.actionBtn} ${styles.primary}`}
-                                    onClick={saveFile}
-                                    disabled={saving}
-                                >
-                                    <IoSave size={14} />
-                                    {saving ? '保存中...' : '保存'}
-                                </button>
+                                <Space size={8}>
+                                    {import.meta.env.DEV ? (
+                                        <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
+                                            len={fileContent.length} size={editorSize.w}×{editorSize.h}
+                                        </span>
+                                    ) : null}
+                                    <Button
+                                        size="small"
+                                        icon={<CloudDownloadOutlined />}
+                                        onClick={() => onOpenPresetImporter && onOpenPresetImporter()}
+                                    >
+                                        导入
+                                    </Button>
+
+                                    <Button
+                                        size="small"
+                                        onClick={() => {
+                                            setUseMonaco((v) => {
+                                                const next = !v;
+                                                if (performanceMode && next) {
+                                                    const ok = confirm('性能模式已开启，启用高级编辑器会增加内存占用并可能引发卡顿，仍要启用吗？');
+                                                    if (!ok) return v;
+                                                }
+                                                return next;
+                                            });
+                                        }}
+                                        title={useMonaco ? '已启用高级编辑器（占用更高）' : '轻量编辑器（更省内存）'}
+                                    >
+                                        {useMonaco ? '高级' : '轻量'}
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        icon={<ReloadOutlined />}
+                                        onClick={() => selectFile(selectedFile)}
+                                    />
+                                    <Button
+                                        size="small"
+                                        danger
+                                        icon={<DeleteOutlined />}
+                                        onClick={() => setShowDeleteModal(true)}
+                                    />
+                                    <Button
+                                        size="small"
+                                        type="primary"
+                                        icon={<SaveOutlined />}
+                                        onClick={saveFile}
+                                        loading={saving}
+                                    >
+                                        保存
+                                    </Button>
+                                </Space>
                             </div>
                         </div>
                         {loadingFile ? (
                             <div className={styles.emptyState}>读取文件中...</div>
                         ) : (
                             <div className={styles.editorSplit}>
-                                <div className={styles.editorMain}>
-                                    <Editor
-                                        height="100%"
-                                        language={getLanguage(selectedFile.name)}
-                                        value={fileContent}
-                                        onChange={(value) => setFileContent(value || '')}
-                                        theme={theme === 'dark' ? 'vs-dark' : 'light'}
-                                        options={{
-                                            minimap: { enabled: !performanceMode },
-                                            fontSize: 13,
-                                            fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
-                                            scrollBeyondLastLine: false,
-                                            automaticLayout: !performanceMode,
-                                        }}
-                                    />
+                                <div className={styles.editorMain} ref={editorContainerRef}>
+                                    <div style={{ flex: 1, minHeight: 0 }}>
+                                        <EditorErrorBoundary>
+                                            {(() => {
+                                                const fallback = (
+                                                    <textarea
+                                                        value={fileContent}
+                                                        onChange={(e) => setFileContent(e.target.value)}
+                                                        spellCheck={false}
+                                                        style={{
+                                                            width: '100%',
+                                                            height: '100%',
+                                                            resize: 'none',
+                                                            border: 'none',
+                                                            outline: 'none',
+                                                            background: theme === 'dark' ? '#0b0f14' : '#ffffff',
+                                                            color: theme === 'dark' ? 'rgba(255,255,255,0.92)' : '#111827',
+                                                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+                                                            fontSize: 13,
+                                                            lineHeight: 1.45,
+                                                            padding: 12,
+                                                            boxSizing: 'border-box',
+                                                        }}
+                                                    />
+                                                );
+
+                                                if (!useMonaco) return fallback;
+
+                                                return (
+                                                    <Suspense fallback={fallback}>
+                                                        <MonacoEditor
+                                                            key={selectedFile.path}
+                                                            height="100%"
+                                                            language={getLanguage(selectedFile.name)}
+                                                            value={fileContent}
+                                                            onChange={(value) => setFileContent(value || '')}
+                                                            theme={theme === 'dark' ? 'vs-dark' : 'light'}
+                                                            onMount={(editor) => {
+                                                                editorRef.current = editor;
+                                                                window.setTimeout(() => {
+                                                                    try {
+                                                                        editor.layout();
+                                                                    } catch {
+                                                                        // ignore
+                                                                    }
+                                                                }, 0);
+                                                            }}
+                                                            options={{
+                                                                minimap: { enabled: !performanceMode },
+                                                                fontSize: 13,
+                                                                fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
+                                                                scrollBeyondLastLine: false,
+                                                                automaticLayout: true,
+                                                            }}
+                                                        />
+                                                    </Suspense>
+                                                );
+                                            })()}
+                                        </EditorErrorBoundary>
+                                    </div>
                                 </div>
                             </div>
                         )}
                     </>
                 ) : (
                     <div className={styles.emptyState}>
-                        <IoInformationCircle size={48} style={{ marginBottom: 16, opacity: 0.5 }} />
-                        <div>选择一个文件开始编辑</div>
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择一个文件开始编辑" />
                     </div>
                 )}
             </div>
 
-            {showNewFileModal && (
-                <div className={styles.modalOverlay}>
-                    <div className={styles.modalContent}>
-                        <div className={styles.modalTitle}>新建文件</div>
-                        <input
-                            type="text"
-                            className={styles.modalInput}
-                            placeholder="文件名 (例如: new_preset.json)"
-                            value={newFileName}
-                            onChange={(e) => setNewFileName(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleCreateFile()}
-                            autoFocus
-                        />
-                        <div className={styles.modalActions}>
-                            <button
-                                className={styles.cancelBtn}
-                                onClick={() => setShowNewFileModal(false)}
-                            >
-                                取消
-                            </button>
-                            <button
-                                className={styles.confirmBtn}
-                                onClick={handleCreateFile}
-                            >
-                                创建
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <Modal
+                open={showNewFileModal}
+                title="新建文件"
+                onCancel={() => setShowNewFileModal(false)}
+                onOk={handleCreateFile}
+                okText="创建"
+                cancelText="取消"
+                okButtonProps={{ disabled: !newFileName.trim() }}
+                confirmLoading={saving}
+                destroyOnHidden
+            >
+                <Input
+                    autoFocus
+                    placeholder="文件名 (例如: new_preset.json)"
+                    value={newFileName}
+                    onChange={(e) => setNewFileName(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && void handleCreateFile()}
+                />
+            </Modal>
 
-            {showDeleteModal && selectedFile && (
-                <div className={styles.modalOverlay}>
-                    <div className={styles.modalContent}>
-                        <div className={styles.modalTitle}>确认删除</div>
-                        <div style={{ padding: '16px 0', color: 'var(--text-secondary)' }}>
-                            确定要删除文件 <strong>{selectedFile.name}</strong> 吗？此操作无法撤销。
-                        </div>
-                        <div className={styles.modalActions}>
-                            <button
-                                className={styles.cancelBtn}
-                                onClick={() => setShowDeleteModal(false)}
-                            >
-                                取消
-                            </button>
-                            <button
-                                className={styles.deleteBtn}
-                                onClick={handleDeleteFile}
-                            >
-                                删除
-                            </button>
-                        </div>
-                    </div>
+            <Modal
+                open={showDeleteModal && !!selectedFile}
+                title="确认删除"
+                onCancel={() => setShowDeleteModal(false)}
+                onOk={handleDeleteFile}
+                okText="删除"
+                cancelText="取消"
+                okButtonProps={{ danger: true, disabled: !selectedFile }}
+                confirmLoading={saving}
+                destroyOnHidden
+            >
+                <div style={{ padding: '6px 0', color: 'var(--text-secondary)' }}>
+                    确定要删除文件 <strong>{selectedFile?.name}</strong> 吗？此操作无法撤销。
                 </div>
-            )}
+            </Modal>
         </div>
     );
 };

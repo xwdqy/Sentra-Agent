@@ -46,6 +46,10 @@
   padding: 0 6px;
 }
 
+.fontMenuItem {
+  padding: 0 6px;
+}
+
 .menuItem:hover {
   background: rgba(var(--sentra-accent-rgb), 0.10);
 }
@@ -396,10 +400,76 @@
   background: rgba(255, 255, 255, 1);
 }
 
-:root[data-theme='dark'] .accentPicker {
+.fontButton {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--sentra-border);
+  background: linear-gradient(var(--sentra-accent-tint-08), var(--sentra-accent-tint-08)), var(--sentra-glass-bg-strong);
+}
+
+.fontChevron {
+  opacity: 0.7;
+}
+
+.fontPicker {
+  position: fixed;
+  top: 38px;
+  left: 12px;
+  width: 244px;
   background: linear-gradient(var(--sentra-accent-tint-16), var(--sentra-accent-tint-16)), var(--sentra-panel-bg);
-  color: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 20px 40px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(30px);
+  border-radius: 16px;
+  padding: 10px;
+  z-index: 10000;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 40px rgba(0, 0, 0, 0.15);
+  color: var(--sentra-fg);
+}
+
+.fontHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.fontTitle {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fontList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(320px, calc(100vh - 110px));
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.fontItem {
+  appearance: none;
+  border: 1px solid var(--sentra-border);
+  background: var(--sentra-glass-bg-strong);
+  border-radius: 10px;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--sentra-fg);
+  font-size: 12px;
+}
+
+.fontItem:hover {
+  border-color: rgba(var(--sentra-accent-rgb), 0.35);
+  box-shadow: 0 0 0 2px rgba(var(--sentra-accent-rgb), 0.14);
+}
+
+.fontItemActive {
+  border-color: rgba(var(--sentra-accent-rgb), 0.55);
+  box-shadow: 0 0 0 2px rgba(var(--sentra-accent-rgb), 0.18);
 }
 
 :root[data-theme='dark'] .menuItem:hover {
@@ -409,6 +479,28 @@
 :root[data-theme='dark'] .accentButton {
   border-color: rgba(255, 255, 255, 0.14);
   background: linear-gradient(var(--sentra-accent-tint-12), var(--sentra-accent-tint-12)), rgba(0, 0, 0, 0.20);
+}
+
+:root[data-theme='dark'] .fontButton {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: linear-gradient(var(--sentra-accent-tint-12), var(--sentra-accent-tint-12)), rgba(0, 0, 0, 0.20);
+}
+
+:root[data-theme='dark'] .fontPicker {
+  background: linear-gradient(var(--sentra-accent-tint-16), var(--sentra-accent-tint-16)), var(--sentra-panel-bg);
+  color: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 20px 40px rgba(0, 0, 0, 0.35);
+}
+
+:root[data-theme='dark'] .fontItem {
+  background: rgba(0, 0, 0, 0.22);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+:root[data-theme='dark'] .fontItemActive {
+  border-color: rgba(var(--sentra-accent-rgb), 0.60);
+  box-shadow: 0 0 0 2px rgba(var(--sentra-accent-rgb), 0.20);
 }
 
 :root[data-theme='dark'] .ccIcon {

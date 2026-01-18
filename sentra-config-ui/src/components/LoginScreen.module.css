@@ -14,7 +14,7 @@
     z-index: 99999;
     color: white;
     overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    font-family: var(--system-font);
     text-rendering: optimizeLegibility;
     font-kerning: normal;
     user-select: none;
@@ -70,7 +70,7 @@
     align-items: center;
     justify-content: center;
     color: #333;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: var(--system-font);
 }
 
 .restartingSpinner {

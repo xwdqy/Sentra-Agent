@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './WallpaperEditorModal.module.css';
+import { Button, Select, Slider, Space } from 'antd';
+import { MinusOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
 
 export type WallpaperEditorModalProps = {
   isOpen: boolean;
@@ -14,8 +16,6 @@ type ImgInfo = {
   w: number;
   h: number;
 };
-
-type RangeStyle = React.CSSProperties & { ['--pct']?: string };
 
 function clamp(val: number, min: number, max: number) {
   return Math.max(min, Math.min(max, val));
@@ -42,16 +42,6 @@ export function WallpaperEditorModal({
   const [jpegQuality, setJpegQuality] = useState(0.86);
   const [outputPreset, setOutputPreset] = useState<'auto' | '1280' | '1920' | '2560'>('auto');
   const [estimatedMb, setEstimatedMb] = useState<number | null>(null);
-
-  const zoomPctStyle = useMemo(() => {
-    const pct = ((zoom - 1) / (4 - 1)) * 100;
-    return { ['--pct' as any]: `${clamp(pct, 0, 100)}%` } as RangeStyle;
-  }, [zoom]);
-
-  const qualityPctStyle = useMemo(() => {
-    const pct = ((jpegQuality - 0.7) / (0.95 - 0.7)) * 100;
-    return { ['--pct' as any]: `${clamp(pct, 0, 100)}%` } as RangeStyle;
-  }, [jpegQuality]);
 
   const autoOutputWidth = useMemo(() => {
     const w = Math.max(1, Math.round(targetSize?.w || 0));
@@ -307,15 +297,15 @@ export function WallpaperEditorModal({
           <div className={styles.previewPane}>
             <div className={styles.previewFrame} style={frameStyle} ref={frameRef}>
               <div className={styles.previewToolbar}>
-                <button className={styles.toolBtn} onClick={zoomOut} aria-label="zoom-out">−</button>
-                <button className={styles.toolBtn} onClick={zoomIn} aria-label="zoom-in">＋</button>
+                <Button size="small" className={styles.toolBtn} icon={<MinusOutlined />} onClick={zoomOut} aria-label="zoom-out" />
+                <Button size="small" className={styles.toolBtn} icon={<PlusOutlined />} onClick={zoomIn} aria-label="zoom-in" />
                 <div className={styles.toolDivider} />
-                <button className={styles.toolBtn} onClick={applyCenter}>居中</button>
-                <button className={styles.toolBtn} onClick={applyFit}>适配</button>
+                <Button size="small" className={styles.toolBtn} onClick={applyCenter}>居中</Button>
+                <Button size="small" className={styles.toolBtn} onClick={applyFit}>适配</Button>
                 <div className={styles.toolDivider} />
-                <button className={styles.toolBtn} onClick={() => setShowGrid(v => !v)}>
+                <Button size="small" className={styles.toolBtn} onClick={() => setShowGrid(v => !v)}>
                   {showGrid ? '网格开' : '网格关'}
-                </button>
+                </Button>
               </div>
 
               <div
@@ -351,15 +341,12 @@ export function WallpaperEditorModal({
               <div className={styles.groupTitle}>取景</div>
               <div className={styles.row}>
                 <div className={styles.label}>缩放</div>
-                <input
-                  className={styles.slider}
-                  style={zoomPctStyle}
-                  type="range"
+                <Slider
                   min={1}
                   max={4}
                   step={0.01}
                   value={zoom}
-                  onChange={(e) => setZoom(Number(e.target.value))}
+                  onChange={(v) => setZoom(Number(v))}
                 />
               </div>
               <div className={styles.metaRow}>
@@ -372,16 +359,17 @@ export function WallpaperEditorModal({
               <div className={styles.groupTitle}>输出</div>
               <div className={styles.row}>
                 <div className={styles.label}>分辨率</div>
-                <select
-                  className={styles.select}
+                <Select
+                  size="small"
                   value={outputPreset}
-                  onChange={(e) => setOutputPreset(e.target.value as any)}
-                >
-                  <option value="auto">自动（推荐）</option>
-                  <option value="1280">1280</option>
-                  <option value="1920">1920</option>
-                  <option value="2560">2560</option>
-                </select>
+                  onChange={(v) => setOutputPreset(v as any)}
+                  options={[
+                    { value: 'auto', label: '自动（推荐）' },
+                    { value: '1280', label: '1280' },
+                    { value: '1920', label: '1920' },
+                    { value: '2560', label: '2560' },
+                  ]}
+                />
               </div>
               <div className={styles.metaRow}>
                 <div className={styles.muted}>{outputWidth}×{outputHeight}</div>
@@ -390,15 +378,12 @@ export function WallpaperEditorModal({
 
               <div className={styles.row}>
                 <div className={styles.label}>质量</div>
-                <input
-                  className={styles.slider}
-                  style={qualityPctStyle}
-                  type="range"
+                <Slider
                   min={0.7}
                   max={0.95}
                   step={0.01}
                   value={jpegQuality}
-                  onChange={(e) => setJpegQuality(Number(e.target.value))}
+                  onChange={(v) => setJpegQuality(Number(v))}
                 />
               </div>
               <div className={styles.metaRow}>
@@ -410,16 +395,18 @@ export function WallpaperEditorModal({
             <div className={styles.group}>
               <div className={styles.groupTitle}>操作</div>
               <div className={styles.actions}>
-                <button className={styles.btn} onClick={applyFit}>一键适配屏幕</button>
-                <button className={styles.btn} onClick={applyCenter}>居中</button>
+                <Button size="small" className={styles.btn} onClick={applyFit}>一键适配屏幕</Button>
+                <Button size="small" className={styles.btn} onClick={applyCenter}>居中</Button>
               </div>
             </div>
           </div>
         </div>
 
         <div className={styles.footer}>
-          <button className={styles.btnGhost} onClick={onCancel}>取消</button>
-          <button className={styles.btnPrimary} onClick={handleSave}>保存</button>
+          <Space size={8}>
+            <Button size="small" onClick={onCancel}>取消</Button>
+            <Button size="small" type="primary" icon={<SaveOutlined />} onClick={handleSave}>保存</Button>
+          </Space>
         </div>
       </div>
     </div>
