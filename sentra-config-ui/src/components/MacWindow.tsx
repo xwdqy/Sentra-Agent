@@ -351,7 +351,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     style: {
       width: isMaximized ? `calc(100vw - ${safeLeft + safeRight}px)` : size.width,
       height: isMaximized ? `calc(100vh - ${safeTop + safeBottom}px)` : size.height,
-      zIndex: Math.min(zIndex, 9949),
+      zIndex,
       position: isMaximized ? 'fixed' : 'absolute',
       top: isMaximized ? safeTop : 0,
       left: isMaximized ? safeLeft : 0,

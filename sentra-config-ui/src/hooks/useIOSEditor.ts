@@ -25,7 +25,7 @@ export function useIOSEditor({ setSaving, addToast, loadConfigs }: UseIOSEditorP
         setIosEditorWindows(prev => prev.map(w => w.id === existing.id ? { ...w, minimized: false } : w));
       }
       setActiveIOSEditorId(existing.id);
-      return;
+      return existing.id;
     }
     const id = `ios-editor-${Date.now()}`;
     const win: IOSEditorWin = {
@@ -36,6 +36,7 @@ export function useIOSEditor({ setSaving, addToast, loadConfigs }: UseIOSEditorP
     };
     setIosEditorWindows(prev => [...prev, win]);
     setActiveIOSEditorId(id);
+    return id;
   };
 
   const minimize = (id: string) => {

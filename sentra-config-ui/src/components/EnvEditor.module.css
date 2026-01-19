@@ -6,6 +6,8 @@
   color: var(--text-primary);
   font-family: var(--system-font);
   transition: background-color 0.3s, color 0.3s;
+  --local-control-height: 32px;
+  --local-control-radius: 10px;
 }
 
 /* Theme Variables */
@@ -78,8 +80,8 @@
   width: 100%;
   background: var(--input-bg);
   border: 1px solid var(--input-border);
-  border-radius: 4px;
-  padding: 6px 8px 6px 28px;
+  border-radius: 10px;
+  padding: 5px 10px 5px 28px;
   color: var(--text-primary);
   font-size: 13px;
   outline: none;
@@ -135,16 +137,23 @@
 }
 
 .toolbar {
-  height: 40px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  padding: 0 12px;
   background: linear-gradient(var(--sentra-accent-tint-08), var(--sentra-accent-tint-08)), var(--sentra-glass-bg-strong);
   border-bottom: 1px solid var(--border-color);
   border-radius: 6px 6px 0 0;
   box-shadow: none;
   gap: 12px;
+}
+
+.actions :global(.ant-btn-sm) {
+  height: 28px;
+  padding-inline: 10px;
+  font-size: 12px;
+  border-radius: 10px;
 }
 
 .container[data-theme='dark'] .toolbar {
@@ -983,6 +992,43 @@
   flex-direction: column;
 }
 
+.mobileContainer .toolbar {
+  gap: 8px;
+  height: auto;
+  padding: 8px 10px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.mobileContainer .actions {
+  width: 100%;
+  flex: 1 1 100%;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mobileContainer .searchInput {
+  font-size: 12px;
+  padding: 5px 10px 5px 26px;
+}
+
+.mobileContainer .searchInput:global(.ant-input-affix-wrapper) {
+  height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.mobileContainer .searchInput :global(.ant-input) {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.mobileContainer .searchIcon {
+  left: 8px;
+  font-size: 13px;
+}
+
 .mobileContainer .mainContent {
   overflow-y: auto;
 }
@@ -993,9 +1039,10 @@
 
 .mobileSearchInputBox {
   position: relative;
-  flex: 1;
+  flex: 1 1 100%;
   display: flex;
   align-items: center;
+  width: 100%;
   min-width: 0;
 }
 

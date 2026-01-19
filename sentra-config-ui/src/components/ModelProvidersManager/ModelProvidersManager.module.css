@@ -140,6 +140,12 @@
   grid-template-columns: 1fr;
 }
 
+.mobileRoot :global(.ant-btn-sm) {
+  height: 28px;
+  padding-inline: 10px;
+  font-size: 12px;
+}
+
 .mobileHidden {
   display: none !important;
 }
@@ -302,6 +308,20 @@
 
 .modelAntdList :global(.ant-list-item-meta-description) {
   color: var(--mpm-muted);
+}
+
+.modelAntdList :global(.ant-table) {
+  background: transparent;
+  width: 100%;
+}
+
+.modelAntdList :global(.ant-table-container) {
+  overflow: visible;
+}
+
+.modelAntdList :global(.ant-table-tbody > tr > td) {
+  padding: 0;
+  border-bottom: none;
 }
 
 .modelSettingsModal :global(.ant-modal-content),
@@ -594,7 +614,7 @@
   border: 1px solid var(--mpm-input-border);
   background: var(--mpm-input-bg);
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 8px 10px;
   outline: none;
   font-size: 13px;
   color: var(--mpm-input-fg);
@@ -606,11 +626,28 @@
   border: 1px solid var(--mpm-input-border);
   background: var(--mpm-input-bg);
   border-radius: 12px;
-  padding: 10px 12px 10px 32px;
+  padding: 8px 10px 8px 30px;
   outline: none;
   font-size: 13px;
   color: var(--mpm-input-fg);
   caret-color: var(--mpm-caret);
+}
+
+.providerSearchRow {
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+.providerSearchInput :global(.ant-input-affix-wrapper) {
+  height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-radius: 12px;
+}
+
+.providerSearchInput :global(.ant-input) {
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .searchInput::placeholder,
@@ -802,7 +839,7 @@
   align-items: center;
   justify-content: flex-start;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 6px;
   padding: 2px 0 4px;
 }
 
@@ -1204,6 +1241,29 @@
   justify-content: space-between;
   gap: 12px;
   transition: background 120ms ease, border-color 120ms ease;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.modelRowMeta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.modelRowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+}
+
+.mobileRoot .modelCaps {
+  flex-wrap: wrap;
 }
 
 .modelRow:hover {
@@ -1657,11 +1717,21 @@
   margin-top: 10px;
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 10px;
+  justify-content: space-between;
   flex-wrap: wrap;
   row-gap: 10px;
   min-width: 0;
+}
+
+.mobileRoot .llmToolbar {
+  gap: 8px;
+  row-gap: 8px;
+}
+
+.mobileRoot .llmToolbarLeft {
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .llmToolbarLeft {
@@ -1791,6 +1861,23 @@
   justify-content: flex-end;
   gap: 10px;
   position: relative;
+}
+
+.tooltipKeyRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(520px, 70vw);
+  overflow: hidden;
+}
+
+.tooltipKeyText {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .modelPickerInlineRow {

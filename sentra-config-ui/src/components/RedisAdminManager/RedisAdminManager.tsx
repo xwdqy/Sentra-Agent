@@ -1182,7 +1182,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
   }, [addToast, keyTableSelectedKeys]);
 
   return (
-    <div className={styles.root}>
+    <div className={`${styles.root} ${isCompact ? styles.mobileRoot : ''}`}>
       <Modal
         title="删除 Key"
         open={deleteKeyOpen}
@@ -1375,25 +1375,26 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
             <div className={styles.sidebarSection}>
               <div className={styles.sidebarSectionTitle}>Pattern</div>
 
-              <Space.Compact style={{ width: '100%' }} size="small">
-                <Input
-                  className={styles.antdInput}
+              <div className={styles.patternNative}>
+                <input
+                  className={styles.patternNativeInput}
                   value={pattern}
                   onChange={(e) => setPattern(e.target.value)}
                   placeholder="例如: sentra:group:* 或 sentra:memory:*"
                 />
-                <Button
+                <button
+                  type="button"
+                  className={styles.patternNativeBtn}
                   onClick={() => {
                     setRightTab('detail');
                     runList();
                     if (isCompact) setMobilePane('keys');
                   }}
                   disabled={busy || !pattern.trim()}
-                  type="primary"
                 >
                   列出
-                </Button>
-              </Space.Compact>
+                </button>
+              </div>
 
               <div style={{ marginTop: 10 }}>
                 <div className={styles.small} style={{ marginBottom: 8 }}>快捷分组（点击即可套用 pattern）</div>

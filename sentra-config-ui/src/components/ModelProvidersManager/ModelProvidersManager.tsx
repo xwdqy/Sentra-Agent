@@ -988,30 +988,10 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     }
 
     const id = providerEditorTargetId;
-    if (!id) return;
-    setProviders(prev => prev.map(px => (px.id === id ? { ...px, ...payload } : px)));
-    setProviderEditorOpen(false);
+  if (!id) return;
+  setProviders(prev => prev.map(px => (px.id === id ? { ...px, ...payload } : px)));
+  setProviderEditorOpen(false);
   }, [providerEditorForm, providerEditorMode, providerEditorTargetId]);
-
-  const copyText = useCallback(async (text: string) => {
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-      }
-      addToast('success', '已复制', text);
-    } catch (e: any) {
-      addToast('error', '复制失败', e?.message ? String(e.message) : String(e));
-    }
-  }, [addToast]);
 
   const runTestModels = useCallback(async () => {
     if (!activeProvider) return;
@@ -2411,19 +2391,8 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                               trigger={isCompact ? ['click'] : ['hover']}
                                               placement="topLeft"
                                               title={(
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                                  <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>{it.key}</span>
-                                                  <Button
-                                                    size="small"
-                                                    type="text"
-                                                    icon={<CopyOutlined />}
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      copyText(String(it.key || ''));
-                                                    }}
-                                                    aria-label="复制 Key"
-                                                    title="复制 Key"
-                                                  />
+                                                <div className={styles.tooltipKeyRow}>
+                                                  <span className={styles.tooltipKeyText}>{it.key}</span>
                                                 </div>
                                               )}
                                             >
@@ -2628,19 +2597,8 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                           trigger={isCompact ? ['click'] : ['hover']}
                                           placement="topLeft"
                                           title={(
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                                              <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>{it.key}</span>
-                                              <Button
-                                                size="small"
-                                                type="text"
-                                                icon={<CopyOutlined />}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  copyText(String(it.key || ''));
-                                                }}
-                                                aria-label="复制 Key"
-                                                title="复制 Key"
-                                              />
+                                            <div className={styles.tooltipKeyRow}>
+                                              <span className={styles.tooltipKeyText}>{it.key}</span>
                                             </div>
                                           )}
                                         >
@@ -2809,7 +2767,12 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                           size="small"
                                           type="text"
                                           icon={<CopyOutlined />}
-                                          onClick={() => copyText(title)}
+                                          onClick={(e) => {
+                                            try { (e as any)?.stopPropagation?.(); } catch {}
+                                            navigator.clipboard?.writeText(String(title || ''))
+                                              .then(() => addToast('success', '已复制', String(title || '')))
+                                              .catch((err) => addToast('error', '复制失败', String((err as any)?.message || err)));
+                                          }}
                                         />
                                       </div>
                                     </div>

@@ -31,6 +31,8 @@ export type MobileViewProps = {
 
 export function MobileView(props: MobileViewProps) {
   const [returnToLaunchpad, setReturnToLaunchpad] = React.useState(false);
+  const [iosZMap, setIosZMap] = React.useState<Record<string, number>>({});
+  const iosZNextRef = React.useRef(2200);
   const {
     allItems,
     usageCounts,
@@ -64,6 +66,7 @@ export function MobileView(props: MobileViewProps) {
   const allocateZ = useWindowsStore(s => s.allocateZ);
   const {
     terminalWindows,
+    bringTerminalToFront,
     handleCloseTerminal,
     handleMinimizeTerminal,
   } = useTerminals({ addToast, allocateZ });
@@ -79,6 +82,46 @@ export function MobileView(props: MobileViewProps) {
     deleteVar: handleIOSDeleteVar,
     save: handleIOSSave,
   } = useIOSEditor({ setSaving, addToast, loadConfigs });
+
+  const allocateIOSZ = React.useCallback(() => {
+    try {
+      if (allocateZ) return allocateZ();
+    } catch {
+      // ignore
+    }
+    iosZNextRef.current += 1;
+    return iosZNextRef.current;
+  }, [allocateZ]);
+
+  const bringIOSAppToFront = React.useCallback((id: string) => {
+    if (!id) return;
+    const z = allocateIOSZ();
+    setIosZMap(prev => ({ ...prev, [id]: z }));
+  }, [allocateIOSZ]);
+
+  React.useEffect(() => {
+    if (iosPresetsEditorOpen && iosZMap['ios-presets-editor'] == null) bringIOSAppToFront('ios-presets-editor');
+  }, [bringIOSAppToFront, iosPresetsEditorOpen, iosZMap]);
+
+  React.useEffect(() => {
+    if (iosPresetImporterOpen && iosZMap['ios-preset-importer'] == null) bringIOSAppToFront('ios-preset-importer');
+  }, [bringIOSAppToFront, iosPresetImporterOpen, iosZMap]);
+
+  React.useEffect(() => {
+    if (iosFileManagerOpen && iosZMap['ios-file-manager'] == null) bringIOSAppToFront('ios-file-manager');
+  }, [bringIOSAppToFront, iosFileManagerOpen, iosZMap]);
+
+  React.useEffect(() => {
+    if (iosModelProvidersManagerOpen && iosZMap['ios-model-providers-manager'] == null) bringIOSAppToFront('ios-model-providers-manager');
+  }, [bringIOSAppToFront, iosModelProvidersManagerOpen, iosZMap]);
+
+  React.useEffect(() => {
+    if (iosRedisAdminOpen && iosZMap['ios-redis-admin'] == null) bringIOSAppToFront('ios-redis-admin');
+  }, [bringIOSAppToFront, iosRedisAdminOpen, iosZMap]);
+
+  React.useEffect(() => {
+    if (activeIOSEditorId && iosZMap[activeIOSEditorId] == null) bringIOSAppToFront(activeIOSEditorId);
+  }, [activeIOSEditorId, bringIOSAppToFront, iosZMap]);
 
   const topByUsage = [...allItems]
     .map(item => ({ item, count: usageCounts[`${item.type}:${item.name}`] || 0 }))
@@ -106,7 +149,8 @@ export function MobileView(props: MobileViewProps) {
       onClick: () => {
         recordUsage(`${it.type}:${it.name}`);
         setReturnToLaunchpad(false); // Reset when opening from Dock
-        openIOSWindow(it);
+        const id = openIOSWindow(it);
+        bringIOSAppToFront(id);
       }
     });
   }
@@ -116,21 +160,30 @@ export function MobileView(props: MobileViewProps) {
     id: 'module-presets-editor',
     name: '预设撰写',
     icon: getIconForType('agent-presets', 'module'),
-    onClick: () => setIosPresetsEditorOpen(true)
+    onClick: () => {
+      setIosPresetsEditorOpen(true);
+      bringIOSAppToFront('ios-presets-editor');
+    }
   });
 
   push({
     id: 'module-preset-importer',
     name: '预设导入',
     icon: getIconForType('agent-presets', 'module'),
-    onClick: () => setIosPresetImporterOpen(true)
+    onClick: () => {
+      setIosPresetImporterOpen(true);
+      bringIOSAppToFront('ios-preset-importer');
+    }
   });
 
   push({
     id: 'module-file-manager',
     name: '文件管理',
     icon: getIconForType('file-manager', 'module'),
-    onClick: () => setIosFileManagerOpen(true)
+    onClick: () => {
+      setIosFileManagerOpen(true);
+      bringIOSAppToFront('ios-file-manager');
+    }
   });
 
 
@@ -149,7 +202,14 @@ export function MobileView(props: MobileViewProps) {
       />
 
       {terminalWindows.map(term => (
-        <div key={term.id} className="ios-app-window" style={{ display: term.minimized ? 'none' : 'flex' }}>
+        <div
+          key={term.id}
+          className="ios-app-window"
+          style={{ display: term.minimized ? 'none' : 'flex', zIndex: term.z ?? 2000 }}
+          onPointerDownCapture={() => {
+            bringTerminalToFront(term.id);
+          }}
+        >
           <div className="ios-app-header">
             <div className="ios-back-btn" onClick={() => {
               handleMinimizeTerminal(term.id);
@@ -181,6 +241,7 @@ export function MobileView(props: MobileViewProps) {
               recordUsage('app:presets');
               setReturnToLaunchpad(true);
               setIosPresetsEditorOpen(true);
+              bringIOSAppToFront('ios-presets-editor');
               setLaunchpadOpen(false);
             }
           },
@@ -191,6 +252,7 @@ export function MobileView(props: MobileViewProps) {
               recordUsage('app:preset-importer');
               setReturnToLaunchpad(true);
               setIosPresetImporterOpen(true);
+              bringIOSAppToFront('ios-preset-importer');
               setLaunchpadOpen(false);
             }
           },
@@ -201,6 +263,7 @@ export function MobileView(props: MobileViewProps) {
               recordUsage('app:filemanager');
               setReturnToLaunchpad(true);
               setIosFileManagerOpen(true);
+              bringIOSAppToFront('ios-file-manager');
               setLaunchpadOpen(false);
             }
           },
@@ -211,6 +274,7 @@ export function MobileView(props: MobileViewProps) {
               recordUsage('app:model-providers-manager');
               setReturnToLaunchpad(true);
               setIosModelProvidersManagerOpen(true);
+              bringIOSAppToFront('ios-model-providers-manager');
               setLaunchpadOpen(false);
             }
           },
@@ -221,6 +285,7 @@ export function MobileView(props: MobileViewProps) {
               recordUsage('app:redis-admin');
               setReturnToLaunchpad(true);
               setIosRedisAdminOpen(true);
+              bringIOSAppToFront('ios-redis-admin');
               setLaunchpadOpen(false);
             }
           },
@@ -230,7 +295,8 @@ export function MobileView(props: MobileViewProps) {
             onClick: () => {
               recordUsage(`${item.type}:${item.name}`);
               setReturnToLaunchpad(true); // Set flag when opening from Launchpad
-              openIOSWindow(item);
+              const id = openIOSWindow(item);
+              bringIOSAppToFront(id);
               setLaunchpadOpen(false);
             }
           }))
@@ -240,7 +306,11 @@ export function MobileView(props: MobileViewProps) {
       {iosEditorWindows
         .filter(win => !win.minimized)
         .map(win => (
-          <div key={win.id} style={{ display: win.id === activeIOSEditorId ? 'flex' : 'none' }}>
+          <div
+            key={win.id}
+            style={{ display: win.id === activeIOSEditorId ? 'flex' : 'none', position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: iosZMap[win.id] ?? 2000 }}
+            onPointerDownCapture={() => bringIOSAppToFront(win.id)}
+          >
             <IOSEditor
               appName={getDisplayName(win.file.name)}
               vars={win.editedVars}
@@ -263,7 +333,10 @@ export function MobileView(props: MobileViewProps) {
         ))}
 
       {iosPresetsEditorOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
+        <div
+          style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: iosZMap['ios-presets-editor'] ?? 2000 }}
+          onPointerDownCapture={() => bringIOSAppToFront('ios-presets-editor')}
+        >
           <IOSPresetsEditor
             onClose={() => setIosPresetsEditorOpen(false)}
             addToast={addToast}
@@ -273,7 +346,10 @@ export function MobileView(props: MobileViewProps) {
       )}
 
       {iosPresetImporterOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
+        <div
+          style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: iosZMap['ios-preset-importer'] ?? 2000 }}
+          onPointerDownCapture={() => bringIOSAppToFront('ios-preset-importer')}
+        >
           <PresetImporter
             onClose={() => setIosPresetImporterOpen(false)}
             addToast={addToast as any}
@@ -284,7 +360,10 @@ export function MobileView(props: MobileViewProps) {
       )}
 
       {iosFileManagerOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
+        <div
+          style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: iosZMap['ios-file-manager'] ?? 2000 }}
+          onPointerDownCapture={() => bringIOSAppToFront('ios-file-manager')}
+        >
           <div className="ios-app-window" style={{ display: 'flex' }}>
             <div className="ios-app-header">
               <div className="ios-back-btn" onClick={() => setIosFileManagerOpen(false)}>
@@ -295,7 +374,7 @@ export function MobileView(props: MobileViewProps) {
                 关闭
               </div>
             </div>
-            <div className="ios-app-content" style={{ overflow: 'hidden' }}>
+            <div className="ios-app-content">
               <IOSFileManager
                 onClose={() => setIosFileManagerOpen(false)}
                 addToast={addToast}
@@ -307,7 +386,10 @@ export function MobileView(props: MobileViewProps) {
       )}
 
       {iosModelProvidersManagerOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
+        <div
+          style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: iosZMap['ios-model-providers-manager'] ?? 2000 }}
+          onPointerDownCapture={() => bringIOSAppToFront('ios-model-providers-manager')}
+        >
           <div className="ios-app-window" style={{ display: 'flex' }}>
             <div className="ios-app-header">
               <div className="ios-back-btn" onClick={() => {
@@ -321,7 +403,7 @@ export function MobileView(props: MobileViewProps) {
                 关闭
               </div>
             </div>
-            <div className="ios-app-content" style={{ overflow: 'hidden' }}>
+            <div className="ios-app-content">
               <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
                 <ModelProvidersManager addToast={addToast as any} />
               </Suspense>
@@ -331,7 +413,10 @@ export function MobileView(props: MobileViewProps) {
       )}
 
       {iosRedisAdminOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: 2000 }}>
+        <div
+          style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: iosZMap['ios-redis-admin'] ?? 2000 }}
+          onPointerDownCapture={() => bringIOSAppToFront('ios-redis-admin')}
+        >
           <div className="ios-app-window" style={{ display: 'flex' }}>
             <div className="ios-app-header">
               <div className="ios-back-btn" onClick={() => {
@@ -345,7 +430,7 @@ export function MobileView(props: MobileViewProps) {
                 关闭
               </div>
             </div>
-            <div className="ios-app-content" style={{ overflow: 'hidden' }}>
+            <div className="ios-app-content">
               <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
                 <RedisAdminManager addToast={addToast as any} />
               </Suspense>
