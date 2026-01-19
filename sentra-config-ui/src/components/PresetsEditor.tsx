@@ -16,6 +16,7 @@ import {
 } from '@ant-design/icons';
 import { PresetsEditorState } from '../hooks/usePresetsEditor';
 import type { ToastMessage } from './Toast';
+import { storage } from '../utils/storage';
 
 const MonacoEditor = lazy(async () => {
     await import('../utils/monacoSetup');
@@ -60,13 +61,7 @@ interface PresetsEditorProps {
 }
 
 const readUseMonaco = () => {
-    try {
-        const v = localStorage.getItem('sentra_presets_use_monaco');
-        if (v == null) return false;
-        return v === 'true';
-    } catch {
-        return false;
-    }
+    return storage.getBool('sentra_presets_use_monaco', { fallback: false });
 };
 
 export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, performanceMode = false, onOpenPresetImporter, addToast }) => {
@@ -95,11 +90,7 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
     const [useMonaco, setUseMonaco] = useState(() => readUseMonaco());
 
     useEffect(() => {
-        try {
-            localStorage.setItem('sentra_presets_use_monaco', String(useMonaco));
-        } catch {
-            // ignore
-        }
+        storage.setBool('sentra_presets_use_monaco', useMonaco);
     }, [useMonaco]);
 
     const editorContainerRef = useRef<HTMLDivElement | null>(null);
@@ -110,27 +101,49 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
         const el = editorContainerRef.current;
         if (!el) return;
 
-        const ro = new ResizeObserver(() => {
-            const rect = el.getBoundingClientRect();
-            setEditorSize({ w: Math.round(rect.width), h: Math.round(rect.height) });
-            const editor = editorRef.current;
-            if (!editor) return;
+        let rafId: number | null = null;
+
+        const measure = () => {
             try {
-                editor.layout();
+                const rect = el.getBoundingClientRect();
+                const w = Math.max(0, Math.round(rect.width));
+                const h = Math.max(0, Math.round(rect.height));
+                setEditorSize({ w, h });
+                const editor = editorRef.current;
+                if (!editor) return;
+                try {
+                    editor.layout();
+                } catch {
+                    // ignore
+                }
             } catch {
                 // ignore
             }
+        };
+
+        const ro = new ResizeObserver(() => {
+            measure();
         });
 
         ro.observe(el);
 
+        const onWindowResize = () => measure();
+        window.addEventListener('resize', onWindowResize);
+
         // run once immediately (ResizeObserver can be delayed)
-        try {
+        measure();
+
+        // In some layouts the container may report 0x0 until the next frame.
+        let tries = 0;
+        const tick = () => {
+            tries += 1;
+            measure();
             const rect = el.getBoundingClientRect();
-            setEditorSize({ w: Math.round(rect.width), h: Math.round(rect.height) });
-        } catch {
-            // ignore
-        }
+            if ((rect.width <= 0 || rect.height <= 0) && tries < 10) {
+                rafId = window.requestAnimationFrame(tick);
+            }
+        };
+        rafId = window.requestAnimationFrame(tick);
 
         return () => {
             try {
@@ -138,8 +151,14 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
             } catch {
                 // ignore
             }
+
+            window.removeEventListener('resize', onWindowResize);
+            if (rafId != null) {
+                window.cancelAnimationFrame(rafId);
+                rafId = null;
+            }
         };
-    }, [selectedFile?.path]);
+    }, [selectedFile?.path, useMonaco]);
 
     // Filter folders and files based on search term
     const filteredFolders = searchTerm
@@ -270,11 +289,7 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, perf
                                         onClick={() => {
                                             setUseMonaco((v) => {
                                                 const next = !v;
-                                                if (performanceMode && next) {
-                                                    const ok = confirm('性能模式已开启，启用高级编辑器会增加内存占用并可能引发卡顿，仍要启用吗？');
-                                                    if (!ok) return v;
-                                                    addToast('info', '性能模式已开启', '已启用高级编辑器（Monaco），可能增加内存占用并引发卡顿');
-                                                }
+                                                if (performanceMode && next) addToast('info', '性能模式已开启', '已启用高级编辑器（Monaco），可能增加内存占用并引发卡顿');
                                                 return next;
                                             });
                                         }}

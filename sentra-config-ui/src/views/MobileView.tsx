@@ -4,12 +4,16 @@ import { IOSEditor } from '../components/IOSEditor';
 import { IOSPresetsEditor } from '../components/IOSPresetsEditor';
 import { PresetImporter } from '../components/PresetImporter';
 import { Launchpad } from '../components/Launchpad';
-import { ToastContainer, ToastMessage, ToastType } from '../components/Toast';
+import { ToastContainer } from '../components/Toast';
 import { IoChevronBack } from 'react-icons/io5';
 import { getDisplayName, getIconForType } from '../utils/icons';
-import { FileItem, IOSEditorWin, DesktopIcon, TerminalWin, AppFolder } from '../types/ui';
+import { FileItem, DesktopIcon, AppFolder } from '../types/ui';
 import { PresetsEditorState } from '../hooks/usePresetsEditor';
 import { IOSFileManager } from '../components/IOSFileManager';
+import { useUIStore } from '../store/uiStore';
+import { useWindowsStore } from '../store/windowsStore';
+import { useTerminals } from '../hooks/useTerminals';
+import { useIOSEditor } from '../hooks/useIOSEditor';
 
 const ModelProvidersManager = React.lazy(() => import('../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
 const RedisAdminManager = React.lazy(() => import('../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
@@ -21,35 +25,7 @@ export type MobileViewProps = {
   recordUsage: (key: string) => void;
   desktopIcons: DesktopIcon[];
   desktopFolders: AppFolder[];
-  theme: 'light' | 'dark';
-  launchpadOpen: boolean;
-  setLaunchpadOpen: (open: boolean) => void;
-  handleIOSOpenWindow: (file: FileItem) => void;
-  iosEditorWindows: IOSEditorWin[];
-  activeIOSEditorId: string | null;
-  saving: boolean;
-  handleIOSVarChange: (id: string, index: number, field: 'key' | 'value' | 'comment', val: string) => void;
-  handleIOSAddVar: (id: string) => void;
-  handleIOSDeleteVar: (id: string, index: number) => void;
-  handleIOSSave: (id: string) => void | Promise<void>;
-  handleIOSMinimizeEditor: (id: string) => void;
-  handleIOSCloseEditor: (id: string) => void;
-  toasts: ToastMessage[];
-  removeToast: (id: string) => void;
-  terminalWindows: TerminalWin[];
-  handleMinimizeTerminal: (id: string) => void;
-  handleCloseTerminal: (id: string) => void;
-  iosPresetsEditorOpen: boolean;
-  setIosPresetsEditorOpen: (open: boolean) => void;
-  iosPresetImporterOpen: boolean;
-  setIosPresetImporterOpen: (open: boolean) => void;
-  iosFileManagerOpen: boolean;
-  setIosFileManagerOpen: (open: boolean) => void;
-  iosModelProvidersManagerOpen: boolean;
-  setIosModelProvidersManagerOpen: (open: boolean) => void;
-  iosRedisAdminOpen: boolean;
-  setIosRedisAdminOpen: (open: boolean) => void;
-  addToast: (type: ToastType, title: string, message?: string) => void;
+  loadConfigs: (silent?: boolean) => Promise<void> | void;
   presetsState: PresetsEditorState;
 };
 
@@ -61,24 +37,19 @@ export function MobileView(props: MobileViewProps) {
     recordUsage,
     desktopIcons,
     desktopFolders,
-    theme,
-    launchpadOpen,
-    setLaunchpadOpen,
-    handleIOSOpenWindow,
-    iosEditorWindows,
-    activeIOSEditorId,
-    saving,
-    handleIOSVarChange,
-    handleIOSAddVar,
-    handleIOSDeleteVar,
-    handleIOSSave,
-    handleIOSMinimizeEditor,
-    handleIOSCloseEditor,
+    loadConfigs,
+    presetsState,
+  } = props;
+
+  const {
     toasts,
     removeToast,
-    terminalWindows,
-    handleMinimizeTerminal,
-    handleCloseTerminal,
+    addToast,
+    launchpadOpen,
+    setLaunchpadOpen,
+    saving,
+    setSaving,
+    theme,
     iosPresetsEditorOpen,
     setIosPresetsEditorOpen,
     iosPresetImporterOpen,
@@ -89,9 +60,25 @@ export function MobileView(props: MobileViewProps) {
     setIosModelProvidersManagerOpen,
     iosRedisAdminOpen,
     setIosRedisAdminOpen,
-    addToast,
-    presetsState,
-  } = props;
+  } = useUIStore();
+  const allocateZ = useWindowsStore(s => s.allocateZ);
+  const {
+    terminalWindows,
+    handleCloseTerminal,
+    handleMinimizeTerminal,
+  } = useTerminals({ addToast, allocateZ });
+
+  const {
+    iosEditorWindows,
+    activeIOSEditorId,
+    openIOSWindow,
+    minimize: handleIOSMinimizeEditor,
+    close: handleIOSCloseEditor,
+    changeVar: handleIOSVarChange,
+    addVar: handleIOSAddVar,
+    deleteVar: handleIOSDeleteVar,
+    save: handleIOSSave,
+  } = useIOSEditor({ setSaving, addToast, loadConfigs });
 
   const topByUsage = [...allItems]
     .map(item => ({ item, count: usageCounts[`${item.type}:${item.name}`] || 0 }))
@@ -119,7 +106,7 @@ export function MobileView(props: MobileViewProps) {
       onClick: () => {
         recordUsage(`${it.type}:${it.name}`);
         setReturnToLaunchpad(false); // Reset when opening from Dock
-        handleIOSOpenWindow(it);
+        openIOSWindow(it);
       }
     });
   }
@@ -243,7 +230,7 @@ export function MobileView(props: MobileViewProps) {
             onClick: () => {
               recordUsage(`${item.type}:${item.name}`);
               setReturnToLaunchpad(true); // Set flag when opening from Launchpad
-              handleIOSOpenWindow(item);
+              openIOSWindow(item);
               setLaunchpadOpen(false);
             }
           }))

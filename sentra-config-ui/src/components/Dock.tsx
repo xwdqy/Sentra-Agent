@@ -13,6 +13,7 @@ interface DockItem {
   icon: React.ReactNode;
   isOpen?: boolean;
   onClick: () => void;
+  onHover?: () => void;
   onRemove?: () => void;
   onClose?: () => void;
 }
@@ -134,6 +135,13 @@ const DockIcon = memo(function DockIcon({
   const width = useSpring(widthSync, { mass: 0.1, stiffness: 150, damping: 12 });
 
   const handleContextMenu = (e: React.MouseEvent) => onRequestContextMenu(e, item);
+  const handleHover = useCallback(() => {
+    try {
+      item.onHover?.();
+    } catch {
+      // ignore
+    }
+  }, [item]);
 
   return (
     <>
@@ -143,6 +151,8 @@ const DockIcon = memo(function DockIcon({
           style={{ width: 50 }}
           className={`${styles.dockItem} ${styles.performanceItem}`}
           onClick={item.onClick}
+          onMouseEnter={handleHover}
+          onFocus={handleHover}
           onContextMenu={handleContextMenu}
         >
           <div className={styles.tooltip}>{item.name}</div>
@@ -159,6 +169,8 @@ const DockIcon = memo(function DockIcon({
           style={{ width }}
           className={styles.dockItem}
           onClick={item.onClick}
+          onMouseEnter={handleHover}
+          onFocus={handleHover}
           onContextMenu={handleContextMenu}
         >
           <div className={styles.tooltip}>{item.name}</div>

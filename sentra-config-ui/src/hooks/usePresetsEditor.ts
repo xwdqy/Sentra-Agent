@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { PresetFile } from '../types/config';
 import { fetchPresets, fetchPresetFile, savePresetFile, deletePresetFile } from '../services/api';
+import { storage } from '../utils/storage';
 
 export interface PresetFolder {
     name: string;
@@ -76,7 +77,8 @@ export function usePresetsEditor(
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['根目录']));
 
     const loadFiles = useCallback(async (silent = false) => {
-        const token = sessionStorage.getItem('sentra_auth_token');
+        const token = storage.getString('sentra_auth_token', { backend: 'session', fallback: '' })
+            || storage.getString('sentra_auth_token', { fallback: '' });
         if (!token && !isAuthenticated) {
             console.log('Skipping presets load: not authenticated');
             return;

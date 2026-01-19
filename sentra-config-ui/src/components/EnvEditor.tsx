@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useId, useState, useEffect, useMemo, useDeferredValue, useRef } from 'react';
 import { EnvVariable } from '../types/config';
 import styles from './EnvEditor.module.css';
 import { ExclamationCircleOutlined, InfoCircleOutlined, PlusOutlined, ReloadOutlined, SaveOutlined, SearchOutlined, DeleteOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
@@ -112,6 +112,10 @@ interface EnvEditorProps {
   isMobile?: boolean;
 }
 
+type EnvRow = {
+  originalIndex: number;
+};
+
 export const EnvEditor: React.FC<EnvEditorProps> = ({
   appName,
   vars,
@@ -129,24 +133,116 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
   const [deleteConfirm, setDeleteConfirm] = useState<{ index: number; key: string } | null>(null);
   const [restoreConfirm, setRestoreConfirm] = useState(false);
 
-  const filteredVars = useMemo(() => {
-    const term = searchTerm.toLowerCase();
-    return vars
-      .map((v, i) => ({ ...v, originalIndex: i }))
-      .filter(v =>
-        v.key.toLowerCase().includes(term) ||
-        (v.displayName && v.displayName.toLowerCase().includes(term)) ||
-        (v.value && v.value.toLowerCase().includes(term)) ||
-        (v.comment && v.comment.toLowerCase().includes(term))
-      );
-  }, [vars, searchTerm]);
+  const searchInputId = useId();
+  const searchInputRef = useRef<any>(null);
+
+  const [, forceLocalRerender] = useState(0);
+
+  const deferredSearchTerm = useDeferredValue(searchTerm);
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const [tableScrollY, setTableScrollY] = useState<number>(480);
+
+  const metaCacheRef = useRef(new Map<number, {
+    comment: string;
+    keyUpper: string;
+    meta: EnvFieldMeta | null;
+    description: string;
+    type: EnvValueType;
+    isSecret: boolean;
+    numberStep?: number;
+    numberMin?: number;
+    numberMax?: number;
+  }>());
+
+  const editingValuesRef = useRef<Record<number, string>>({});
+  const valueDebounceTimersRef = useRef<Record<number, ReturnType<typeof setTimeout> | undefined>>({});
+
+  useEffect(() => {
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setTableScrollY(el.clientHeight);
+    });
+    ro.observe(el);
+    setTableScrollY(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const timers = valueDebounceTimersRef.current;
+      Object.values(timers).forEach((t) => {
+        if (t) clearTimeout(t);
+      });
+    };
+  }, []);
+
+  const filteredVars: EnvRow[] = useMemo(() => {
+    const term = deferredSearchTerm.trim().toLowerCase();
+    if (!term) {
+      return vars.map((_, i) => ({ originalIndex: i }));
+    }
+    const out: EnvRow[] = [];
+    for (let i = 0; i < vars.length; i++) {
+      const v = vars[i];
+      const key = String(v.key || '').toLowerCase();
+      const displayName = String(v.displayName || '').toLowerCase();
+      const value = String(v.value || '').toLowerCase();
+      const comment = String(v.comment || '').toLowerCase();
+      if (key.includes(term) || displayName.includes(term) || value.includes(term) || comment.includes(term)) {
+        out.push({ originalIndex: i });
+      }
+    }
+    return out;
+  }, [deferredSearchTerm, vars]);
+
+  const enableVirtual = true;
+
+  const getDisplayValue = (idx: number, fallback: string) => {
+    const obj = editingValuesRef.current;
+    return Object.prototype.hasOwnProperty.call(obj, idx) ? obj[idx] : fallback;
+  };
+
+  const scheduleValueUpdate = (idx: number, nextVal: string) => {
+    const timers = valueDebounceTimersRef.current;
+    if (timers[idx]) clearTimeout(timers[idx]);
+    timers[idx] = setTimeout(() => {
+      onUpdate(idx, 'value', nextVal);
+      timers[idx] = undefined;
+    }, 80);
+  };
+
+  const handleValueChange = (idx: number, nextVal: string) => {
+    editingValuesRef.current[idx] = nextVal;
+    forceLocalRerender(v => v + 1);
+    scheduleValueUpdate(idx, nextVal);
+  };
+
+  useEffect(() => {
+    // When upstream values catch up with our debounced edits, clear local overrides.
+    const obj = editingValuesRef.current;
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return;
+    for (const k of keys) {
+      const idx = Number(k);
+      const row = vars[idx];
+      if (!row) continue;
+      if (String(row.value ?? '') === obj[idx]) {
+        delete obj[idx];
+      }
+    }
+  }, [vars]);
 
   // Handle global Ctrl+F to focus search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
-        document.getElementById('env-search-input')?.focus();
+        try {
+          searchInputRef.current?.focus?.();
+        } catch {
+          // ignore
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -167,12 +263,13 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
             <div className={styles.searchWrapper}>
               <SearchOutlined className={styles.searchIcon} />
               <Input
-                id="env-search-input"
+                id={searchInputId}
                 placeholder="搜索配置..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className={styles.searchInput}
                 allowClear
+                ref={searchInputRef}
               />
             </div>
           </div>
@@ -248,7 +345,7 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
           </div>
         )}
 
-        <div className={styles.scrollArea}>
+        <div className={styles.scrollArea} ref={scrollAreaRef} style={enableVirtual ? { overflowY: 'hidden' } : undefined}>
           {vars.length === 0 ? (
             <div className={styles.emptyState}>
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="配置文件为空，点击右上角“新增”添加配置项" />
@@ -261,15 +358,44 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
               pagination={false}
               size="small"
               showHeader={false}
+              scroll={enableVirtual ? { y: tableScrollY } : undefined}
+              {...(enableVirtual ? ({ virtual: true } as any) : {})}
               columns={[
                 {
                   key: 'row',
                   render: (_: any, v: any) => {
-                    const meta = parseEnvMeta(v.comment);
-                    const type: EnvValueType = meta?.type || 'string';
-                    const description = meta?.description || firstNonMetaLine(v.comment) || '';
-                    const displayName = String(v.displayName ?? '').trim();
-                    const rawValue = String(v.value ?? '');
+                    const row = vars[v.originalIndex];
+                    if (!row) return null;
+
+                    const keyUpper = String(row.key || '').toUpperCase();
+                    let cached = metaCacheRef.current.get(v.originalIndex);
+                    if (!cached || cached.comment !== String(row.comment ?? '') || cached.keyUpper !== keyUpper) {
+                      const meta = parseEnvMeta(row.comment);
+                      const type: EnvValueType = meta?.type || 'string';
+                      const description = meta?.description || firstNonMetaLine(row.comment) || '';
+                      const isSecret = /KEY|TOKEN|SECRET|PASSWORD/.test(keyUpper);
+                      const numberStep = type === 'number' ? inferNumberStep(meta?.range) : undefined;
+                      const numberMin = type === 'number' && meta?.range?.min !== undefined ? meta.range.min : undefined;
+                      const numberMax = type === 'number' && meta?.range?.max !== undefined ? meta.range.max : undefined;
+                      cached = {
+                        comment: String(row.comment ?? ''),
+                        keyUpper,
+                        meta,
+                        description,
+                        type,
+                        isSecret,
+                        numberStep,
+                        numberMin,
+                        numberMax,
+                      };
+                      metaCacheRef.current.set(v.originalIndex, cached);
+                    }
+
+                    const meta = cached.meta;
+                    const type = cached.type;
+                    const description = cached.description;
+                    const displayName = String(row.displayName ?? '').trim();
+                    const rawValue = getDisplayValue(v.originalIndex, String(row.value ?? ''));
                     const lowerValue = rawValue.toLowerCase();
                     const boolValue = rawValue === 'true' || rawValue === '1' || lowerValue === 'yes' || lowerValue === 'on';
                     const hasCnName = Boolean(displayName);
@@ -277,11 +403,10 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
                     // 数字类型：允许直接输入，由浏览器原生 number 控件和后端校验负责约束
                     // 只有纯文本/数字使用带边框的编辑容器，其余类型使用更轻量的 inline 容器，避免“外面一个大文本框”的观感
 
-                    const keyUpper = String(v.key || '').toUpperCase();
-                    const isSecret = /KEY|TOKEN|SECRET|PASSWORD/.test(keyUpper);
-                    const numberStep = type === 'number' ? inferNumberStep(meta?.range) : undefined;
-                    const numberMin = type === 'number' && meta?.range?.min !== undefined ? meta.range.min : undefined;
-                    const numberMax = type === 'number' && meta?.range?.max !== undefined ? meta.range.max : undefined;
+                    const isSecret = cached.isSecret;
+                    const numberStep = cached.numberStep;
+                    const numberMin = cached.numberMin;
+                    const numberMax = cached.numberMax;
 
                     const control = (
                       type === 'boolean' ? (
@@ -299,44 +424,44 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
                           allowClear
                           styles={{ popup: { root: { minWidth: 240 } } }}
                           popupMatchSelectWidth={false}
-                          style={{ width: 260, maxWidth: '100%' }}
+                          style={{ width: '100%' }}
                         />
                       ) : type === 'array' ? (
                         <Input.TextArea
                           value={rawValue}
-                          onChange={(e) => onUpdate(v.originalIndex, 'value', e.target.value)}
+                          onChange={(e) => handleValueChange(v.originalIndex, e.target.value)}
                           placeholder="输入数组或 JSON..."
                           autoSize={{ minRows: 2, maxRows: 6 }}
                           spellCheck={false}
-                          style={{ width: 280, maxWidth: '100%' }}
+                          style={{ width: '100%' }}
                         />
                       ) : type === 'number' ? (
                         <InputNumber
                           value={Number.isFinite(Number(rawValue)) ? Number(rawValue) : null}
-                          onChange={(next) => onUpdate(v.originalIndex, 'value', next == null ? '' : String(next))}
+                          onChange={(next) => handleValueChange(v.originalIndex, next == null ? '' : String(next))}
                           placeholder="输入数字..."
                           step={numberStep}
                           min={numberMin}
                           max={numberMax}
-                          style={{ width: 240, maxWidth: '100%' }}
+                          style={{ width: '100%' }}
                         />
                       ) : isSecret ? (
                         <Input.Password
                           value={rawValue}
-                          onChange={(e) => onUpdate(v.originalIndex, 'value', e.target.value)}
+                          onChange={(e) => handleValueChange(v.originalIndex, e.target.value)}
                           placeholder="输入密钥..."
                           allowClear
-                          style={{ width: 260, maxWidth: '100%' }}
+                          style={{ width: '100%' }}
                           autoComplete="new-password"
                           iconRender={(visible) => (visible ? <EyeOutlined /> : <EyeInvisibleOutlined />)}
                         />
                       ) : (
                         <Input
                           value={rawValue}
-                          onChange={(e) => onUpdate(v.originalIndex, 'value', e.target.value)}
+                          onChange={(e) => handleValueChange(v.originalIndex, e.target.value)}
                           placeholder="输入值..."
                           allowClear
-                          style={{ width: 260, maxWidth: '100%' }}
+                          style={{ width: '100%' }}
                           type="text"
                         />
                       )
@@ -346,23 +471,27 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
                       <div className={styles.envListItem}>
                         <div className={styles.envMetaTitle}>
                           <div className={styles.envMetaName}>
-                            {v.isNew ? (
+                            {row.isNew ? (
                               <Input
-                                value={v.key}
+                                value={row.key}
                                 onChange={(e) => onUpdate(v.originalIndex, 'key', e.target.value)}
                                 placeholder="NEW_KEY"
                                 autoFocus
-                                style={{ width: 260 }}
+                                style={{ width: '100%' }}
                               />
                             ) : (
                               <Tooltip
                                 trigger={isMobile ? ['click'] : ['hover']}
                                 placement="topLeft"
-                                title={<span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>{v.key}</span>}
+                                title={<span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }}>{row.key}</span>}
                               >
                                 <div className={styles.envMetaCnName}>{hasCnName ? displayName : '未提供中文名称'}</div>
                               </Tooltip>
                             )}
+
+                            {!row.isNew ? (
+                              <div className={styles.envMetaKeyMuted}>{String(row.key || '')}</div>
+                            ) : null}
                           </div>
                           <div className={styles.envMetaTags}>
                             <Tag color="blue">{typeLabelMap[type]}</Tag>
@@ -388,7 +517,7 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
                             type="text"
                             danger
                             icon={<DeleteOutlined />}
-                            onClick={() => setDeleteConfirm({ index: v.originalIndex, key: v.key })}
+                            onClick={() => setDeleteConfirm({ index: v.originalIndex, key: row.key })}
                             aria-label="删除"
                             title="删除"
                           />

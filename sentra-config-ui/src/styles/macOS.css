@@ -53,9 +53,13 @@
     --mac-app-radius: 18px;
     --mac-divider-color: rgba(60, 60, 67, 0.18);
 
-    --scrollbar-thumb: rgba(15, 23, 42, 0.18);
-    --scrollbar-thumb-hover: rgba(15, 23, 42, 0.28);
-    --scrollbar-thumb-active: rgba(15, 23, 42, 0.36);
+    --scrollbar-thumb: rgba(var(--sentra-accent-rgb), 0.22);
+    --scrollbar-thumb-hover: rgba(var(--sentra-accent-rgb), 0.34);
+    --scrollbar-thumb-active: rgba(var(--sentra-accent-rgb), 0.46);
+
+    --local-scrollbar-thumb: var(--scrollbar-thumb);
+    --local-scrollbar-thumb-hover: var(--scrollbar-thumb-hover);
+    --local-scrollbar-thumb-active: var(--scrollbar-thumb-active);
 
     --side-handle-bg: rgba(255, 255, 255, 0.78);
     --side-handle-border: rgba(0, 0, 0, 0.10);
@@ -86,9 +90,13 @@
         rgba(var(--sentra-accent-rgb), 0.14);
     --dock-border: rgba(var(--sentra-accent-rgb), 0.36);
 
-    --scrollbar-thumb: rgba(148, 163, 184, 0.30);
-    --scrollbar-thumb-hover: rgba(148, 163, 184, 0.46);
-    --scrollbar-thumb-active: rgba(148, 163, 184, 0.60);
+    --scrollbar-thumb: rgba(var(--sentra-accent-rgb), 0.30);
+    --scrollbar-thumb-hover: rgba(var(--sentra-accent-rgb), 0.44);
+    --scrollbar-thumb-active: rgba(var(--sentra-accent-rgb), 0.58);
+
+    --local-scrollbar-thumb: var(--scrollbar-thumb);
+    --local-scrollbar-thumb-hover: var(--scrollbar-thumb-hover);
+    --local-scrollbar-thumb-active: var(--scrollbar-thumb-active);
 
     --side-handle-bg: rgba(2, 6, 23, 0.62);
     --side-handle-border: rgba(148, 163, 184, 0.18);
@@ -117,7 +125,7 @@ body {
 
 body, body * {
     scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
+    scrollbar-color: var(--local-scrollbar-thumb, var(--scrollbar-thumb)) transparent;
 }
 
 /* Scrollbar styling */
@@ -131,31 +139,31 @@ body, body * {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
+    background: var(--local-scrollbar-thumb, var(--scrollbar-thumb));
     border-radius: 999px;
     border: 2px solid transparent;
     background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: var(--scrollbar-thumb-hover);
+    background: var(--local-scrollbar-thumb-hover, var(--scrollbar-thumb-hover));
 }
 
 ::-webkit-scrollbar-thumb:active {
-    background: var(--scrollbar-thumb-active);
+    background: var(--local-scrollbar-thumb-active, var(--scrollbar-thumb-active));
 }
 
 .monaco-editor .scrollbar .slider {
-    background: var(--scrollbar-thumb) !important;
+    background: var(--local-scrollbar-thumb, var(--scrollbar-thumb)) !important;
     border-radius: 8px !important;
 }
 
 .monaco-editor .scrollbar .slider:hover {
-    background: var(--scrollbar-thumb-hover) !important;
+    background: var(--local-scrollbar-thumb-hover, var(--scrollbar-thumb-hover)) !important;
 }
 
 .monaco-editor .scrollbar .slider:active {
-    background: var(--scrollbar-thumb-active) !important;
+    background: var(--local-scrollbar-thumb-active, var(--scrollbar-thumb-active)) !important;
 }
 
 /* Animations */

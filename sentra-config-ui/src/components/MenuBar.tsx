@@ -20,6 +20,7 @@ import { MacAlert } from './MacAlert';
 import styles from './MenuBar.module.css';
 import { CheckOutlined, FontSizeOutlined } from '@ant-design/icons';
 import { fontFiles } from 'virtual:sentra-fonts';
+import { storage } from '../utils/storage';
 
 interface MenuBarProps {
   title?: string;
@@ -72,11 +73,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   const fontButtonRef = useRef<HTMLDivElement | null>(null);
   const [fontPickerPos, setFontPickerPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const [activeFontFile, setActiveFontFile] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('sentra_font_file');
-    } catch {
-      return null;
-    }
+    const v = storage.getString('sentra_font_file', { fallback: '' });
+    return v || null;
   });
 
   const computeFontPickerPos = () => {
@@ -102,8 +100,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       const next = fallback;
       document.documentElement.style.setProperty('--system-font', next);
       try {
-        localStorage.setItem('sentra_system_font', next);
-        localStorage.removeItem('sentra_font_file');
+        storage.setString('sentra_system_font', next);
+        storage.remove('sentra_font_file');
       } catch {}
 
       setActiveFontFile(null);
@@ -122,8 +120,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
     const next = `"${family}", ${fallback}`;
     document.documentElement.style.setProperty('--system-font', next);
     try {
-      localStorage.setItem('sentra_system_font', next);
-      localStorage.setItem('sentra_font_file', fileName);
+      storage.setString('sentra_system_font', next);
+      storage.setString('sentra_font_file', fileName);
     } catch {}
 
     setActiveFontFile(fileName);
@@ -131,11 +129,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
 
   useEffect(() => {
     const storedFile = (() => {
-      try {
-        return localStorage.getItem('sentra_font_file');
-      } catch {
-        return null;
-      }
+      return storage.getString('sentra_font_file', { fallback: '' }) || null;
     })();
 
     if (storedFile && Array.isArray(fontFiles) && fontFiles.includes(storedFile as any)) {

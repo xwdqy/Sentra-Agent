@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import compress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
 import { configRoutes } from './routes/config';
 import { scriptRoutes } from './routes/scripts';
@@ -69,6 +70,12 @@ async function start() {
       const parts = CORS_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
       return parts.length > 1 ? parts : parts[0] || false;
     })(),
+  });
+
+  await fastify.register(compress, {
+    global: true,
+    encodings: ['br', 'gzip', 'deflate'],
+    threshold: 1024,
   });
 
   // Authentication Middleware
@@ -435,13 +442,21 @@ async function start() {
         prefix: '/',
         setHeaders: (res, filePath) => {
           const p = String(filePath || '');
+          const n = p.replace(/\\/g, '/');
           if (p.endsWith('.html')) {
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
             res.setHeader('Pragma', 'no-cache');
             res.setHeader('Expires', '0');
             return;
           }
-          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+
+          const isDistAsset = n.includes('/assets/');
+          const isHashed = /[.-][0-9a-f]{8,}\./i.test(n);
+          if (isDistAsset && isHashed) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            return;
+          }
+          res.setHeader('Cache-Control', 'public, max-age=3600');
         },
       });
 

@@ -15,6 +15,7 @@ import {
   deleteRedisAdminByPattern,
 } from '../../services/redisAdminApi';
 import { useDevice } from '../../hooks/useDevice';
+import { storage } from '../../utils/storage';
 
 type ToastFn = (type: 'success' | 'error' | 'info', title: string, message?: string) => void;
 
@@ -154,12 +155,8 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
   const [redisInfo, setRedisInfo] = useState<any>(null);
 
   const [profile, setProfile] = useState<'main' | 'mcp'>(() => {
-    try {
-      const v = localStorage.getItem('redisAdmin.profile');
-      return v === 'main' ? 'main' : 'mcp';
-    } catch {
-      return 'mcp';
-    }
+    const v = storage.getString('redisAdmin.profile', { fallback: 'mcp' });
+    return v === 'main' ? 'main' : 'mcp';
   });
 
   const [errorText, setErrorText] = useState<string>('');
@@ -189,32 +186,17 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
   const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
 
   const [keyTablePage, setKeyTablePage] = useState<number>(() => {
-    try {
-      const raw = localStorage.getItem('redisAdmin.keyTablePageSize');
-      return raw ? Number(raw) : 1;
-    } catch {
-      return 1;
-    }
+    return storage.getNumber('redisAdmin.keyTablePageSize', { fallback: 1 });
   });
   const [keyTablePageSize, setKeyTablePageSize] = useState<number>(() => {
-    try {
-      const raw = localStorage.getItem('redisAdmin.keyTablePageSize');
-      const n = raw ? Number(raw) : 50;
-      return Number.isFinite(n) && n > 0 ? n : 50;
-    } catch {
-      return 50;
-    }
+    const n = storage.getNumber('redisAdmin.keyTablePageSize', { fallback: 50 });
+    return Number.isFinite(n) && n > 0 ? n : 50;
   });
   const [keyTableSelectedKeys, setKeyTableSelectedKeys] = useState<string[]>([]);
   const [keyTableColsVisible, setKeyTableColsVisible] = useState<Record<string, boolean>>(() => {
-    try {
-      const raw = localStorage.getItem('redisAdmin.keyTableColsVisible');
-      const parsed = raw ? JSON.parse(raw) : null;
-      if (parsed && typeof parsed === 'object') return parsed as any;
-      return {};
-    } catch {
-      return {};
-    }
+    const parsed = storage.getJson<any>('redisAdmin.keyTableColsVisible', { fallback: {} });
+    if (parsed && typeof parsed === 'object') return parsed as any;
+    return {};
   });
 
   const [keyTableScrollY, setKeyTableScrollY] = useState<number>(520);
@@ -459,21 +441,15 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
   }, [loadGroups, loadHealth, loadInfo, loadOverview]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('redisAdmin.profile', profile);
-    } catch {}
+    storage.setString('redisAdmin.profile', profile);
   }, [profile]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('redisAdmin.keyTablePageSize', String(keyTablePageSize));
-    } catch {}
+    storage.setNumber('redisAdmin.keyTablePageSize', keyTablePageSize);
   }, [keyTablePageSize]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('redisAdmin.keyTableColsVisible', JSON.stringify(keyTableColsVisible || {}));
-    } catch {}
+    storage.setJson('redisAdmin.keyTableColsVisible', keyTableColsVisible || {});
   }, [keyTableColsVisible]);
 
   useEffect(() => {
@@ -1211,6 +1187,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
         title="删除 Key"
         open={deleteKeyOpen}
         className={styles.deleteKeyModal}
+        getContainer={false}
         onCancel={() => {
           setDeleteKeyOpen(false);
           setDeleteKeyConfirmText('');

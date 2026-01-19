@@ -2,13 +2,11 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider } from 'antd';
 import App from './App';
+import { storage } from './utils/storage';
 
 const storedSystemFont = (() => {
-  try {
-    return localStorage.getItem('sentra_system_font');
-  } catch {
-    return null;
-  }
+  const v = storage.getString('sentra_system_font', { fallback: '' });
+  return v || null;
 })();
 
 if (storedSystemFont) {

@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import styles from './TerminalWindow.module.css';
+import { storage } from '../utils/storage';
 
 interface TerminalWindowProps {
     processId: string;
@@ -136,7 +137,9 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
 
         // Handle input
         term.onData((data) => {
-            const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
+            const token =
+                storage.getString('sentra_auth_token', { backend: 'session', fallback: '' }) ||
+                storage.getString('sentra_auth_token', { backend: 'local', fallback: '' });
             fetch(`/api/scripts/input/${processId}?token=${token}`, {
                 method: 'POST',
                 headers: {
@@ -252,7 +255,9 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         };
 
         const checkProcessAlive = async (): Promise<'alive' | 'not_found' | 'ended'> => {
-            const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
+            const token =
+                storage.getString('sentra_auth_token', { backend: 'session', fallback: '' }) ||
+                storage.getString('sentra_auth_token', { backend: 'local', fallback: '' });
             try {
                 const res = await fetch(`/api/scripts/status/${processId}?token=${encodeURIComponent(token || '')}`);
                 if (res.status === 404) return 'not_found';
@@ -279,7 +284,9 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
                 return;
             }
             cleanupEventSource();
-            const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
+            const token =
+                storage.getString('sentra_auth_token', { backend: 'session', fallback: '' }) ||
+                storage.getString('sentra_auth_token', { backend: 'local', fallback: '' });
             const es = new EventSource(`/api/scripts/stream/${processId}?token=${token}`);
             eventSourceRef.current = es;
 

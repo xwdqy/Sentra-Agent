@@ -1,9 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
 import { saveModuleConfig, savePluginConfig, restoreModuleConfig, restorePluginConfig } from '../services/api';
 import { getDisplayName } from '../utils/icons';
-import type { DeskWindow, FileItem } from '../types/ui';
 import type { EnvVariable } from '../types/config';
 import type { ToastMessage } from '../components/Toast';
+import { useWindowsStore } from '../store/windowsStore';
 
 export type UseDesktopWindowsParams = {
   setSaving: (s: boolean) => void;
@@ -14,142 +13,8 @@ export type UseDesktopWindowsParams = {
 };
 
 export function useDesktopWindows({ setSaving, addToast, loadConfigs, onLogout }: UseDesktopWindowsParams) {
-  const [openWindows, setOpenWindows] = useState<DeskWindow[]>(() => {
-    try {
-      const saved = localStorage.getItem('sentra_open_windows');
-      if (saved) {
-        const parsedWindows = JSON.parse(saved);
-        if (Array.isArray(parsedWindows) && parsedWindows.length > 0) {
-          const width = 600;
-          const height = 400;
-          const centerPos = {
-            x: Math.max(0, (window.innerWidth - width) / 2),
-            y: Math.max(40, (window.innerHeight - height) / 2)
-          };
-          return parsedWindows.map((w: any) => {
-            const p = w.pos || { x: 0, y: 0 };
-            const invalid =
-              p.x == null || p.y == null ||
-              p.x < 20 || p.y < 30 ||
-              p.x > window.innerWidth - 100 || p.y > window.innerHeight - 100;
-            return invalid ? { ...w, pos: centerPos } : w;
-          });
-        }
-      }
-    } catch (e) {
-      console.error('Failed to load saved windows', e);
-    }
-    return [];
-  });
-
-  const [activeWinId, setActiveWinId] = useState<string | null>(null);
-
-  // Use a ref (not state) for z allocation to avoid stale-closure/duplicate-z issues under rapid clicks.
-  // openWindows updates already trigger re-render, so we don't need zNext as state.
-  const zNextRef = useRef<number>((() => {
-    let savedZ = 0;
-    try {
-      const raw = localStorage.getItem('sentra_z_next');
-      const n = raw ? Number(raw) : 0;
-      savedZ = Number.isFinite(n) ? n : 0;
-    } catch {
-      savedZ = 0;
-    }
-    if (openWindows.length > 0) {
-      const maxZ = Math.max(...openWindows.map(w => w.z || 1000), 1000) + 1;
-      return Math.max(savedZ, maxZ);
-    }
-    return Math.max(savedZ, 1000);
-  })());
-
-  // Debounced persistence
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem('sentra_open_windows', JSON.stringify(openWindows));
-      } catch (e) {
-        console.error('Failed to save windows state', e);
-      }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [openWindows]);
-
-  useEffect(() => {
-    const flush = () => {
-      try {
-        localStorage.setItem('sentra_open_windows', JSON.stringify(openWindows));
-        localStorage.setItem('sentra_z_next', String(zNextRef.current || 0));
-      } catch { }
-    };
-    const onVis = () => {
-      if (document.visibilityState === 'hidden') flush();
-    };
-    window.addEventListener('pagehide', flush);
-    document.addEventListener('visibilitychange', onVis);
-    return () => {
-      window.removeEventListener('pagehide', flush);
-      document.removeEventListener('visibilitychange', onVis);
-    };
-  }, [openWindows]);
-
-  const bringToFront = (id: string) => {
-    const nextZ = zNextRef.current + 1;
-    zNextRef.current = nextZ;
-    try { localStorage.setItem('sentra_z_next', String(nextZ)); } catch { }
-    setOpenWindows(ws => {
-      return ws.map(w => (w.id === id ? { ...w, z: nextZ, minimized: false } : w));
-    });
-    setActiveWinId(id);
-  };
-
-  /**
-   * Allocate a global z-index for other floating layers (e.g., Terminal windows)
-   * so they share the same stacking context as desktop windows.
-   */
-  const allocateZ = () => {
-    const next = zNextRef.current + 1;
-    zNextRef.current = next;
-    try { localStorage.setItem('sentra_z_next', String(next)); } catch { }
-    return next;
-  };
-
-  const openWindow = (file: FileItem, opts?: { maximize?: boolean }) => {
-    // Refresh configs to ensure we have the latest data
-    loadConfigs(true); // silent mode
-
-    const existing = openWindows.find(w => w.file.name === file.name && w.file.type === file.type);
-    if (existing) {
-      if (existing.minimized || opts?.maximize) {
-        setOpenWindows(ws => ws.map(w => w.id === existing.id ? { ...w, minimized: false, maximized: opts?.maximize ? true : w.maximized } : w));
-      }
-      bringToFront(existing.id);
-      return;
-    }
-
-    const id = `w_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-
-    const width = 600;
-    const height = 400;
-    const x = Math.max(0, (window.innerWidth - width) / 2);
-    const y = Math.max(40, (window.innerHeight - height) / 2);
-
-    const win: DeskWindow = {
-      id,
-      file,
-      z: (zNextRef.current = zNextRef.current + 1),
-      minimized: false,
-      editedVars: file.variables ? [...file.variables] : [],
-      pos: { x, y },
-      maximized: !!opts?.maximize,
-    };
-    setOpenWindows(ws => [...ws, win]);
-    setActiveWinId(id);
-  };
-
-  const handleClose = (id: string) => {
-    setOpenWindows(ws => ws.filter(w => w.id !== id));
-    if (activeWinId === id) setActiveWinId(null);
-  };
+  const openWindows = useWindowsStore(s => s.openWindows);
+  const setOpenWindows = useWindowsStore(s => s.setOpenWindows);
 
   const handleSave = async (id: string) => {
     const win = openWindows.find(w => w.id === id);
@@ -235,14 +100,6 @@ export function useDesktopWindows({ setSaving, addToast, loadConfigs, onLogout }
   };
 
   return {
-    openWindows,
-    setOpenWindows,
-    activeWinId,
-    setActiveWinId,
-    bringToFront,
-    allocateZ,
-    openWindow,
-    handleClose,
     handleSave,
     handleVarChange,
     handleAddVar,

@@ -1,0 +1,68 @@
+:root {
+  --base-control-bg: var(--sentra-panel-bg-strong);
+  --base-control-border: var(--sentra-border-strong);
+  --base-control-fg: var(--sentra-fg);
+  --base-control-placeholder: var(--sentra-muted-fg);
+  --base-control-radius: 10px;
+  --base-control-height: 36px;
+  --base-control-focus-border: rgba(var(--sentra-accent-rgb), 0.45);
+  --base-control-focus-shadow: 0 0 0 4px rgba(var(--sentra-accent-rgb), 0.14);
+
+  --control-bg: var(--local-control-bg, var(--base-control-bg));
+  --control-border: var(--local-control-border, var(--base-control-border));
+  --control-fg: var(--local-control-fg, var(--base-control-fg));
+  --control-placeholder: var(--local-control-placeholder, var(--base-control-placeholder));
+  --control-radius: var(--local-control-radius, var(--base-control-radius));
+  --control-height: var(--local-control-height, var(--base-control-height));
+  --control-focus-border: var(--local-control-focus-border, var(--base-control-focus-border));
+  --control-focus-shadow: var(--local-control-focus-shadow, var(--base-control-focus-shadow));
+}
+
+:where(.ant-input),
+:where(.ant-input-affix-wrapper),
+:where(.ant-input-number),
+:where(.ant-select-selector),
+:where(.ant-picker) {
+  background: var(--control-bg) !important;
+  border-color: var(--control-border) !important;
+  color: var(--control-fg) !important;
+  border-radius: var(--control-radius) !important;
+  box-shadow: none !important;
+}
+
+:where(.ant-input),
+:where(.ant-input-affix-wrapper),
+:where(.ant-input-number),
+:where(.ant-select-selector) {
+  min-height: var(--control-height) !important;
+}
+
+:where(.ant-input::placeholder) {
+  color: var(--control-placeholder) !important;
+}
+
+:where(.ant-select-selection-placeholder),
+:where(.ant-select-selection-item),
+:where(.ant-select-selection-search-input) {
+  color: var(--control-fg) !important;
+}
+
+:where(.ant-select-arrow),
+:where(.ant-select-clear) {
+  color: var(--control-placeholder) !important;
+}
+
+:where(.ant-input:focus),
+:where(.ant-input-affix-wrapper-focused),
+:where(.ant-input-number-focused),
+:where(.ant-select-focused .ant-select-selector),
+:where(.ant-picker-focused) {
+  border-color: var(--control-focus-border) !important;
+  box-shadow: var(--control-focus-shadow) !important;
+}
+
+:where(.ant-input-affix-wrapper .ant-input) {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}

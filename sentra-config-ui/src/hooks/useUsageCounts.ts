@@ -1,18 +1,15 @@
 import { useEffect, useState } from 'react';
+import { storage } from '../utils/storage';
 
 export function useUsageCounts() {
   const [usageCounts, setUsageCounts] = useState<Record<string, number>>(() => {
-    try {
-      const saved = localStorage.getItem('sentra_usage_counts');
-      return saved ? JSON.parse(saved) : {};
-    } catch {
-      return {};
-    }
+    const saved = storage.getJson<any>('sentra_usage_counts', { fallback: {} });
+    return saved && typeof saved === 'object' ? saved : {};
   });
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      try { localStorage.setItem('sentra_usage_counts', JSON.stringify(usageCounts)); } catch {}
+      storage.setJson('sentra_usage_counts', usageCounts);
     }, 500);
     return () => clearTimeout(timer);
   }, [usageCounts]);

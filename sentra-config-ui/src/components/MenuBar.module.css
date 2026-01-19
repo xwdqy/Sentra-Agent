@@ -4,6 +4,7 @@
   left: 0;
   width: 100%;
   height: 30px;
+
   background: linear-gradient(var(--sentra-accent-tint-12), var(--sentra-accent-tint-12)), var(--sentra-glass-bg);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -16,6 +17,7 @@
   color: var(--sentra-fg);
   user-select: none;
   box-shadow: 0 1px 0 rgba(var(--sentra-accent-rgb), 0.16);
+  min-width: 0;
 }
 
 .performanceMode {
@@ -29,6 +31,18 @@
   display: flex;
   align-items: center;
   height: 100%;
+  min-width: 0;
+}
+
+.left {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.right {
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .menuItem {
@@ -69,6 +83,11 @@
 
 .appTitle {
   font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
 }
 
 .dropdown {

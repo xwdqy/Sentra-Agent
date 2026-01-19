@@ -1,9 +1,11 @@
 import { ConfigData, EnvVariable } from '../types/config';
+import { storage } from '../utils/storage';
 
 const API_BASE = '/api';
 
 export function getAuthHeaders() {
-  const token = sessionStorage.getItem('sentra_auth_token') || localStorage.getItem('sentra_auth_token');
+  const token = storage.getString('sentra_auth_token', { backend: 'session', fallback: '' })
+    || storage.getString('sentra_auth_token', { fallback: '' });
   return {
     'Content-Type': 'application/json',
     'x-auth-token': token || ''
@@ -381,7 +383,8 @@ export async function savePresetFile(path: string, content: string): Promise<voi
 }
 
 export async function deletePresetFile(path: string): Promise<void> {
-  const token = sessionStorage.getItem('sentra_auth_token');
+  const token = storage.getString('sentra_auth_token', { backend: 'session', fallback: '' })
+    || storage.getString('sentra_auth_token', { fallback: '' });
   const response = await fetch(`${API_BASE}/presets/file?path=${encodeURIComponent(path)}`, {
     method: 'DELETE',
     headers: {

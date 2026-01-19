@@ -366,6 +366,7 @@
     align-items: center;
     justify-content: space-between;
     position: relative;
+    min-width: 0;
 }
 
 .menuItem:hover {
@@ -377,12 +378,20 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .menuShortcut {
     font-size: 11px;
     color: var(--text-secondary);
     margin-left: 12px;
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .menuItem:hover .menuShortcut {

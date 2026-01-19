@@ -259,6 +259,24 @@
   container-type: inline-size;
 }
 
+ .envListAntd :global(.rc-virtual-list-scrollbar) {
+  width: 8px !important;
+  background: transparent !important;
+ }
+
+ .envListAntd :global(.rc-virtual-list-scrollbar-thumb) {
+  background: var(--local-scrollbar-thumb, var(--scrollbar-thumb)) !important;
+  border-radius: 999px !important;
+}
+
+.envListAntd :global(.rc-virtual-list-scrollbar-thumb:hover) {
+  background: var(--local-scrollbar-thumb-hover, var(--scrollbar-thumb-hover)) !important;
+}
+
+.envListAntd :global(.rc-virtual-list-scrollbar-thumb:active) {
+  background: var(--local-scrollbar-thumb-active, var(--scrollbar-thumb-active)) !important;
+}
+
 .envListAntd :global(.ant-list-item) {
   padding: 12px 4px;
   border-bottom: 1px solid var(--panel-subtle-border);
@@ -289,7 +307,8 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  min-width: 260px;
+  min-width: 0;
+  width: 100%;
   gap: 10px;
 }
 
@@ -298,6 +317,14 @@
   min-width: 0;
   display: flex;
   justify-content: flex-end;
+}
+
+.envControlRow :global(.ant-input),
+.envControlRow :global(.ant-input-number),
+.envControlRow :global(.ant-select),
+.envControlRow :global(.ant-select-selector),
+.envControlRow :global(.ant-input-textarea) {
+  width: 100% !important;
 }
 
 .envMetaTitle {

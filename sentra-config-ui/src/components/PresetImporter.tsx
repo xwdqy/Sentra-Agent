@@ -3,6 +3,7 @@ import styles from './PresetImporter.module.css';
 import type { PresetsEditorState } from '../hooks/usePresetsEditor';
 import { convertPresetText, convertPresetTextStream, fetchPresetFile, savePresetFile } from '../services/api';
 import { Button, Collapse, Input, InputNumber, Segmented, Select, Switch, Upload } from 'antd';
+import { storage } from '../utils/storage';
 import {
   CloseOutlined,
   InboxOutlined,
@@ -73,11 +74,11 @@ export interface PresetImporterProps {
 
 export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToast, state, theme, embedded }) => {
   const [sourceMode, setSourceMode] = useState<'upload' | 'presets' | 'text'>(() => {
-    const v = localStorage.getItem('preset_importer.sourceMode') as any;
+    const v = storage.getString('preset_importer.sourceMode', { fallback: '' }) as any;
     return v === 'presets' || v === 'text' || v === 'upload' ? v : 'upload';
   });
   const [file, setFile] = useState<File | null>(null);
-  const [inputFileName, setInputFileName] = useState<string>(() => localStorage.getItem('preset_importer.inputFileName') || 'pasted.txt');
+  const [inputFileName, setInputFileName] = useState<string>(() => storage.getString('preset_importer.inputFileName', { fallback: 'pasted.txt' }));
   const [selectedPresetPath, setSelectedPresetPath] = useState<string>('');
   const [rawText, setRawText] = useState<string>('');
   const [targetName, setTargetName] = useState<string>('');
@@ -86,7 +87,7 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
   const [convertedJson, setConvertedJson] = useState<any | null>(null);
   const [convertedXml, setConvertedXml] = useState<string>('');
   const [streamEnabled, setStreamEnabled] = useState<boolean>(() => {
-    const v = localStorage.getItem('preset_importer.streamEnabled');
+    const v = storage.getString('preset_importer.streamEnabled', { fallback: '' });
     return v === null ? true : v !== 'false';
   });
   const [streamText, setStreamText] = useState<string>('');
@@ -95,17 +96,17 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
   const streamTextRef = useRef<string>('');
   const flushRafRef = useRef<number | null>(null);
 
-  const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => localStorage.getItem('preset_importer.apiBaseUrl') || '');
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('preset_importer.apiKey') || '');
-  const [model, setModel] = useState<string>(() => localStorage.getItem('preset_importer.model') || '');
-  const [temperature, setTemperature] = useState<string>(() => localStorage.getItem('preset_importer.temperature') || '0');
-  const [maxTokens, setMaxTokens] = useState<string>(() => localStorage.getItem('preset_importer.maxTokens') || '-1');
-  const [advancedOpen, setAdvancedOpen] = useState<boolean>(() => (localStorage.getItem('preset_importer.advancedOpen') || 'false') === 'true');
+  const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => storage.getString('preset_importer.apiBaseUrl', { fallback: '' }));
+  const [apiKey, setApiKey] = useState<string>(() => storage.getString('preset_importer.apiKey', { fallback: '' }));
+  const [model, setModel] = useState<string>(() => storage.getString('preset_importer.model', { fallback: '' }));
+  const [temperature, setTemperature] = useState<string>(() => storage.getString('preset_importer.temperature', { fallback: '0' }));
+  const [maxTokens, setMaxTokens] = useState<string>(() => storage.getString('preset_importer.maxTokens', { fallback: '-1' }));
+  const [advancedOpen, setAdvancedOpen] = useState<boolean>(() => storage.getBool('preset_importer.advancedOpen', { fallback: false }));
 
-  const [streamDebugOpen, setStreamDebugOpen] = useState<boolean>(() => (localStorage.getItem('preset_importer.streamDebugOpen') || 'false') === 'true');
+  const [streamDebugOpen, setStreamDebugOpen] = useState<boolean>(() => storage.getBool('preset_importer.streamDebugOpen', { fallback: false }));
   const [streamDebugEvents, setStreamDebugEvents] = useState<Array<{ type: string; at: number; message?: string }>>([]);
   const [streamDebugMeta, setStreamDebugMeta] = useState<{ status?: number; contentType?: string; bytes?: number; frames?: number; tokens?: number; lastAt?: number }>({});
-  const [liveOutputOpen, setLiveOutputOpen] = useState<boolean>(() => (localStorage.getItem('preset_importer.liveOutputOpen') || 'true') === 'true');
+  const [liveOutputOpen, setLiveOutputOpen] = useState<boolean>(() => storage.getBool('preset_importer.liveOutputOpen', { fallback: true }));
 
   const liveBoxRef = useRef<HTMLDivElement | null>(null);
   const debugLogRef = useRef<HTMLDivElement | null>(null);
@@ -113,11 +114,11 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
   const previewRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.streamDebugOpen', String(streamDebugOpen));
+    storage.setBool('preset_importer.streamDebugOpen', streamDebugOpen);
   }, [streamDebugOpen]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.liveOutputOpen', String(liveOutputOpen));
+    storage.setBool('preset_importer.liveOutputOpen', liveOutputOpen);
   }, [liveOutputOpen]);
 
   useEffect(() => {
@@ -139,16 +140,16 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
     // - streaming: default should be enabled unless user explicitly turned it off
     // - maxTokens: default should be -1 (omit max_tokens), instead of old 8192
     try {
-      const userOverride = localStorage.getItem('preset_importer.streamEnabledUserOverride') === 'true';
-      const storedStream = localStorage.getItem('preset_importer.streamEnabled');
+      const userOverride = storage.getBool('preset_importer.streamEnabledUserOverride', { fallback: false });
+      const storedStream = storage.getString('preset_importer.streamEnabled', { fallback: '' });
       if (!userOverride && storedStream === 'false') {
-        localStorage.setItem('preset_importer.streamEnabled', 'true');
+        storage.setString('preset_importer.streamEnabled', 'true');
         setStreamEnabled(true);
       }
 
-      const storedMaxTokens = localStorage.getItem('preset_importer.maxTokens');
+      const storedMaxTokens = storage.getString('preset_importer.maxTokens', { fallback: '' });
       if (storedMaxTokens === null || storedMaxTokens === '8192') {
-        localStorage.setItem('preset_importer.maxTokens', '-1');
+        storage.setString('preset_importer.maxTokens', '-1');
         setMaxTokens('-1');
       }
     } catch {
@@ -176,11 +177,11 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
   }, [state.files]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.sourceMode', sourceMode);
+    storage.setString('preset_importer.sourceMode', sourceMode);
   }, [sourceMode]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.inputFileName', inputFileName);
+    storage.setString('preset_importer.inputFileName', inputFileName);
   }, [inputFileName]);
 
   useEffect(() => {
@@ -199,31 +200,31 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
   }, [effectiveFileName]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.streamEnabled', String(streamEnabled));
+    storage.setString('preset_importer.streamEnabled', String(streamEnabled));
   }, [streamEnabled]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.apiBaseUrl', apiBaseUrl);
+    storage.setString('preset_importer.apiBaseUrl', apiBaseUrl);
   }, [apiBaseUrl]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.apiKey', apiKey);
+    storage.setString('preset_importer.apiKey', apiKey);
   }, [apiKey]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.model', model);
+    storage.setString('preset_importer.model', model);
   }, [model]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.temperature', temperature);
+    storage.setString('preset_importer.temperature', temperature);
   }, [temperature]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.maxTokens', maxTokens);
+    storage.setString('preset_importer.maxTokens', maxTokens);
   }, [maxTokens]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.advancedOpen', String(advancedOpen));
+    storage.setBool('preset_importer.advancedOpen', advancedOpen);
   }, [advancedOpen]);
 
   const handlePickFile = useCallback(async (f: File | null) => {
@@ -550,8 +551,6 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
         ['--pi-seg-bg' as any]: theme === 'dark' ? 'rgba(255, 255, 255, 0.08)' : 'rgba(15, 23, 42, 0.06)',
         ['--pi-seg-active-bg' as any]: theme === 'dark' ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.92)',
         ['--pi-seg-active-fg' as any]: theme === 'dark' ? 'rgba(226, 232, 240, 0.92)' : '#0f172a',
-        ['--scrollbar-thumb' as any]: theme === 'dark' ? 'rgba(245, 245, 246, 0.22)' : 'rgba(11, 11, 13, 0.22)',
-        ['--scrollbar-thumb-hover' as any]: theme === 'dark' ? 'rgba(245, 245, 246, 0.32)' : 'rgba(11, 11, 13, 0.32)',
       }}
     >
       {!embedded ? (
@@ -692,7 +691,7 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
                 size="small"
                 checked={streamEnabled}
                 onChange={(checked) => {
-                  try { localStorage.setItem('preset_importer.streamEnabledUserOverride', 'true'); } catch { }
+                  storage.setBool('preset_importer.streamEnabledUserOverride', true);
                   setStreamEnabled(checked);
                 }}
                 disabled={saving}

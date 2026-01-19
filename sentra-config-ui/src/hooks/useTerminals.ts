@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useMemo } from 'react';
 import { getAuthHeaders } from '../services/api';
 import type { TerminalWin } from '../types/ui';
 import type { ToastMessage } from '../components/Toast';
+import { useTerminalStore } from '../store/terminalStore';
 
 export type UseTerminalsParams = {
   addToast: (type: ToastMessage['type'], title: string, message?: string) => void;
@@ -9,22 +10,18 @@ export type UseTerminalsParams = {
 };
 
 export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
-  const [terminalWindows, setTerminalWindows] = useState<TerminalWin[]>([]);
+  const terminalWindows = useTerminalStore(s => s.terminalWindows);
+  const setTerminalWindows = useTerminalStore(s => s.setTerminalWindows);
+  const activeTerminalId = useTerminalStore(s => s.activeTerminalId);
+  const setActiveTerminalId = useTerminalStore(s => s.setActiveTerminalId);
 
-  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
-
-  useEffect(() => {
-    try {
-      localStorage.removeItem('sentra_terminal_windows');
-      localStorage.removeItem('sentra_active_terminal_id');
-    } catch { }
-  }, []);
-
-  const bringTerminalToFront = (id: string) => {
-    const z = allocateZ ? allocateZ() : undefined;
-    setTerminalWindows(prev => prev.map(t => t.id === id ? { ...t, z: z ?? (t.z + 1), minimized: false } : t));
-    setActiveTerminalId(id);
-  };
+  const bringTerminalToFront = useMemo(() => {
+    return (id: string) => {
+      const z = allocateZ ? allocateZ() : undefined;
+      setTerminalWindows(prev => prev.map(t => t.id === id ? { ...t, z: z ?? (t.z + 1), minimized: false } : t));
+      setActiveTerminalId(id);
+    };
+  }, [allocateZ, setActiveTerminalId, setTerminalWindows]);
 
   const spawnTerminal = (title: string, appKey: string, processId: string, options?: { theme?: any, headerText?: string }) => {
     const id = `terminal-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
@@ -46,23 +43,12 @@ export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
   };
 
   const runScript = async (path: string, title: string, appKey: string, args: string[], options?: { theme?: any, headerText?: string }) => {
-    const existing = terminalWindows.find(t => t.appKey === appKey);
+    const existing = useTerminalStore.getState().terminalWindows.find(t => t.appKey === appKey);
     if (existing) {
       try {
         const res = await fetch(`/api/scripts/status/${existing.processId}`, { headers: getAuthHeaders() });
         if (res.status === 404) {
           setTerminalWindows(prev => prev.filter(t => t.id !== existing.id));
-        } else if (res.ok) {
-          const st: any = await res.json();
-          if (st && (st.exitCode != null || st.endTime != null)) {
-            setTerminalWindows(prev => prev.filter(t => t.id !== existing.id));
-          } else {
-            if (existing.minimized) {
-              setTerminalWindows(prev => prev.map(t => t.id === existing.id ? { ...t, minimized: false } : t));
-            }
-            bringTerminalToFront(existing.id);
-            return;
-          }
         } else if (res.ok) {
           const st: any = await res.json();
           if (st && (st.exitCode != null || st.endTime != null)) {
@@ -127,7 +113,8 @@ export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
   });
 
   const handleCloseTerminal = async (id: string) => {
-    const terminal = terminalWindows.find(t => t.id === id);
+    const st = useTerminalStore.getState();
+    const terminal = st.terminalWindows.find(t => t.id === id);
     if (terminal) {
       try {
         await fetch(`/api/scripts/kill/${terminal.processId}`, {
@@ -140,7 +127,7 @@ export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
       }
     }
     setTerminalWindows(prev => prev.filter(t => t.id !== id));
-    if (activeTerminalId === id) setActiveTerminalId(null);
+    if (st.activeTerminalId === id) setActiveTerminalId(null);
   };
 
   const handleMinimizeTerminal = (id: string) => {

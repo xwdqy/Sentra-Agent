@@ -1,135 +1,43 @@
-import { Component, useState, useCallback, useEffect, useMemo, Suspense, lazy, memo, type Dispatch, type SetStateAction, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useMemo, type ReactNode } from 'react';
 import { MenuBar } from '../components/MenuBar';
-import { MacWindow } from '../components/MacWindow';
-import { EnvEditor } from '../components/EnvEditor';
-// Lazy load heavy components
-const PresetsEditor = lazy(() => import('../components/PresetsEditor').then(module => ({ default: module.PresetsEditor })));
-const FileManager = lazy(() => import('../components/FileManager').then(module => ({ default: module.FileManager })));
-const DeepWikiChat = lazy(() => import('../components/DeepWikiChat').then(module => ({ default: module.DeepWikiChat })));
-const PresetImporter = lazy(() => import('../components/PresetImporter').then(module => ({ default: module.PresetImporter })));
-const ModelProvidersManager = lazy(() => import('../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
-const DevCenterV2 = lazy(() => import('../components/DevCenterV2').then(module => ({ default: module.DevCenterV2 })));
-const RedisAdminManager = lazy(() => import('../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
-const TerminalWindow = lazy(() => import('../components/TerminalWindow').then(module => ({ default: module.TerminalWindow })));
+import { DesktopDock } from './desktop/DesktopDock';
+import { DesktopContextMenu } from './desktop/DesktopContextMenu';
+import { DesktopIconsLayer } from './desktop/DesktopIconsLayer';
+import { DesktopTerminalWindows } from './desktop/DesktopTerminalWindows';
+import { DesktopWindowsLayer } from './desktop/DesktopWindowsLayer';
+import { DesktopUtilityWindowsLayer } from './desktop/DesktopUtilityWindowsLayer';
 
-import { Dock } from '../components/Dock';
 import { Launchpad } from '../components/Launchpad';
 import { SideTaskbar } from '../components/SideTaskbar';
-import { ToastContainer, ToastMessage } from '../components/Toast';
+import { ToastContainer } from '../components/Toast';
 import { Dialog } from '../components/Dialog';
-import { Spin } from 'antd';
-import { Menu, Item, Submenu, useContextMenu } from 'react-contexify';
-import { getDisplayName, getIconForType } from '../utils/icons';
-import { IoCubeOutline, IoTerminalOutline, IoBookOutline } from 'react-icons/io5';
-import type { DeskWindow, DesktopIcon, FileItem, TerminalWin, AppFolder } from '../types/ui';
+import { useContextMenu } from 'react-contexify';
+import { getIconForType } from '../utils/icons';
+import { IoBookOutline } from 'react-icons/io5';
+import type { DesktopIcon, FileItem, AppFolder } from '../types/ui';
+import type { PresetsEditorState } from '../hooks/usePresetsEditor';
 import { AppFolderModal } from '../components/AppFolderModal';
-
-const LazyWindowFallback = memo((props: { title: string }) => {
-  return (
-    <div
-      style={{
-        height: '100%',
-        width: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 10,
-        color: 'rgba(0,0,0,0.55)',
-        fontSize: 13,
-      }}
-    >
-      <Spin size="large" />
-      <div style={{ fontWeight: 700 }}>{props.title}</div>
-      <div style={{ opacity: 0.75 }}>首次打开可能较慢，请稍等...</div>
-    </div>
-  );
-});
-
-class WindowErrorBoundary extends Component<
-  { resetKey: string; fallback: (err: any) => ReactNode; children: ReactNode },
-  { err: any }
-> {
-  state: { err: any } = { err: null };
-
-  static getDerivedStateFromError(err: any) {
-    return { err };
-  }
-
-  componentDidUpdate(prevProps: { resetKey: string }) {
-    if (prevProps.resetKey !== this.props.resetKey && this.state.err) {
-      // eslint-disable-next-line react/no-did-update-set-state
-      this.setState({ err: null });
-    }
-  }
-
-  render() {
-    if (this.state.err) return this.props.fallback(this.state.err);
-    return this.props.children as any;
-  }
-}
+import { storage } from '../utils/storage';
+import { useUIStore } from '../store/uiStore';
+import { useWindowsStore } from '../store/windowsStore';
+import { useDesktopWindows } from '../hooks/useDesktopWindows';
+import { useOpenWindowWithRefresh } from '../hooks/useOpenWindowWithRefresh';
+import { useTerminals } from '../hooks/useTerminals';
+import { useDockFavorites } from '../hooks/useDockFavorites';
 
 export type DesktopViewProps = {
   isSolidColor: boolean;
   currentWallpaper: string;
   brightness: number;
   setBrightness: (val: number) => void;
-  theme: 'light' | 'dark';
-  accentColor: string;
-  setAccentColor: (val: string) => void;
-  showDock: boolean;
-  toggleDock: () => void;
-
-  // windows
-  openWindows: DeskWindow[];
-  setOpenWindows: Dispatch<SetStateAction<DeskWindow[]>>;
-  activeWinId: string | null;
-  setActiveWinId: (id: string | null) => void;
-  bringToFront: (id: string) => void;
-  allocateZ: () => number;
-  handleClose: (id: string) => void;
-  handleSave: (id: string) => void | Promise<void>;
-  handleVarChange: (id: string, index: number, field: 'key' | 'value' | 'comment', val: string) => void;
-  handleAddVar: (id: string) => void;
-  handleDeleteVar: (id: string, index: number) => void;
-  handleRestore: (id: string) => void;
-  saving: boolean;
+  onLogout?: () => void;
 
   // icons and folders
   desktopIcons?: DesktopIcon[];
   desktopFolders?: AppFolder[];
 
-  // terminals
-  terminalWindows: TerminalWin[];
-  setTerminalWindows: Dispatch<SetStateAction<TerminalWin[]>>;
-  activeTerminalId: string | null;
-  bringTerminalToFront: (id: string) => void;
-  handleCloseTerminal: (id: string) => void;
-  handleMinimizeTerminal: (id: string) => void;
-
-  // launchpad & dock
-  launchpadOpen: boolean;
-  setLaunchpadOpen: (open: boolean) => void;
   allItems: FileItem[];
   recordUsage: (key: string) => void;
-  openWindow: (file: FileItem, opts?: { maximize?: boolean }) => void;
-  dockFavorites: string[];
-  setDockFavorites: Dispatch<SetStateAction<string[]>>;
-  uniqueDockItems: any[];
-
-  // toast
-  toasts: ToastMessage[];
-  removeToast: (id: string) => void;
-
-  // dialog
-  dialogOpen: boolean;
-  dialogConfig: {
-    title: string;
-    message: string;
-    onConfirm: () => void;
-    type: 'info' | 'warning' | 'error';
-  };
-  setDialogOpen: (open: boolean) => void;
 
   // wallpaper & menu
   wallpapers: string[];
@@ -140,160 +48,10 @@ export type DesktopViewProps = {
   handleUploadWallpaper: () => void;
   handleDeleteWallpaper: () => void;
   wallpaperInterval: number;
-  setWallpaperInterval: Dispatch<SetStateAction<number>>;
-  loadConfigs: () => void | Promise<void>;
-  presetsEditorOpen: boolean;
-  setPresetsEditorOpen: (open: boolean) => void;
-  presetsEditorMinimized: boolean;
-  setPresetsEditorMinimized: (min: boolean) => void;
-
-  presetImporterOpen: boolean;
-  setPresetImporterOpen: (open: boolean) => void;
-  presetImporterMinimized: boolean;
-  setPresetImporterMinimized: (min: boolean) => void;
-  fileManagerOpen: boolean;
-  setFileManagerOpen: (open: boolean) => void;
-  fileManagerMinimized: boolean;
-  setFileManagerMinimized: (min: boolean) => void;
-  addToast: (type: 'success' | 'error' | 'info', title: string, message?: string) => void;
-  presetsState: any; // Type will be refined in component
-  devCenterOpen: boolean;
-  setDevCenterOpen: (open: boolean) => void;
-  devCenterMinimized: boolean;
-  setDevCenterMinimized: (min: boolean) => void;
-  deepWikiOpen: boolean;
-  setDeepWikiOpen: (open: boolean) => void;
-  deepWikiMinimized: boolean;
-  setDeepWikiMinimized: (min: boolean) => void;
-
-  redisAdminOpen: boolean;
-  setRedisAdminOpen: (open: boolean) => void;
-  redisAdminMinimized: boolean;
-  setRedisAdminMinimized: (min: boolean) => void;
-
-  modelProvidersManagerOpen: boolean;
-  setModelProvidersManagerOpen: (open: boolean) => void;
-  modelProvidersManagerMinimized: boolean;
-  setModelProvidersManagerMinimized: (min: boolean) => void;
+  setWallpaperInterval: (val: ((prev: number) => number) | number) => void;
+  loadConfigs: (silent?: boolean) => Promise<void> | void;
+  presetsState: PresetsEditorState;
 };
-
-type EnvWindowItemProps = {
-  w: DeskWindow;
-  desktopSafeArea: { top: number; bottom: number; left: number; right: number };
-  theme: 'light' | 'dark';
-  saving: boolean;
-  performanceMode: boolean;
-  activeWinId: string | null;
-  bringToFront: (id: string) => void;
-  setActiveWinId: (id: string | null) => void;
-  setActiveUtilityId: (id: string | null) => void;
-  setOpenWindows: Dispatch<SetStateAction<DeskWindow[]>>;
-  handleClose: (id: string) => void;
-  handleSave: (id: string) => void | Promise<void>;
-  handleVarChange: (id: string, index: number, field: 'key' | 'value' | 'comment', val: string) => void;
-  handleAddVar: (id: string) => void;
-  handleDeleteVar: (id: string, index: number) => void;
-  handleRestore: (id: string) => void;
-  handleWindowMaximize: (id: string, isMaximized: boolean) => void;
-};
-
-const EnvWindowItem = memo(({
-  w,
-  desktopSafeArea,
-  theme,
-  saving,
-  performanceMode,
-  activeWinId,
-  bringToFront,
-  setActiveWinId,
-  setActiveUtilityId,
-  setOpenWindows,
-  handleClose,
-  handleSave,
-  handleVarChange,
-  handleAddVar,
-  handleDeleteVar,
-  handleRestore,
-  handleWindowMaximize,
-}: EnvWindowItemProps) => {
-  const handleCloseWin = useCallback(() => {
-    handleWindowMaximize(w.id, false);
-    handleClose(w.id);
-  }, [handleClose, handleWindowMaximize, w.id]);
-
-  const handleMinimizeWin = useCallback(() => {
-    setOpenWindows(ws => ws.map(x => x.id === w.id ? { ...x, minimized: true } : x));
-    setActiveWinId(null);
-    handleWindowMaximize(w.id, false);
-  }, [handleWindowMaximize, setActiveWinId, setOpenWindows, w.id]);
-
-  const handleFocusWin = useCallback(() => {
-    bringToFront(w.id);
-    setActiveUtilityId(null);
-  }, [bringToFront, setActiveUtilityId, w.id]);
-
-  const handleMoveWin = useCallback((x: number, y: number) => {
-    setOpenWindows(ws => ws.map(win => win.id === w.id ? { ...win, pos: { x, y } } : win));
-  }, [setOpenWindows, w.id]);
-
-  const handleUpdateVar = useCallback((idx: number, field: 'key' | 'value' | 'comment', val: string) => {
-    handleVarChange(w.id, idx, field, val);
-  }, [handleVarChange, w.id]);
-
-  const handleAddVarWin = useCallback(() => {
-    handleAddVar(w.id);
-  }, [handleAddVar, w.id]);
-
-  const handleDeleteVarWin = useCallback((idx: number) => {
-    handleDeleteVar(w.id, idx);
-  }, [handleDeleteVar, w.id]);
-
-  const handleSaveWin = useCallback(() => {
-    handleSave(w.id);
-  }, [handleSave, w.id]);
-
-  const handleRestoreWin = useCallback(() => {
-    handleRestore(w.id);
-  }, [handleRestore, w.id]);
-
-  const handleMaximizeWin = useCallback((isMax: boolean) => {
-    handleWindowMaximize(w.id, isMax);
-    setOpenWindows(ws => ws.map(win => win.id === w.id ? { ...win, maximized: isMax } : win));
-  }, [handleWindowMaximize, setOpenWindows, w.id]);
-
-  return (
-    <MacWindow
-      id={w.id}
-      title={`${getDisplayName(w.file.name)}`}
-      icon={getIconForType(w.file.name, w.file.type)}
-      safeArea={desktopSafeArea}
-      zIndex={w.z}
-      isActive={activeWinId === w.id}
-      isMinimized={w.minimized}
-      performanceMode={performanceMode}
-      initialPos={w.pos}
-      initialMaximized={!!w.maximized}
-      onClose={handleCloseWin}
-      onMinimize={handleMinimizeWin}
-      onMaximize={handleMaximizeWin}
-      onFocus={handleFocusWin}
-      onMove={handleMoveWin}
-    >
-      <EnvEditor
-        appName={getDisplayName(w.file.name)}
-        vars={w.editedVars}
-        onUpdate={handleUpdateVar}
-        onAdd={handleAddVarWin}
-        onDelete={handleDeleteVarWin}
-        onSave={handleSaveWin}
-        onRestore={handleRestoreWin}
-        saving={saving}
-        isExample={!w.file.hasEnv && w.file.hasExample}
-        theme={theme}
-      />
-    </MacWindow>
-  );
-});
 
 export const DesktopView = (props: DesktopViewProps) => {
   const {
@@ -301,45 +59,11 @@ export const DesktopView = (props: DesktopViewProps) => {
     currentWallpaper,
     brightness,
     setBrightness,
-    theme,
-    accentColor,
-    setAccentColor,
-    showDock,
-    toggleDock,
-    openWindows,
-    setOpenWindows,
-    activeWinId,
-    setActiveWinId,
-    bringToFront,
-    allocateZ,
-    handleClose,
-    handleSave,
-    handleVarChange,
-    handleAddVar,
-    handleDeleteVar,
-    handleRestore,
-    saving,
+    onLogout,
     desktopIcons,
     desktopFolders,
-    terminalWindows,
-    setTerminalWindows,
-    activeTerminalId,
-    bringTerminalToFront,
-    handleCloseTerminal,
-    handleMinimizeTerminal,
-    launchpadOpen,
-    setLaunchpadOpen,
     allItems,
     recordUsage,
-    openWindow,
-    dockFavorites,
-    setDockFavorites,
-    uniqueDockItems,
-    toasts,
-    removeToast,
-    dialogOpen,
-    dialogConfig,
-    setDialogOpen,
     wallpapers,
     defaultWallpapers,
     BING_WALLPAPER,
@@ -350,20 +74,39 @@ export const DesktopView = (props: DesktopViewProps) => {
     wallpaperInterval,
     setWallpaperInterval,
     loadConfigs,
-    presetsEditorOpen,
-    setPresetsEditorOpen,
-    presetsEditorMinimized,
-    setPresetsEditorMinimized,
-    presetImporterOpen,
-    setPresetImporterOpen,
-    presetImporterMinimized,
-    setPresetImporterMinimized,
-    fileManagerOpen,
-    setFileManagerOpen,
-    fileManagerMinimized,
-    setFileManagerMinimized,
     presetsState,
+  } = props;
+
+  const { dockFavorites, setDockFavorites } = useDockFavorites();
+
+  const openWindows = useWindowsStore(s => s.openWindows);
+  const setOpenWindows = useWindowsStore(s => s.setOpenWindows);
+  const activeWinId = useWindowsStore(s => s.activeWinId);
+  const setActiveWinId = useWindowsStore(s => s.setActiveWinId);
+  const bringToFront = useWindowsStore(s => s.bringToFront);
+  const allocateZ = useWindowsStore(s => s.allocateZ);
+  const closeWindow = useWindowsStore(s => s.closeWindow);
+
+  const openWindowWithRefresh = useOpenWindowWithRefresh(loadConfigs);
+
+  const saving = useUIStore(s => s.saving);
+  const setSaving = useUIStore(s => s.setSaving);
+  const theme = useUIStore(s => s.theme);
+  const performanceModeOverride = useUIStore(s => s.performanceModeOverride);
+
+  const {
+    toasts,
+    removeToast,
     addToast,
+    dialogOpen,
+    dialogConfig,
+    setDialogOpen,
+    accentColor,
+    setAccentColor,
+    showDock,
+    toggleDock,
+    launchpadOpen,
+    setLaunchpadOpen,
     devCenterOpen,
     setDevCenterOpen,
     devCenterMinimized,
@@ -380,92 +123,40 @@ export const DesktopView = (props: DesktopViewProps) => {
     setModelProvidersManagerOpen,
     modelProvidersManagerMinimized,
     setModelProvidersManagerMinimized,
-  } = props;
+    presetsEditorOpen,
+    setPresetsEditorOpen,
+    presetsEditorMinimized,
+    setPresetsEditorMinimized,
+    presetImporterOpen,
+    setPresetImporterOpen,
+    presetImporterMinimized,
+    setPresetImporterMinimized,
+    fileManagerOpen,
+    setFileManagerOpen,
+    fileManagerMinimized,
+    setFileManagerMinimized,
 
-  const shortHash = useCallback((s: string) => {
-    let h = 0;
-    for (let i = 0; i < s.length; i++) {
-      h = (h * 31 + s.charCodeAt(i)) >>> 0;
-    }
-    return h.toString(16).toUpperCase().slice(0, 6);
-  }, []);
+    utilityFocusRequestId,
+    utilityFocusRequestNonce,
+    clearUtilityFocusRequest,
+  } = useUIStore();
 
-  const getWallpaperDisplayName = useCallback((wp: string) => {
-    if (!wp) return '';
-    if (wp.startsWith('/wallpapers/')) {
-      const base = decodeURIComponent(wp.split('/').pop() || wp);
-      const noExt = base.replace(/\.(png|jpe?g|webp|gif|bmp)$/i, '');
-      const pretty = noExt.replace(/[-_]+/g, ' ').trim();
-      return pretty || base;
-    }
-    if (wp.startsWith('data:image/')) {
-      return `自定义 ${shortHash(wp)}`;
-    }
-    try {
-      const u = new URL(wp);
-      const base = decodeURIComponent(u.pathname.split('/').pop() || u.hostname);
-      const noExt = base.replace(/\.(png|jpe?g|webp|gif|bmp)$/i, '');
-      const pretty = noExt.replace(/[-_]+/g, ' ').trim();
-      return pretty || base || wp;
-    } catch {
-      return wp;
-    }
-  }, [shortHash]);
+  const {
+    terminalWindows,
+    setTerminalWindows,
+    activeTerminalId,
+    bringTerminalToFront,
+    handleCloseTerminal,
+    handleMinimizeTerminal,
+  } = useTerminals({ addToast, allocateZ });
 
-  const menuEllipsisStyle = useMemo(() => {
-    return {
-      maxWidth: 180,
-      overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      whiteSpace: 'nowrap',
-      display: 'block',
-    } as const;
-  }, []);
-
-  const [recentSolidColors, setRecentSolidColors] = useState<string[]>(() => {
-    try {
-      const raw = localStorage.getItem('sentra_recent_solid_colors');
-      const arr = raw ? JSON.parse(raw) : [];
-      return Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : [];
-    } catch {
-      return [];
-    }
-  });
-
-  const upsertRecentSolidColor = useCallback((hex: string) => {
-    const v = String(hex || '').trim();
-    if (!/^#[0-9a-fA-F]{6}$/.test(v)) return;
-    setRecentSolidColors(prev => {
-      const next = [v, ...prev.filter(x => x !== v)].slice(0, 8);
-      try {
-        localStorage.setItem('sentra_recent_solid_colors', JSON.stringify(next));
-      } catch {
-        // ignore
-      }
-      return next;
-    });
-  }, []);
-
-  const selectSolidColor = useCallback((hex: string) => {
-    upsertRecentSolidColor(hex);
-    handleWallpaperSelect(hex);
-  }, [handleWallpaperSelect, upsertRecentSolidColor]);
-
-  const openColorPicker = useCallback(() => {
-    const input = document.createElement('input');
-    input.type = 'color';
-    input.value = (() => {
-      const base = String(currentWallpaper || '').trim();
-      if (/^#[0-9a-fA-F]{6}$/.test(base)) return base;
-      return '#1a1a2e';
-    })();
-    input.onchange = (e) => {
-      const val = String((e.target as HTMLInputElement).value || '').trim();
-      if (!/^#[0-9a-fA-F]{6}$/.test(val)) return;
-      selectSolidColor(val);
-    };
-    input.click();
-  }, [currentWallpaper, selectSolidColor]);
+  const {
+    handleSave,
+    handleVarChange,
+    handleAddVar,
+    handleDeleteVar,
+    handleRestore,
+  } = useDesktopWindows({ setSaving, addToast, loadConfigs, onLogout });
 
   // Folder & window state
   const [openFolder, setOpenFolder] = useState<{
@@ -477,13 +168,7 @@ export const DesktopView = (props: DesktopViewProps) => {
   const [utilityZMap, setUtilityZMap] = useState<Record<string, number>>({});
 
   const [sideTabsCollapsed, setSideTabsCollapsed] = useState(() => {
-    try {
-      const saved = localStorage.getItem('sentra_side_tabs_collapsed');
-      if (saved != null) return saved === 'true';
-    } catch {
-      // ignore
-    }
-    return true;
+    return storage.getBool('sentra_side_tabs_collapsed', { fallback: true });
   });
   const MENU_BAR_HEIGHT = 30;
   const SIDE_TABS_COLLAPSED_WIDTH = 44;
@@ -492,11 +177,7 @@ export const DesktopView = (props: DesktopViewProps) => {
 
   const handleSideTabsCollapsedChange = useCallback((collapsed: boolean) => {
     setSideTabsCollapsed(collapsed);
-    try {
-      localStorage.setItem('sentra_side_tabs_collapsed', String(collapsed));
-    } catch {
-      // ignore
-    }
+    storage.setBool('sentra_side_tabs_collapsed', collapsed);
   }, []);
 
   const desktopSafeArea = useMemo(() => ({
@@ -537,12 +218,26 @@ export const DesktopView = (props: DesktopViewProps) => {
     }
   }, []);
 
-  const dockPerformanceMode = lowEndDevice || (openWindows.length + terminalWindows.length + openUtilityCount) > 3;
+  const autoDockPerformanceMode = lowEndDevice || (openWindows.length + terminalWindows.length + openUtilityCount) > 3;
 
-  const performanceMode =
+  const autoPerformanceMode =
     lowEndDevice ||
     maximizedWindowIds.length > 0 ||
     (openWindows.length + terminalWindows.length + openUtilityCount) >= 3;
+
+  const performanceMode =
+    performanceModeOverride === 'on'
+      ? true
+      : performanceModeOverride === 'off'
+        ? false
+        : autoPerformanceMode;
+
+  const dockPerformanceMode =
+    performanceModeOverride === 'on'
+      ? true
+      : performanceModeOverride === 'off'
+        ? false
+        : autoDockPerformanceMode;
 
   useEffect(() => {
     if (performanceMode) return;
@@ -594,8 +289,8 @@ export const DesktopView = (props: DesktopViewProps) => {
 
   const handleCloseWindowFromSide = useCallback((id: string) => {
     handleWindowMaximize(id, false);
-    handleClose(id);
-  }, [handleClose]);
+    closeWindow(id);
+  }, [closeWindow]);
 
   const handleCloseTerminalFromSide = useCallback((id: string) => {
     handleWindowMaximize(id, false);
@@ -608,6 +303,56 @@ export const DesktopView = (props: DesktopViewProps) => {
     setActiveUtilityId(id);
     setActiveWinId(null);
   }, [allocateZ, setActiveWinId]);
+
+  useEffect(() => {
+    const id = utilityFocusRequestId;
+    if (!id) return;
+
+    if (id === 'dev-center') {
+      setDevCenterOpen(true);
+      setDevCenterMinimized(false);
+    } else if (id === 'deepwiki') {
+      setDeepWikiOpen(true);
+      setDeepWikiMinimized(false);
+    } else if (id === 'redis-admin') {
+      setRedisAdminOpen(true);
+      setRedisAdminMinimized(false);
+    } else if (id === 'model-providers-manager') {
+      setModelProvidersManagerOpen(true);
+      setModelProvidersManagerMinimized(false);
+    } else if (id === 'presets-editor') {
+      setPresetsEditorOpen(true);
+      setPresetsEditorMinimized(false);
+    } else if (id === 'preset-importer') {
+      setPresetImporterOpen(true);
+      setPresetImporterMinimized(false);
+    } else if (id === 'file-manager') {
+      setFileManagerOpen(true);
+      setFileManagerMinimized(false);
+    }
+
+    bringUtilityToFront(id);
+    clearUtilityFocusRequest();
+  }, [
+    utilityFocusRequestNonce,
+    utilityFocusRequestId,
+    bringUtilityToFront,
+    clearUtilityFocusRequest,
+    setDevCenterOpen,
+    setDevCenterMinimized,
+    setDeepWikiOpen,
+    setDeepWikiMinimized,
+    setRedisAdminOpen,
+    setRedisAdminMinimized,
+    setModelProvidersManagerOpen,
+    setModelProvidersManagerMinimized,
+    setPresetsEditorOpen,
+    setPresetsEditorMinimized,
+    setPresetImporterOpen,
+    setPresetImporterMinimized,
+    setFileManagerOpen,
+    setFileManagerMinimized,
+  ]);
 
   const handleOpenDeepWiki = useCallback(() => {
     setDeepWikiOpen(true);
@@ -855,7 +600,8 @@ export const DesktopView = (props: DesktopViewProps) => {
     });
   }
 
-  const { show } = useContextMenu({ id: 'desktop-menu' });
+  const MENU_ID = 'desktop-menu';
+  const { show } = useContextMenu({ id: MENU_ID });
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     show({ event: e });
@@ -928,12 +674,12 @@ export const DesktopView = (props: DesktopViewProps) => {
       type: item.type,
       onClick: () => {
         recordUsage(`${item.type}:${item.name}`);
-        openWindow(item);
+        openWindowWithRefresh(item);
         const key = `${item.type}-${item.name}`;
         if (!dockFavorites.includes(key)) {
           setDockFavorites(prev => [...prev, key]);
         }
-      }
+      },
     }))
   ];
 
@@ -1031,503 +777,102 @@ export const DesktopView = (props: DesktopViewProps) => {
             zIndex: 0,
           }}
         />
-        {/* Dev Center 主窗口：概览 Apps / Plugins 列表，可通过 Dock / 启动台 打开 */}
-        {devCenterOpen && (
-          <MacWindow
-            id="dev-center"
-            title="开发中心"
-            icon={getIconForType('dev-center', 'module')}
-            safeArea={desktopSafeArea}
-            zIndex={utilityZMap['dev-center'] ?? 2000}
-            isActive={activeUtilityId === 'dev-center'}
-            isMinimized={devCenterMinimized}
-            performanceMode={performanceMode}
-            initialSize={{ width: 940, height: 620 }}
-            onClose={() => {
-              handleWindowMaximize('dev-center', false);
-              setDevCenterOpen(false);
-              setDevCenterMinimized(false);
-            }}
-            onMinimize={() => {
-              handleWindowMaximize('dev-center', false);
-              setDevCenterMinimized(true);
-              setActiveUtilityId(null);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize('dev-center', isMax)}
-            onFocus={() => { bringUtilityToFront('dev-center'); }}
-            onMove={() => { }}
-          >
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
-              <DevCenterV2
-                allItems={allItems}
-                tools={[
-                  {
-                    id: 'redis-admin',
-                    name: 'redis-admin',
-                    subtitle: 'Redis 管理器（可视化）',
-                    onOpen: () => {
-                      setRedisAdminOpen(true);
-                      setRedisAdminMinimized(false);
-                      bringUtilityToFront('redis-admin');
-                    },
-                  },
-                  {
-                    id: 'model-providers-manager',
-                    name: 'model-providers-manager',
-                    subtitle: '模型供应商管理（配置 /v1/models）',
-                    onOpen: () => {
-                      setModelProvidersManagerOpen(true);
-                      setModelProvidersManagerMinimized(false);
-                      bringUtilityToFront('model-providers-manager');
-                    },
-                  },
-                  {
-                    id: 'presets-editor',
-                    name: 'presets-editor',
-                    subtitle: '预设撰写（内置工具）',
-                    onOpen: () => {
-                      setPresetsEditorOpen(true);
-                      setPresetsEditorMinimized(false);
-                      bringUtilityToFront('presets-editor');
-                    },
-                  },
-                  {
-                    id: 'preset-importer',
-                    name: 'preset-importer',
-                    subtitle: '预设导入（内置工具）',
-                    onOpen: () => {
-                      setPresetImporterOpen(true);
-                      setPresetImporterMinimized(false);
-                      bringUtilityToFront('preset-importer');
-                    },
-                  },
-                  {
-                    id: 'file-manager',
-                    name: 'file-manager',
-                    subtitle: '文件管理（内置工具）',
-                    onOpen: () => {
-                      setFileManagerOpen(true);
-                      setFileManagerMinimized(false);
-                      bringUtilityToFront('file-manager');
-                    },
-                  },
-                  {
-                    id: 'deepwiki',
-                    name: 'DeepWiki',
-                    subtitle: '开发文档与指南',
-                    icon: <IoBookOutline style={{ color: '#2563eb' }} />,
-                    onOpen: () => handleOpenDeepWiki(),
-                  },
-                ]}
-                onOpenItem={(file) => openWindow(file, { maximize: true })}
-                onOpenDeepWiki={handleOpenDeepWiki}
-              />
-            </Suspense>
-          </MacWindow>
-        )}
-
-        {redisAdminOpen && (
-          <MacWindow
-            id="redis-admin"
-            title="Redis 管理器"
-            icon={getIconForType('redis-admin', 'module')}
-            safeArea={desktopSafeArea}
-            zIndex={utilityZMap['redis-admin'] ?? 2006}
-            isActive={activeUtilityId === 'redis-admin'}
-            isMinimized={redisAdminMinimized}
-            performanceMode={performanceMode}
-            initialSize={{ width: 1360, height: 820 }}
-            initialMaximized={true}
-            onClose={() => {
-              handleWindowMaximize('redis-admin', false);
-              setRedisAdminOpen(false);
-              setRedisAdminMinimized(false);
-            }}
-            onMinimize={() => {
-              handleWindowMaximize('redis-admin', false);
-              setRedisAdminMinimized(true);
-              setActiveUtilityId(null);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize('redis-admin', isMax)}
-            onFocus={() => { bringUtilityToFront('redis-admin'); }}
-            onMove={() => { }}
-          >
-            <Suspense fallback={<LazyWindowFallback title="加载 Redis 管理器" />}>
-              <RedisAdminManager
-                addToast={addToast}
-                performanceMode={performanceMode || redisAdminMinimized || activeUtilityId !== 'redis-admin'}
-              />
-            </Suspense>
-          </MacWindow>
-        )}
-
-        {modelProvidersManagerOpen && (
-          <MacWindow
-            id="model-providers-manager"
-            title="模型供应商"
-            icon={getIconForType('model-providers-manager', 'module')}
-            safeArea={desktopSafeArea}
-            zIndex={utilityZMap['model-providers-manager'] ?? 2007}
-            isActive={activeUtilityId === 'model-providers-manager'}
-            isMinimized={modelProvidersManagerMinimized}
-            performanceMode={performanceMode}
-            initialSize={{ width: 1120, height: 720 }}
-            onClose={() => {
-              handleWindowMaximize('model-providers-manager', false);
-              setModelProvidersManagerOpen(false);
-              setModelProvidersManagerMinimized(false);
-            }}
-            onMinimize={() => {
-              handleWindowMaximize('model-providers-manager', false);
-              setModelProvidersManagerMinimized(true);
-              setActiveUtilityId(null);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize('model-providers-manager', isMax)}
-            onFocus={() => { bringUtilityToFront('model-providers-manager'); }}
-            onMove={() => { }}
-          >
-            <Suspense fallback={<LazyWindowFallback title="加载 模型供应商" />}>
-              <ModelProvidersManager addToast={addToast as any} />
-            </Suspense>
-          </MacWindow>
-        )}
-
-        {presetImporterOpen && (
-          <MacWindow
-            id="preset-importer"
-            title="预设导入"
-            icon={getIconForType('preset-importer', 'module')}
-            safeArea={desktopSafeArea}
-            zIndex={utilityZMap['preset-importer'] ?? 2003}
-            isActive={activeUtilityId === 'preset-importer'}
-            isMinimized={presetImporterMinimized}
-            performanceMode={performanceMode}
-            initialSize={{ width: 880, height: 600 }}
-            onClose={() => {
-              handleWindowMaximize('preset-importer', false);
-              setPresetImporterOpen(false);
-              setPresetImporterMinimized(false);
-            }}
-            onMinimize={() => {
-              handleWindowMaximize('preset-importer', false);
-              setPresetImporterMinimized(true);
-              setActiveUtilityId(null);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize('preset-importer', isMax)}
-            onFocus={() => { bringUtilityToFront('preset-importer'); }}
-            onMove={() => { }}
-          >
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
-              <PresetImporter
-                onClose={() => setPresetImporterOpen(false)}
-                theme={theme}
-                addToast={addToast as any}
-                state={presetsState}
-              />
-            </Suspense>
-          </MacWindow>
-        )}
-
-        {deepWikiOpen && (
-          <MacWindow
-            id="deepwiki"
-            title="DeepWiki · Sentra Agent"
-            icon={<IoBookOutline style={{ color: '#2563eb' }} />}
-            safeArea={desktopSafeArea}
-            zIndex={utilityZMap['deepwiki'] ?? 2001}
-            isActive={activeUtilityId === 'deepwiki'}
-            isMinimized={deepWikiMinimized}
-            performanceMode={performanceMode}
-            initialSize={{ width: 960, height: 640 }}
-            onClose={() => {
-              handleWindowMaximize('deepwiki', false);
-              setDeepWikiOpen(false);
-              setDeepWikiMinimized(false);
-            }}
-            onMinimize={() => {
-              handleWindowMaximize('deepwiki', false);
-              setDeepWikiMinimized(true);
-              setActiveUtilityId(null);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize('deepwiki', isMax)}
-            onFocus={() => { bringUtilityToFront('deepwiki'); }}
-            onMove={() => { }}
-          >
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载 DeepWiki 助手...</div>}>
-              <DeepWikiChat theme={theme} />
-            </Suspense>
-          </MacWindow>
-        )}
+        <DesktopUtilityWindowsLayer
+          desktopSafeArea={desktopSafeArea}
+          theme={theme}
+          performanceMode={performanceMode}
+          activeUtilityId={activeUtilityId}
+          setActiveUtilityId={setActiveUtilityId}
+          utilityZMap={utilityZMap}
+          bringUtilityToFront={bringUtilityToFront}
+          handleWindowMaximize={handleWindowMaximize}
+          allItems={allItems}
+          openWindow={openWindowWithRefresh}
+          addToast={addToast as any}
+          presetsState={presetsState}
+          handleOpenDeepWiki={handleOpenDeepWiki}
+          devCenterOpen={devCenterOpen}
+          setDevCenterOpen={setDevCenterOpen}
+          devCenterMinimized={devCenterMinimized}
+          setDevCenterMinimized={setDevCenterMinimized}
+          redisAdminOpen={redisAdminOpen}
+          setRedisAdminOpen={setRedisAdminOpen}
+          redisAdminMinimized={redisAdminMinimized}
+          setRedisAdminMinimized={setRedisAdminMinimized}
+          modelProvidersManagerOpen={modelProvidersManagerOpen}
+          setModelProvidersManagerOpen={setModelProvidersManagerOpen}
+          modelProvidersManagerMinimized={modelProvidersManagerMinimized}
+          setModelProvidersManagerMinimized={setModelProvidersManagerMinimized}
+          presetImporterOpen={presetImporterOpen}
+          setPresetImporterOpen={setPresetImporterOpen}
+          presetImporterMinimized={presetImporterMinimized}
+          setPresetImporterMinimized={setPresetImporterMinimized}
+          deepWikiOpen={deepWikiOpen}
+          setDeepWikiOpen={setDeepWikiOpen}
+          deepWikiMinimized={deepWikiMinimized}
+          setDeepWikiMinimized={setDeepWikiMinimized}
+          presetsEditorOpen={presetsEditorOpen}
+          setPresetsEditorOpen={setPresetsEditorOpen}
+          presetsEditorMinimized={presetsEditorMinimized}
+          setPresetsEditorMinimized={setPresetsEditorMinimized}
+          fileManagerOpen={fileManagerOpen}
+          setFileManagerOpen={setFileManagerOpen}
+          fileManagerMinimized={fileManagerMinimized}
+          setFileManagerMinimized={setFileManagerMinimized}
+        />
 
         {/* 环境变量编辑窗口 */}
-        {openWindows.map(w => (
-          <EnvWindowItem
-            key={w.id}
-            w={w}
-            desktopSafeArea={desktopSafeArea}
-            theme={theme}
-            saving={saving}
-            performanceMode={performanceMode}
-            activeWinId={activeWinId}
-            bringToFront={bringToFront}
-            setActiveWinId={setActiveWinId}
-            setActiveUtilityId={setActiveUtilityId}
-            setOpenWindows={setOpenWindows}
-            handleClose={handleClose}
-            handleSave={handleSave}
-            handleVarChange={handleVarChange}
-            handleAddVar={handleAddVar}
-            handleDeleteVar={handleDeleteVar}
-            handleRestore={handleRestore}
-            handleWindowMaximize={handleWindowMaximize}
-          />
-        ))}
-
-        {/* 预设、文件管理、Redis 编辑器等独立工具窗口 */}
-        {presetsEditorOpen && (
-          <MacWindow
-            id="presets-editor"
-            title="预设撰写"
-            icon={getIconForType('agent-presets', 'module')}
-            safeArea={desktopSafeArea}
-            zIndex={utilityZMap['presets-editor'] ?? 2002}
-            isActive={activeUtilityId === 'presets-editor'}
-            isMinimized={presetsEditorMinimized}
-            performanceMode={performanceMode}
-            initialSize={{ width: 900, height: 600 }}
-            onClose={() => {
-              handleWindowMaximize('presets-editor', false);
-              setPresetsEditorOpen(false);
-              setPresetsEditorMinimized(false);
-            }}
-            onMinimize={() => {
-              handleWindowMaximize('presets-editor', false);
-              setPresetsEditorMinimized(true);
-              setActiveUtilityId(null);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize('presets-editor', isMax)}
-            onFocus={() => { bringUtilityToFront('presets-editor'); }}
-            onMove={() => { }}
-          >
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
-              <PresetsEditor
-                onClose={() => setPresetsEditorOpen(false)}
-                theme={theme}
-                addToast={addToast}
-                state={presetsState}
-                performanceMode={performanceMode}
-                onOpenPresetImporter={() => {
-                  setPresetImporterOpen(true);
-                  setPresetImporterMinimized(false);
-                  bringUtilityToFront('preset-importer');
-                }}
-              />
-            </Suspense>
-          </MacWindow>
-        )}
-
-        {fileManagerOpen && (
-          <MacWindow
-            id="file-manager"
-            title="文件管理"
-            icon={getIconForType('file-manager', 'module')}
-            safeArea={desktopSafeArea}
-            zIndex={utilityZMap['file-manager'] ?? 2004}
-            isActive={activeUtilityId === 'file-manager'}
-            isMinimized={fileManagerMinimized}
-            performanceMode={performanceMode}
-            initialSize={{ width: 1000, height: 700 }}
-            onClose={() => {
-              handleWindowMaximize('file-manager', false);
-              setFileManagerOpen(false);
-              setFileManagerMinimized(false);
-            }}
-            onMinimize={() => {
-              handleWindowMaximize('file-manager', false);
-              setFileManagerMinimized(true);
-              setActiveUtilityId(null);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize('file-manager', isMax)}
-            onFocus={() => { bringUtilityToFront('file-manager'); }}
-            onMove={() => { }}
-          >
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
-              <WindowErrorBoundary
-                resetKey={`file-manager:${performanceMode ? 'p' : 'n'}`}
-                fallback={(err) => (
-                  <div style={{ padding: 16, color: '#ef4444', fontSize: 13, lineHeight: 1.5 }}>
-                    <div style={{ fontWeight: 800, marginBottom: 8 }}>文件管理器渲染失败</div>
-                    <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{String((err as any)?.message || err)}</div>
-                    <div style={{ marginTop: 10, color: '#888' }}>请打开开发者工具查看详细报错堆栈。</div>
-                  </div>
-                )}
-              >
-                <FileManager
-                  onClose={() => setFileManagerOpen(false)}
-                  theme={theme}
-                  addToast={addToast}
-                  performanceMode={performanceMode}
-                />
-              </WindowErrorBoundary>
-            </Suspense>
-          </MacWindow>
-        )}
+        <DesktopWindowsLayer
+          openWindows={openWindows}
+          desktopSafeArea={desktopSafeArea}
+          theme={theme}
+          saving={saving}
+          performanceMode={performanceMode}
+          activeWinId={activeWinId}
+          bringToFront={bringToFront}
+          setActiveWinId={setActiveWinId}
+          setActiveUtilityId={setActiveUtilityId}
+          setOpenWindows={setOpenWindows}
+          handleClose={closeWindow}
+          handleSave={handleSave}
+          handleVarChange={handleVarChange}
+          handleAddVar={handleAddVar}
+          handleDeleteVar={handleDeleteVar}
+          handleRestore={handleRestore}
+          handleWindowMaximize={handleWindowMaximize}
+        />
 
         {/* 桌面图标 / 文件夹 */}
-        {desktopFolders ? (
-          <>
-            {/* 顶部应用区域：文件夹 + 关键应用图标，统一宽度与间距 */}
-            <div
-              style={{
-                position: 'absolute',
-                left: 30,
-                top: 80,
-                display: 'flex',
-                gap: 32,
-              }}
-            >
-              {desktopFolders.map(folder => (
-                renderTopTile(folder.id, folder.name, folder.icon, (e) => {
-                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                  setOpenFolder({
-                    id: folder.id,
-                    anchorRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
-                  });
-                })
-              ))}
+        <DesktopIconsLayer
+          desktopIcons={desktopIcons}
+          desktopFolders={desktopFolders}
+          renderTopTile={renderTopTile}
+          onOpenFolder={(id, anchorRect) => setOpenFolder({ id, anchorRect })}
+        />
 
-              {desktopIcons?.find(i => i.id === 'desktop-filemanager') && (() => {
-                const icon = desktopIcons.find(i => i.id === 'desktop-filemanager')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
-                  e.stopPropagation();
-                  icon.onClick();
-                });
-              })()}
-
-              {desktopIcons?.find(i => i.id === 'desktop-preset-importer') && (() => {
-                const icon = desktopIcons.find(i => i.id === 'desktop-preset-importer')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
-                  e.stopPropagation();
-                  icon.onClick();
-                });
-              })()}
-
-              {desktopIcons?.find(i => i.id === 'desktop-dev-center') && (() => {
-                const icon = desktopIcons.find(i => i.id === 'desktop-dev-center')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
-                  e.stopPropagation();
-                  icon.onClick();
-                });
-              })()}
-
-              {desktopIcons?.find(i => i.id === 'desktop-redis-admin') && (() => {
-                const icon = desktopIcons.find(i => i.id === 'desktop-redis-admin')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
-                  e.stopPropagation();
-                  icon.onClick();
-                });
-              })()}
-
-              {desktopIcons?.find(i => i.id === 'desktop-model-providers-manager') && (() => {
-                const icon = desktopIcons.find(i => i.id === 'desktop-model-providers-manager')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
-                  e.stopPropagation();
-                  icon.onClick();
-                });
-              })()}
-
-              {desktopIcons?.find(i => i.id === 'desktop-presets') && (() => {
-                const icon = desktopIcons.find(i => i.id === 'desktop-presets')!;
-                return renderTopTile(icon.id, icon.name, icon.icon, (e) => {
-                  e.stopPropagation();
-                  icon.onClick();
-                });
-              })()}
-            </div>
-
-            {/* Folder Modal */}
-            {openFolder && (
-              <AppFolderModal
-                folder={desktopFolders.find(f => f.id === openFolder.id)!}
-                anchorRect={openFolder.anchorRect}
-                theme={theme}
-                onAppClick={(_, onClick) => onClick()}
-                onClose={() => setOpenFolder(null)}
-              />
-            )}
-          </>
-        ) : desktopIcons && (
-          /* 没有文件夹时，直接渲染图标 */
-          desktopIcons.map(icon => (
-            <div
-              key={icon.id}
-              style={{
-                position: 'absolute',
-                left: icon.position.x,
-                top: icon.position.y,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                cursor: 'pointer',
-                padding: '8px',
-                borderRadius: '8px',
-                transition: 'background 0.2s',
-                width: 80,
-              }}
-              onClick={icon.onClick}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-            >
-              <div style={{ marginBottom: 4 }}>{icon.icon}</div>
-              <div style={{
-                fontSize: 12,
-                color: 'white',
-                textShadow: '0 1px 3px rgba(0,0,0,0.8)',
-                fontWeight: 500,
-                textAlign: 'center',
-                lineHeight: 1.2,
-              }}>
-                {icon.name}
-              </div>
-            </div>
-          ))
+        {/* Folder Modal */}
+        {openFolder && desktopFolders && (
+          <AppFolderModal
+            folder={desktopFolders.find(f => f.id === openFolder.id)!}
+            anchorRect={openFolder.anchorRect}
+            theme={theme}
+            onAppClick={(_, onClick) => onClick()}
+            onClose={() => setOpenFolder(null)}
+          />
         )}
 
         {/* 终端窗口 */}
-        {terminalWindows.map(terminal => (
-          <MacWindow
-            key={terminal.id}
-            id={terminal.id}
-            title={terminal.title}
-            icon={<span style={{ fontSize: '16px', display: 'flex', alignItems: 'center' }}>{terminal.title.includes('Bootstrap') ? <IoCubeOutline /> : <IoTerminalOutline />}</span>}
-            initialPos={terminal.pos}
-            safeArea={desktopSafeArea}
-            zIndex={terminal.z}
-            isActive={activeTerminalId === terminal.id}
-            isMinimized={terminal.minimized}
-            performanceMode={performanceMode}
-            onClose={() => {
-              handleWindowMaximize(terminal.id, false);
-              handleCloseTerminal(terminal.id);
-            }}
-            onMinimize={() => {
-              handleWindowMaximize(terminal.id, false);
-              handleMinimizeTerminal(terminal.id);
-            }}
-            onMaximize={(isMax) => handleWindowMaximize(terminal.id, isMax)}
-            onFocus={() => bringTerminalToFront(terminal.id)}
-            onMove={(x, y) => { setTerminalWindows(prev => prev.map(w => w.id === terminal.id ? { ...w, pos: { x, y } } : w)); }}
-          >
-            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#888' }}>加载中...</div>}>
-              <TerminalWindow
-                processId={terminal.processId}
-                theme={terminal.theme}
-                headerText={terminal.headerText}
-                onProcessNotFound={() => handleCloseTerminal(terminal.id)}
-              />
-            </Suspense>
-          </MacWindow>
-        ))}
+        <DesktopTerminalWindows
+          terminalWindows={terminalWindows}
+          activeTerminalId={activeTerminalId}
+          bringTerminalToFront={bringTerminalToFront}
+          handleCloseTerminal={handleCloseTerminal}
+          handleMinimizeTerminal={handleMinimizeTerminal}
+          setTerminalWindows={setTerminalWindows}
+          handleWindowMaximize={handleWindowMaximize}
+          desktopSafeArea={desktopSafeArea}
+          performanceMode={performanceMode}
+        />
 
         {/* Launchpad 与 Dock、通知、对话框 等 */}
         <Launchpad
@@ -1536,9 +881,12 @@ export const DesktopView = (props: DesktopViewProps) => {
           items={launchpadItems}
         />
 
-        <div style={{ display: showDock ? 'block' : 'none' }}>
-          <Dock performanceMode={dockPerformanceMode} items={uniqueDockItems.slice(0, 16)} />
-        </div>
+        <DesktopDock
+          allItems={allItems}
+          recordUsage={recordUsage}
+          loadConfigs={loadConfigs}
+          dockPerformanceMode={dockPerformanceMode}
+        />
 
         <ToastContainer toasts={toasts} removeToast={removeToast} />
 
@@ -1552,63 +900,20 @@ export const DesktopView = (props: DesktopViewProps) => {
           confirmText="删除"
         />
 
-        <Menu id="desktop-menu" theme="light" animation="scale">
-          <Submenu label="切换壁纸">
-            {wallpapers.map((wp, i) => {
-              const name = getWallpaperDisplayName(wp);
-              const isCurrent = wp === currentWallpaper;
-              const key = wp.startsWith('data:image/') ? `data:${i}:${shortHash(wp)}` : `${wp}:${i}`;
-              return (
-                <Item key={key} onClick={() => handleWallpaperSelect(wp)}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ width: 14, display: 'inline-block', textAlign: 'center' }} aria-hidden="true">
-                      {isCurrent ? '✓' : ''}
-                    </span>
-                    <span style={menuEllipsisStyle} title={name}>{name}</span>
-                  </div>
-                </Item>
-              );
-            })}
-            <Item onClick={() => handleWallpaperSelect(BING_WALLPAPER)}>Bing 每日壁纸</Item>
-            <Submenu label="纯色背景">
-              {recentSolidColors.length ? (
-                <>
-                  {recentSolidColors.map((hex) => (
-                    <Item key={`recent:${hex}`} onClick={() => selectSolidColor(hex)}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <div style={{ width: 12, height: 12, background: hex, border: '1px solid #ddd' }} />
-                        <span style={menuEllipsisStyle} title={hex}>{hex}</span>
-                      </div>
-                    </Item>
-                  ))}
-                </>
-              ) : null}
-              {SOLID_COLORS.map(c => (
-                <Item key={c.name} onClick={() => selectSolidColor(c.value)}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ width: 12, height: 12, background: c.value, border: '1px solid #ddd' }} />
-                    <span style={menuEllipsisStyle} title={c.name}>{c.name}</span>
-                  </div>
-                </Item>
-              ))}
-
-              <Item onClick={openColorPicker}>
-                自定义颜色...
-              </Item>
-            </Submenu>
-          </Submenu>
-          <Item onClick={handleUploadWallpaper}>上传壁纸...</Item>
-          <Item
-            onClick={() => handleDeleteWallpaper()}
-            disabled={defaultWallpapers.includes(currentWallpaper) || currentWallpaper === BING_WALLPAPER || String(currentWallpaper || '').startsWith('#')}
-          >
-            删除当前壁纸
-          </Item>
-          <Item onClick={() => setWallpaperInterval(i => (i === 0 ? 60 : 0))}>
-            {wallpaperInterval > 0 ? '停止壁纸轮播' : '开启壁纸轮播 (1min)'}
-          </Item>
-          <Item onClick={() => loadConfigs()}>刷新</Item>
-        </Menu>
+        <DesktopContextMenu
+          menuId={MENU_ID}
+          wallpapers={wallpapers}
+          defaultWallpapers={defaultWallpapers}
+          currentWallpaper={currentWallpaper}
+          BING_WALLPAPER={BING_WALLPAPER}
+          SOLID_COLORS={SOLID_COLORS}
+          handleWallpaperSelect={handleWallpaperSelect}
+          handleUploadWallpaper={handleUploadWallpaper}
+          handleDeleteWallpaper={handleDeleteWallpaper}
+          wallpaperInterval={wallpaperInterval}
+          setWallpaperInterval={setWallpaperInterval}
+          loadConfigs={loadConfigs}
+        />
       </div>
     </div>
   );

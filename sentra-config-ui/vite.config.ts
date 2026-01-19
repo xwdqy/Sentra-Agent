@@ -65,6 +65,9 @@ export default defineConfig(({ mode }) => {
           manualChunks: {
             'monaco-editor': ['monaco-editor'],
             'react-vendor': ['react', 'react-dom', 'framer-motion'],
+            'antd': ['antd', '@ant-design/icons'],
+            'xterm': ['@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-search', '@xterm/addon-web-links'],
+            'markdown': ['react-markdown', 'remark-gfm'],
             'icons': ['react-icons']
           }
         }

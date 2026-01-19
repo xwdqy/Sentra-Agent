@@ -5,7 +5,7 @@ import { testProviderModels } from '../../services/llmProvidersApi.ts';
 import type { ConfigData, EnvVariable } from '../../types/config.ts';
 import type { ToastMessage } from '../Toast';
 import { getDisplayName } from '../../utils/icons.tsx';
-import { Button, Checkbox, Collapse, Empty, Form, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Upload } from 'antd';
+import { Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import styles from './ModelProvidersManager.module.css';
 import modelVendorMap from './modelVendorMap.json';
@@ -39,6 +39,7 @@ import {
 } from '@ant-design/icons';
 import { IoBulbOutline, IoChatbubbleEllipsesOutline, IoCodeSlashOutline, IoConstructOutline, IoDocumentTextOutline, IoEyeOutline, IoFlashOutline, IoGlobeOutline, IoLayersOutline, IoLaptopOutline, IoLanguageOutline, IoMicOutline, IoMusicalNotesOutline, IoPlayCircleOutline, IoPulseOutline, IoShieldCheckmarkOutline, IoShuffleOutline, IoTimeOutline, IoVideocamOutline, IoVolumeHighOutline } from 'react-icons/io5';
 import { useDevice } from '../../hooks/useDevice';
+import { storage } from '../../utils/storage';
 
 // ProviderType is intentionally extensible: new vendors can be added via JSON/UX without changing TS.
 type ProviderType = string;
@@ -219,15 +220,6 @@ function evalLlmConditions(when: LlmCondition[] | undefined, varsMap: Map<string
     if (c.op === '==') return left === right;
     return left !== right;
   });
-}
-
-function safeJsonParse<T>(raw: string | null, fallback: T): T {
-  if (!raw) return fallback;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
 }
 
 function safeStringify(value: any) {
@@ -755,7 +747,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [mcpPluginShowAllVars, setMcpPluginShowAllVars] = useState(false);
 
   const [providers, setProviders] = useState<Provider[]>(() => {
-    const stored = safeJsonParse<Provider[]>(localStorage.getItem(STORAGE_KEY), []);
+    const stored = storage.getJson<Provider[]>(STORAGE_KEY, { fallback: [] });
     if (Array.isArray(stored) && stored.length) {
       return stored.map(p => ({
         id: String((p as any).id || uuidv4()),
@@ -793,7 +785,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   });
 
   const [modelsCache, setModelsCache] = useState<ModelsCache>(() => {
-    const stored = safeJsonParse<ModelsCache>(localStorage.getItem(STORAGE_MODELS_KEY), {} as any);
+    const stored = storage.getJson<ModelsCache>(STORAGE_MODELS_KEY, { fallback: {} as any });
     return stored && typeof stored === 'object' ? stored : ({} as any);
   });
 
@@ -802,11 +794,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [errorText, setErrorText] = useState('');
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(providers));
-    } catch {
-      // ignore
-    }
+    storage.setJson(STORAGE_KEY, providers);
   }, [providers]);
 
   const loadConfigData = useCallback(async () => {
@@ -899,7 +887,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_MODELS_KEY, JSON.stringify(modelsCache));
+      storage.setJson(STORAGE_MODELS_KEY, modelsCache);
     } catch {
       // ignore
     }
@@ -1696,6 +1684,52 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     return Array.from(groups.entries()).sort((a, b) => envGroupOrder(a[0]) - envGroupOrder(b[0]));
   }, [llmVisibleItems]);
 
+  const collapseAllLlmGroups = useCallback(() => {
+    setLlmGroupCollapsed(prev => {
+      const next = { ...prev };
+      for (const [g] of llmGroupedItems) {
+        const k = `${llmModule}:${g}`;
+        next[k] = true;
+      }
+      return next;
+    });
+  }, [llmGroupedItems, llmModule]);
+
+  const expandAllLlmGroups = useCallback(() => {
+    setLlmGroupCollapsed(prev => {
+      const next = { ...prev };
+      for (const [g] of llmGroupedItems) {
+        const k = `${llmModule}:${g}`;
+        next[k] = false;
+      }
+      return next;
+    });
+  }, [llmGroupedItems, llmModule]);
+
+  const collapseAllMcpPluginGroups = useCallback(() => {
+    if (!mcpPluginName) return;
+    setMcpPluginGroupCollapsed(prev => {
+      const next = { ...prev };
+      for (const [g] of mcpPluginGroupedItems) {
+        const k = `plugin:${mcpPluginName}:${g}`;
+        next[k] = true;
+      }
+      return next;
+    });
+  }, [mcpPluginGroupedItems, mcpPluginName]);
+
+  const expandAllMcpPluginGroups = useCallback(() => {
+    if (!mcpPluginName) return;
+    setMcpPluginGroupCollapsed(prev => {
+      const next = { ...prev };
+      for (const [g] of mcpPluginGroupedItems) {
+        const k = `plugin:${mcpPluginName}:${g}`;
+        next[k] = false;
+      }
+      return next;
+    });
+  }, [mcpPluginGroupedItems, mcpPluginName]);
+
   const updateLlmVar = useCallback((key: string, value: string) => {
     setLlmDrafts(prev => {
       const cur = Array.isArray(prev[llmModule]) ? prev[llmModule] : (Array.isArray(llmModuleConfig?.variables) ? llmModuleConfig!.variables : []);
@@ -2041,15 +2075,30 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
             {(!isCompact || mobileSection === 'config') ? (
             <div className={styles.card}>
               <div className={styles.cardTitleRow}>
-                <div>
-                  <div className={styles.cardTitle}>LLM 配置中心</div>
-                  <div className={styles.cardMeta}>
-                    {configLoading
-                      ? '加载配置中...'
-                      : (llmTab === 'mcp-plugins'
-                        ? '配置 sentra-mcp/plugins 本地插件环境变量'
-                        : (llmMappingLoading ? '加载映射中...' : '按模块编辑所有 LLM 相关环境变量（OpenAI-compat）'))}
-                  </div>
+                <div style={{ minWidth: 0 }}>
+                  <Typography.Title level={5} style={{ margin: 0, fontSize: 14 }}>
+                    LLM 配置中心
+                  </Typography.Title>
+                  <Descriptions size="small" column={1} colon={false} style={{ marginTop: 6 }}>
+                    <Descriptions.Item label="说明">
+                      {configLoading
+                        ? '加载配置中...'
+                        : (llmTab === 'mcp-plugins'
+                          ? '配置 sentra-mcp/plugins 本地插件环境变量'
+                          : (llmMappingLoading ? '加载映射中...' : '按模块编辑所有 LLM 相关环境变量（OpenAI-compat）'))}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="目标">
+                      {llmTab === 'mcp-plugins' ? 'sentra-mcp/plugins' : String(llmModule || '')}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="状态">
+                      <Space size={6} wrap>
+                        <Tag color={configLoading ? 'processing' : 'success'}>{configLoading ? '配置加载中' : '配置就绪'}</Tag>
+                        {llmTab === 'mcp-plugins'
+                          ? null
+                          : <Tag color={llmMappingLoading ? 'processing' : 'default'}>{llmMappingLoading ? '映射加载中' : '映射就绪'}</Tag>}
+                      </Space>
+                    </Descriptions.Item>
+                  </Descriptions>
                 </div>
                 <div className={styles.llmTopRight}>
                   <Tabs
@@ -2150,6 +2199,46 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                       {showAdvancedLlm ? '隐藏高级参数' : '高级参数'}
                     </Button>
                   ) : null}
+
+                  {llmTab === 'mcp-plugins' ? (
+                    <>
+                      <Button
+                        size="small"
+                        onClick={collapseAllMcpPluginGroups}
+                        disabled={!mcpPluginName || mcpPluginSaving}
+                        title="收起全部分组"
+                      >
+                        全部收起
+                      </Button>
+                      <Button
+                        size="small"
+                        onClick={expandAllMcpPluginGroups}
+                        disabled={!mcpPluginName || mcpPluginSaving}
+                        title="展开全部分组"
+                      >
+                        全部展开
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        size="small"
+                        onClick={collapseAllLlmGroups}
+                        disabled={llmSaving || configLoading}
+                        title="收起全部分组"
+                      >
+                        全部收起
+                      </Button>
+                      <Button
+                        size="small"
+                        onClick={expandAllLlmGroups}
+                        disabled={llmSaving || configLoading}
+                        title="展开全部分组"
+                      >
+                        全部展开
+                      </Button>
+                    </>
+                  )}
                 </div>
                 <Button
                   type="primary"
@@ -2179,7 +2268,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                     <div className={styles.llmGroups}>
                       {mcpPluginGroupedItems.map(([g, items]) => {
                         const k = `plugin:${mcpPluginName}:${g}`;
-                        const collapsed = !!mcpPluginGroupCollapsed[k];
+                        const collapsed = mcpPluginGroupCollapsed[k] !== false;
                         return (
                           <div className={styles.llmGroup} key={k}>
                             <div className={styles.llmGroupHeader}>
@@ -2192,7 +2281,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                   size="small"
                                   type="text"
                                   icon={collapsed ? <RightOutlined /> : <DownOutlined />}
-                                  onClick={() => setMcpPluginGroupCollapsed(prev => ({ ...prev, [k]: !prev[k] }))}
+                                  onClick={() => setMcpPluginGroupCollapsed(prev => ({ ...prev, [k]: prev[k] === false ? true : false }))}
                                   aria-label={collapsed ? '展开' : '折叠'}
                                   title={collapsed ? '展开' : '折叠'}
                                 />
@@ -2371,7 +2460,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                 <div className={styles.llmGroups}>
                   {llmGroupedItems.map(([g, items]) => {
                     const k = `${llmModule}:${g}`;
-                    const collapsed = !!llmGroupCollapsed[k];
+                    const collapsed = llmGroupCollapsed[k] !== false;
                     return (
                       <div className={styles.llmGroup} key={k}>
                         <div className={styles.llmGroupHeader}>
@@ -2394,7 +2483,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                               size="small"
                               type="text"
                               icon={collapsed ? <RightOutlined /> : <DownOutlined />}
-                              onClick={() => setLlmGroupCollapsed(prev => ({ ...prev, [k]: !prev[k] }))}
+                              onClick={() => setLlmGroupCollapsed(prev => ({ ...prev, [k]: prev[k] === false ? true : false }))}
                               aria-label={collapsed ? '展开' : '折叠'}
                               title={collapsed ? '展开' : '折叠'}
                             />

@@ -1,26 +1,24 @@
 import { useEffect, useState } from 'react';
 import { DEFAULT_WALLPAPERS, BING_WALLPAPER } from '../constants/wallpaper';
 import type { ToastMessage } from '../components/Toast';
+import { storage } from '../utils/storage';
 
 export function useWallpaper(addToast: (type: ToastMessage['type'], title: string, message?: string) => void) {
   const [wallpapers, setWallpapers] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('sentra_custom_wallpapers');
-      if (saved) {
-        const custom = JSON.parse(saved);
-        return [...DEFAULT_WALLPAPERS, ...custom];
-      }
-    } catch {}
+    const custom = storage.getJson<any>('sentra_custom_wallpapers', { fallback: [] });
+    if (Array.isArray(custom)) {
+      const clean = custom.filter((x) => typeof x === 'string');
+      if (clean.length > 0) return [...DEFAULT_WALLPAPERS, ...clean];
+    }
     return DEFAULT_WALLPAPERS;
   });
 
   const [currentWallpaper, setCurrentWallpaper] = useState<string>(() => {
-    return localStorage.getItem('sentra_current_wallpaper') || DEFAULT_WALLPAPERS[0];
+    return storage.getString('sentra_current_wallpaper', { fallback: DEFAULT_WALLPAPERS[0] });
   });
 
   const [brightness, setBrightness] = useState(() => {
-    const saved = localStorage.getItem('sentra_brightness');
-    return saved ? Number(saved) : 100;
+    return storage.getNumber('sentra_brightness', { fallback: 100 });
   });
 
   const [wallpaperInterval, setWallpaperInterval] = useState<number>(0);
@@ -30,11 +28,7 @@ export function useWallpaper(addToast: (type: ToastMessage['type'], title: strin
   const [wallpaperEditorBlobUrl, setWallpaperEditorBlobUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    try {
-      localStorage.removeItem('sentra_wallpaper_fit');
-    } catch {
-      // ignore
-    }
+    storage.remove('sentra_wallpaper_fit');
   }, []);
 
   useEffect(() => {
@@ -58,11 +52,11 @@ export function useWallpaper(addToast: (type: ToastMessage['type'], title: strin
   }, [wallpaperInterval, wallpapers, currentWallpaper]);
 
   useEffect(() => {
-    localStorage.setItem('sentra_current_wallpaper', currentWallpaper);
+    storage.setString('sentra_current_wallpaper', currentWallpaper);
   }, [currentWallpaper]);
 
   useEffect(() => {
-    localStorage.setItem('sentra_brightness', String(brightness));
+    storage.setNumber('sentra_brightness', Number(brightness));
   }, [brightness]);
 
   const handleWallpaperSelect = (wp: string) => setCurrentWallpaper(wp);
@@ -113,7 +107,7 @@ export function useWallpaper(addToast: (type: ToastMessage['type'], title: strin
       setCurrentWallpaper(dataUrl);
 
       const customOnly = newWallpapers.slice(DEFAULT_WALLPAPERS.length);
-      localStorage.setItem('sentra_custom_wallpapers', JSON.stringify(customOnly));
+      storage.setJson('sentra_custom_wallpapers', customOnly);
       addToast('success', '壁纸已添加');
       setWallpaperEditorOpen(false);
       setWallpaperEditorSrc(null);
@@ -135,7 +129,7 @@ export function useWallpaper(addToast: (type: ToastMessage['type'], title: strin
     setWallpapers(newWallpapers);
     setCurrentWallpaper(newWallpapers[newWallpapers.length - 1] || DEFAULT_WALLPAPERS[0]);
     const customOnly = newWallpapers.slice(DEFAULT_WALLPAPERS.length);
-    localStorage.setItem('sentra_custom_wallpapers', JSON.stringify(customOnly));
+    storage.setJson('sentra_custom_wallpapers', customOnly);
     addToast('success', '壁纸已删除');
     return true;
   };

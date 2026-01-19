@@ -252,17 +252,27 @@
     padding: 0 16px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
+    gap: 10px;
+    min-width: 0;
 }
 
 .filePath {
     font-size: 13px;
     color: var(--text-secondary);
     font-family: monospace;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .actions {
     display: flex;
     gap: 8px;
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .actionBtn {
@@ -331,12 +341,19 @@
     top: 0;
     z-index: 10;
     border-bottom: 1px solid var(--border-color);
+    gap: 10px;
+    min-width: 0;
 }
 
 .mobileTitle {
     font-size: 17px;
     font-weight: 600;
     color: var(--text-primary);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .mobileEditor {
@@ -360,6 +377,8 @@
     background: var(--bg-secondary);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--border-color);
+    gap: 10px;
+    min-width: 0;
 }
 
 .backBtn {
@@ -891,6 +910,22 @@ filter: brightness(1.1);
     padding: 0 16px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
+    gap: 10px;
+    min-width: 0;
+}
+
+.desktopRoot .filePath {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.desktopRoot .actions {
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .desktopRoot .actionBtn {
@@ -904,4 +939,41 @@ filter: brightness(1.1);
 
 .desktopRoot .emptyState {
     background: transparent;
+}
+
+.filePath {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.actions {
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.editorToolbar {
+    gap: 10px;
+    min-width: 0;
+}
+
+.mobileHeader {
+    gap: 10px;
+    min-width: 0;
+}
+
+.mobileTitle {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mobileEditorToolbar {
+    gap: 10px;
+    min-width: 0;
 }

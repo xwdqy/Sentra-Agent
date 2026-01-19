@@ -18,6 +18,7 @@ import {
     FileNode
 } from '../services/fileApi';
 import { ToastMessage } from './Toast';
+import { storage } from '../utils/storage';
 
 const MonacoEditor = lazy(async () => {
     await import('../utils/monacoSetup');
@@ -26,13 +27,7 @@ const MonacoEditor = lazy(async () => {
 });
 
 const readUseMonaco = () => {
-    try {
-        const v = localStorage.getItem('sentra_file_manager_use_monaco');
-        if (v == null) return false;
-        return v === 'true';
-    } catch {
-        return false;
-    }
+    return storage.getBool('sentra_file_manager_use_monaco', { fallback: false });
 };
 
 interface FileManagerProps {
@@ -179,11 +174,7 @@ export const FileManager: React.FC<FileManagerProps> = ({ onClose, addToast, the
     const [useMonaco, setUseMonaco] = useState(() => readUseMonaco());
 
     useEffect(() => {
-        try {
-            localStorage.setItem('sentra_file_manager_use_monaco', String(useMonaco));
-        } catch {
-            // ignore
-        }
+        storage.setBool('sentra_file_manager_use_monaco', useMonaco);
     }, [useMonaco]);
     const [targetNode, setTargetNode] = useState<FileNode | null>(null);
 
@@ -252,13 +243,7 @@ export const FileManager: React.FC<FileManagerProps> = ({ onClose, addToast, the
         if (!fileTree || fileTree.length === 0) return;
         restoreRequestedRef.current = true;
 
-        let persisted: FileManagerPersistedState | null = null;
-        try {
-            const raw = localStorage.getItem('sentra_file_manager_state');
-            if (raw) persisted = JSON.parse(raw);
-        } catch {
-            persisted = null;
-        }
+        const persisted = storage.getJson<FileManagerPersistedState | null>('sentra_file_manager_state', { fallback: null });
 
         if (!persisted || persisted.version !== 1 || !Array.isArray(persisted.openPaths) || persisted.openPaths.length === 0) {
             return;
@@ -326,7 +311,7 @@ export const FileManager: React.FC<FileManagerProps> = ({ onClose, addToast, the
                 activePath: activeFilePath,
                 previewByPath,
             };
-            localStorage.setItem('sentra_file_manager_state', JSON.stringify(snapshot));
+            storage.setJson('sentra_file_manager_state', snapshot);
         } catch {
             // ignore
         }

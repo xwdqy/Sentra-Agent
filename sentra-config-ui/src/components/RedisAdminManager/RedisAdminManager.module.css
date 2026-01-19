@@ -22,6 +22,8 @@
   flex-direction: column;
   height: 100%;
   width: 100%;
+  position: relative;
+  isolation: isolate;
   background: var(--redis-app-bg);
 }
 
@@ -249,35 +251,11 @@
 .antdSelect,
 .antdInput {
   width: 100%;
-}
-
-.antdInput :global(.ant-input) {
-  background: var(--redis-panel-bg);
-  border: 1px solid var(--redis-border-soft);
-  border-radius: 12px;
-  color: var(--redis-text);
-}
-
-.antdInput :global(.ant-input::placeholder) {
-  color: var(--redis-muted);
-}
-
-.antdSelect :global(.ant-select-selector) {
-  background: var(--redis-panel-bg);
-  border: 1px solid var(--redis-border-soft);
-  border-radius: 12px;
-  color: var(--redis-text);
-  box-shadow: none;
-}
-
-.antdSelect :global(.ant-select-selection-item),
-.antdSelect :global(.ant-select-selection-search-input) {
-  color: var(--redis-text);
-}
-
-.antdSelect :global(.ant-select-arrow),
-.antdSelect :global(.ant-select-clear) {
-  color: var(--redis-muted);
+  --local-control-bg: var(--redis-panel-bg);
+  --local-control-border: var(--redis-border-soft);
+  --local-control-fg: var(--redis-text);
+  --local-control-placeholder: var(--redis-muted);
+  --local-control-radius: 12px;
 }
 
 .antdTabs :global(.ant-tabs-nav) {
@@ -1649,21 +1627,21 @@
 }
 
 .drawerOverlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: rgba(15, 23, 42, 0.35);
   backdrop-filter: blur(6px);
   animation: overlayIn 180ms ease;
-  z-index: 9999;
+  z-index: 20;
 }
 
 .modalOverlay {
-  position: fixed;
+  position: absolute;
   inset: 0;
   background: rgba(15, 23, 42, 0.42);
   backdrop-filter: blur(10px);
   animation: overlayIn 180ms ease;
-  z-index: 10000;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: center;

@@ -33,11 +33,11 @@
 }
 
 .desktopIcons::-webkit-scrollbar-track {
-  background: #c0c0c0;
+  background: transparent;
 }
 
 .desktopIcons::-webkit-scrollbar-thumb {
-  background: #c0c0c0;
+  background: var(--local-scrollbar-thumb, var(--scrollbar-thumb));
   border-top: 2px solid #ffffff;
   border-left: 2px solid #ffffff;
   border-right: 2px solid #808080;
@@ -49,6 +49,10 @@
   border-left: 2px solid #808080;
   border-right: 2px solid #ffffff;
   border-bottom: 2px solid #ffffff;
+}
+
+.desktopIcons::-webkit-scrollbar-thumb:hover {
+  background: var(--local-scrollbar-thumb-hover, var(--scrollbar-thumb-hover));
 }
 
 /* 桌面图标 */
@@ -141,11 +145,11 @@
 }
 
 .editorContent::-webkit-scrollbar-track {
-  background: #c0c0c0;
+  background: transparent;
 }
 
 .editorContent::-webkit-scrollbar-thumb {
-  background: #c0c0c0;
+  background: var(--local-scrollbar-thumb, var(--scrollbar-thumb));
   border-top: 2px solid #ffffff;
   border-left: 2px solid #ffffff;
   border-right: 2px solid #808080;
@@ -157,6 +161,10 @@
   border-left: 2px solid #808080;
   border-right: 2px solid #ffffff;
   border-bottom: 2px solid #ffffff;
+}
+
+.editorContent::-webkit-scrollbar-thumb:hover {
+  background: var(--local-scrollbar-thumb-hover, var(--scrollbar-thumb-hover));
 }
 
 /* 配置块 */

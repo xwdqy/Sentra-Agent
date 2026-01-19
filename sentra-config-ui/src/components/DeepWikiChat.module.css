@@ -31,7 +31,7 @@
 }
 
 .root *::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover);
+  background: var(--local-scrollbar-thumb-hover, var(--scrollbar-thumb-hover));
   background-clip: content-box;
 }
 
@@ -385,7 +385,7 @@
   --dw-border: #40444b;
   --dw-text: #dcddde;
   --dw-muted: #8e9297;
-  --dw-scrollbar-thumb: var(--scrollbar-thumb);
+  --dw-scrollbar-thumb: var(--local-scrollbar-thumb, var(--scrollbar-thumb));
   --dw-bubble-assistant: rgba(54, 57, 63, 0.95);
   --dw-bubble-user: rgba(88, 101, 242, 0.95);
   --dw-bubble-error: rgba(237, 66, 69, 0.16);
@@ -458,7 +458,7 @@
   --dw-border: #e5e7eb;
   --dw-text: #111827;
   --dw-muted: #6b7280;
-  --dw-scrollbar-thumb: var(--scrollbar-thumb);
+  --dw-scrollbar-thumb: var(--local-scrollbar-thumb, var(--scrollbar-thumb));
   --dw-bubble-assistant: #ffffff;
   --dw-bubble-user: var(--sentra-accent);
   --dw-bubble-error: rgba(220, 38, 38, 0.12);
@@ -522,6 +522,8 @@
   justify-content: space-between;
   border-bottom: 1px solid var(--dw-border);
   background: var(--dw-header-bg);
+  gap: 10px;
+  min-width: 0;
 }
 
 .headerLeft {
@@ -530,10 +532,17 @@
   gap: 8px;
   font-size: 14px;
   font-weight: 600;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .headerTitle {
   color: var(--dw-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .headerBadge {
@@ -559,6 +568,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .headerIconButton {
@@ -824,12 +836,16 @@
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
+  min-width: 0;
 }
 
 .bubbleHeaderRight {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .msgActions {
@@ -879,6 +895,10 @@
   font-size: 12px;
   font-weight: 700;
   color: var(--dw-on-user);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bubbleHeaderUser .bubbleAuthor {

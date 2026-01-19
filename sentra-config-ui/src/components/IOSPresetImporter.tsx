@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PresetsEditorState } from '../hooks/usePresetsEditor';
 import { convertPresetText, convertPresetTextStream, fetchPresetFile, savePresetFile } from '../services/api';
+import { storage } from '../utils/storage';
 
 type ToastFn = (type: 'success' | 'error', title: string, message?: string) => void;
 
@@ -45,18 +46,18 @@ export interface IOSPresetImporterProps {
 
 export const IOSPresetImporter: React.FC<IOSPresetImporterProps> = ({ onClose, addToast, state, theme }) => {
   const [sourceMode, setSourceMode] = useState<'upload' | 'presets' | 'text'>(() => {
-    const v = localStorage.getItem('preset_importer.sourceMode') as any;
+    const v = storage.getString('preset_importer.sourceMode', { fallback: '' }) as any;
     return v === 'presets' || v === 'text' || v === 'upload' ? v : 'upload';
   });
   const [file, setFile] = useState<File | null>(null);
-  const [inputFileName, setInputFileName] = useState<string>(() => localStorage.getItem('preset_importer.inputFileName') || 'pasted.txt');
+  const [inputFileName, setInputFileName] = useState<string>(() => storage.getString('preset_importer.inputFileName', { fallback: 'pasted.txt' }));
   const [selectedPresetPath, setSelectedPresetPath] = useState<string>('');
   const [rawText, setRawText] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [convertedJson, setConvertedJson] = useState<any | null>(null);
   const [convertedXml, setConvertedXml] = useState<string>('');
 
-  const [streamEnabled, setStreamEnabled] = useState<boolean>(() => (localStorage.getItem('preset_importer.streamEnabled') || 'true') !== 'false');
+  const [streamEnabled, setStreamEnabled] = useState<boolean>(() => storage.getBool('preset_importer.streamEnabled', { fallback: true }));
   const [streamText, setStreamText] = useState<string>('');
   const [isStreaming, setIsStreaming] = useState<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -64,11 +65,11 @@ export const IOSPresetImporter: React.FC<IOSPresetImporterProps> = ({ onClose, a
   const flushRafRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => localStorage.getItem('preset_importer.apiBaseUrl') || '');
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('preset_importer.apiKey') || '');
-  const [model, setModel] = useState<string>(() => localStorage.getItem('preset_importer.model') || '');
-  const [temperature, setTemperature] = useState<string>(() => localStorage.getItem('preset_importer.temperature') || '0');
-  const [maxTokens, setMaxTokens] = useState<string>(() => localStorage.getItem('preset_importer.maxTokens') || '8192');
+  const [apiBaseUrl, setApiBaseUrl] = useState<string>(() => storage.getString('preset_importer.apiBaseUrl', { fallback: '' }));
+  const [apiKey, setApiKey] = useState<string>(() => storage.getString('preset_importer.apiKey', { fallback: '' }));
+  const [model, setModel] = useState<string>(() => storage.getString('preset_importer.model', { fallback: '' }));
+  const [temperature, setTemperature] = useState<string>(() => storage.getString('preset_importer.temperature', { fallback: '0' }));
+  const [maxTokens, setMaxTokens] = useState<string>(() => storage.getString('preset_importer.maxTokens', { fallback: '8192' }));
 
   const effectiveFileName = useMemo(() => {
     if (sourceMode === 'upload') return file?.name || '';
@@ -77,35 +78,35 @@ export const IOSPresetImporter: React.FC<IOSPresetImporterProps> = ({ onClose, a
   }, [file, inputFileName, sourceMode]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.sourceMode', sourceMode);
+    storage.setString('preset_importer.sourceMode', sourceMode);
   }, [sourceMode]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.inputFileName', inputFileName);
+    storage.setString('preset_importer.inputFileName', inputFileName);
   }, [inputFileName]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.streamEnabled', String(streamEnabled));
+    storage.setBool('preset_importer.streamEnabled', streamEnabled);
   }, [streamEnabled]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.apiBaseUrl', apiBaseUrl);
+    storage.setString('preset_importer.apiBaseUrl', apiBaseUrl);
   }, [apiBaseUrl]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.apiKey', apiKey);
+    storage.setString('preset_importer.apiKey', apiKey);
   }, [apiKey]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.model', model);
+    storage.setString('preset_importer.model', model);
   }, [model]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.temperature', temperature);
+    storage.setString('preset_importer.temperature', temperature);
   }, [temperature]);
 
   useEffect(() => {
-    localStorage.setItem('preset_importer.maxTokens', maxTokens);
+    storage.setString('preset_importer.maxTokens', maxTokens);
   }, [maxTokens]);
 
   const existingNames = useMemo(() => {

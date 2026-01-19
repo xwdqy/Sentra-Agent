@@ -6,6 +6,7 @@ import { IoAttachOutline, IoChevronDown, IoChevronForward, IoClose, IoDocumentTe
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { v4 as uuidv4 } from 'uuid';
+import { storage } from '../utils/storage';
 import {
   createConversation,
   deleteConversation,
@@ -246,12 +247,7 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
   const [input, setInput] = useState('');
   const [editingUserMessageId, setEditingUserMessageId] = useState<string>('');
   const [streamEnabled, setStreamEnabled] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('sentra_deepwiki_stream');
-      return saved ? saved === 'true' : true;
-    } catch {
-      return true;
-    }
+    return storage.getBool('sentra_deepwiki_stream', { fallback: true });
   });
 
   const messagesWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -285,12 +281,7 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
     });
   }, [scrollToBottomInstant]);
   const [agentModeEnabled, setAgentModeEnabled] = useState<boolean>(() => {
-    try {
-      const saved = localStorage.getItem('sentra_deepwiki_agent_mode');
-      return saved ? saved === 'true' : false;
-    } catch {
-      return false;
-    }
+    return storage.getBool('sentra_deepwiki_agent_mode', { fallback: false });
   });
   const [sending, setSending] = useState(false);
   const [typing, setTyping] = useState(false);
@@ -494,7 +485,7 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
       const conv = await createConversation(id, '新对话');
       await loadConversationList();
       await loadConversation(conv.id);
-      try { localStorage.setItem('sentra_deepwiki_active_conversation', conv.id); } catch { }
+      storage.setString('sentra_deepwiki_active_conversation', conv.id);
     } finally {
       setConvLoading(false);
     }
@@ -515,7 +506,7 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
     setConvLoading(true);
     try {
       await loadConversation(id);
-      try { localStorage.setItem('sentra_deepwiki_active_conversation', id); } catch { }
+      storage.setString('sentra_deepwiki_active_conversation', id);
     } finally {
       setConvLoading(false);
     }
@@ -540,9 +531,7 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
       try {
         const list = await loadConversationList();
         let nextId = '';
-        try {
-          nextId = localStorage.getItem('sentra_deepwiki_active_conversation') || '';
-        } catch { }
+        nextId = storage.getString('sentra_deepwiki_active_conversation', { fallback: '' }) || '';
         if (nextId && list.some(c => c.id === nextId)) {
           await loadConversation(nextId);
           return;
@@ -611,7 +600,7 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
   const handleToggleStream = () => {
     setStreamEnabled(prev => {
       const next = !prev;
-      try { localStorage.setItem('sentra_deepwiki_stream', String(next)); } catch { }
+      storage.setBool('sentra_deepwiki_stream', next);
       return next;
     });
   };
@@ -619,7 +608,7 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
   const handleToggleAgentMode = () => {
     setAgentModeEnabled(prev => {
       const next = !prev;
-      try { localStorage.setItem('sentra_deepwiki_agent_mode', String(next)); } catch { }
+      storage.setBool('sentra_deepwiki_agent_mode', next);
       return next;
     });
   };
