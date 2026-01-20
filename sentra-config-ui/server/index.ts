@@ -77,7 +77,7 @@ async function start() {
       global: true,
       encodings: ['gzip', 'deflate'],
       threshold: 2048,
-      customTypes: /^(application\/json|text\/plain|text\/html)(;|$)/i,
+      customTypes: /^(text\/plain|text\/html)(;|$)/i,
     });
   } catch (err) {
     fastify.log.warn({ err }, '[Compress] Failed to register @fastify/compress (version mismatch?).');

@@ -2618,6 +2618,76 @@
   overflow: auto;
 }
 
+.errorPanel {
+  border: 1px solid rgba(239, 68, 68, 0.22);
+  background: linear-gradient(rgba(239, 68, 68, 0.06), rgba(239, 68, 68, 0.04)), var(--mpm-surface-1);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.10);
+  border-radius: 14px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.errorPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px;
+  border-bottom: 1px solid rgba(239, 68, 68, 0.16);
+}
+
+.errorPanelTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.errorDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(239, 68, 68, 0.82);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14);
+  flex: 0 0 auto;
+}
+
+.errorPanelTitle {
+  font-size: 12px;
+  font-weight: 800;
+  color: rgba(239, 68, 68, 0.92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.errorPanelActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.errorPanelActionBtn {
+  border-radius: 10px;
+}
+
+.errorPanelBody {
+  padding: 10px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.errorPanelPre {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: var(--mpm-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .dangerPrimaryButton {
   appearance: none;
   border: 1px solid var(--mpm-danger-border);

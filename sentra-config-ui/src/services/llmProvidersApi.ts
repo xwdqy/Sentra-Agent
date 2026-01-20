@@ -17,6 +17,7 @@ export async function testProviderModels(params: {
   apiKey?: string;
   apiKeyHeader?: string;
   apiKeyPrefix?: string;
+  debug?: boolean;
 }): Promise<{ models: any[] }> {
   const res = await fetch('/api/llm-providers/test-models', {
     method: 'POST',
@@ -26,6 +27,7 @@ export async function testProviderModels(params: {
       apiKey: params.apiKey,
       apiKeyHeader: params.apiKeyHeader,
       apiKeyPrefix: params.apiKeyPrefix,
+      debug: !!params.debug,
     }),
   });
   return readJsonOrThrow(res);

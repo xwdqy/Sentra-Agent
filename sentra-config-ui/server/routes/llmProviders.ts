@@ -20,6 +20,32 @@ function normalizeBaseUrlV1(url: string) {
   return `${u}/v1`;
 }
 
+function extractModels(payload: any) {
+  const direct = Array.isArray(payload?.data)
+    ? payload.data
+    : Array.isArray(payload?.models)
+      ? payload.models
+      : null;
+  if (direct) return direct;
+
+  const nested = Array.isArray(payload?.data?.data)
+    ? payload.data.data
+    : Array.isArray(payload?.data?.models)
+      ? payload.data.models
+      : Array.isArray(payload?.result?.data)
+        ? payload.result.data
+        : Array.isArray(payload?.result?.models)
+          ? payload.result.models
+          : null;
+
+  return nested || [];
+}
+
+function extractErrorMessage(payload: any) {
+  const msg = payload?.error?.message || payload?.error?.error || payload?.error || payload?.message;
+  return msg == null ? '' : String(msg);
+}
+
 async function readTextSafe(res: Response) {
   try {
     return await res.text();
@@ -33,19 +59,29 @@ export async function llmProvidersRoutes(fastify: FastifyInstance) {
 
   fastify.post('/api/llm-providers/test-models', async (request, reply) => {
     try {
+      const sendJson = (statusCode: number, payload: any) => {
+        const out = JSON.stringify(payload ?? {});
+        reply.hijack();
+        reply.raw.statusCode = statusCode;
+        reply.raw.setHeader('Content-Type', 'application/json; charset=utf-8');
+        reply.raw.setHeader('Content-Encoding', 'identity');
+        reply.raw.end(out);
+      };
+
       const body: any = request.body || {};
       const baseUrl = normalizeBaseUrl(body.baseUrl);
       const apiKey = asString(body.apiKey).trim();
       const apiKeyHeader = asString(body.apiKeyHeader || 'Authorization').trim() || 'Authorization';
       const apiKeyPrefix = asString(body.apiKeyPrefix != null ? body.apiKeyPrefix : 'Bearer ');
+      const debug = !!body.debug;
 
       if (!baseUrl) {
-        reply.code(400).send({ success: false, error: 'baseUrl is required' });
+        sendJson(400, { success: false, error: 'baseUrl is required' });
         return;
       }
 
       if (!isHttpUrl(baseUrl)) {
-        reply.code(400).send({ success: false, error: 'baseUrl must start with http:// or https://' });
+        sendJson(400, { success: false, error: 'baseUrl must start with http:// or https://' });
         return;
       }
 
@@ -82,29 +118,70 @@ export async function llmProvidersRoutes(fastify: FastifyInstance) {
 
       if (!res.ok) {
         const text = await readTextSafe(res);
-        reply.code(res.status).send({ success: false, error: text || `Upstream HTTP ${res.status}` });
+        sendJson(res.status, { success: false, error: text || `Upstream HTTP ${res.status}` });
+        return;
+      }
+
+      const raw = await readTextSafe(res);
+      if (!raw || !raw.trim()) {
+        const ct = res.headers.get('content-type') || '';
+        const cl = res.headers.get('content-length') || '';
+        sendJson(502, {
+          success: false,
+          error: `Upstream returned empty response body (url=${url}${ct ? `; content-type=${ct}` : ''}${cl ? `; content-length=${cl}` : ''})`,
+        });
         return;
       }
 
       let data: any = null;
       try {
-        data = await res.json();
+        data = JSON.parse(raw);
       } catch {
-        const text = await readTextSafe(res);
-        reply.code(500).send({ success: false, error: text || 'Upstream returned non-JSON response' });
+        const ct = res.headers.get('content-type') || '';
+        sendJson(502, {
+          success: false,
+          error: `Upstream returned non-JSON response (url=${url}${ct ? `; content-type=${ct}` : ''})`,
+        });
         return;
       }
 
-      const models = Array.isArray(data?.data)
-        ? data.data
-        : Array.isArray(data?.models)
-          ? data.models
-          : [];
+      const models = extractModels(data);
+      if ((!models || models.length === 0) && data && typeof data === 'object') {
+        const errMsg = extractErrorMessage(data);
+        if (errMsg) {
+          sendJson(502, { success: false, error: errMsg });
+          return;
+        }
+      }
 
-      reply.send({ models });
+      if (debug) {
+        sendJson(200, {
+          models,
+          debug: {
+            url,
+            upstreamStatus: res.status,
+            contentType: res.headers.get('content-type') || '',
+            contentLength: res.headers.get('content-length') || '',
+            topKeys: data && typeof data === 'object' ? Object.keys(data).slice(0, 30) : [],
+            rawSnippet: raw.slice(0, 300),
+          },
+        });
+        return;
+      }
+
+      sendJson(200, { models });
     } catch (e: any) {
       const msg = e?.name === 'AbortError' ? 'Upstream request timeout' : (e?.message || String(e));
-      reply.code(500).send({ success: false, error: msg });
+      try {
+        const out = JSON.stringify({ success: false, error: msg });
+        reply.hijack();
+        reply.raw.statusCode = 500;
+        reply.raw.setHeader('Content-Type', 'application/json; charset=utf-8');
+        reply.raw.setHeader('Content-Encoding', 'identity');
+        reply.raw.end(out);
+      } catch {
+        reply.code(500).send({ success: false, error: msg });
+      }
     }
   });
 }
