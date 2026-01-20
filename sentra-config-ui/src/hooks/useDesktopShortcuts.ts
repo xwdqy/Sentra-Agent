@@ -14,21 +14,12 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
   const { recordUsage, isPortable } = params;
 
   const addToast = useUIStore(s => s.addToast);
+  const requestUtilityFocus = useUIStore(s => s.requestUtilityFocus);
   const allocateZ = useWindowsStore(s => s.allocateZ);
 
   const {
     setDevCenterOpen,
     setDevCenterMinimized,
-    setRedisAdminOpen,
-    setRedisAdminMinimized,
-    setModelProvidersManagerOpen,
-    setModelProvidersManagerMinimized,
-    setPresetsEditorOpen,
-    setPresetsEditorMinimized,
-    setPresetImporterOpen,
-    setPresetImporterMinimized,
-    setFileManagerOpen,
-    setFileManagerMinimized,
     setIosPresetsEditorOpen,
     setIosPresetImporterOpen,
     setIosFileManagerOpen,
@@ -37,16 +28,19 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
   } = useUIStore();
 
   const handleOpenDevCenter = () => {
-    setDevCenterOpen(true);
-    setDevCenterMinimized(false);
+    if (isPortable) {
+      setDevCenterOpen(true);
+      setDevCenterMinimized(false);
+      return;
+    }
+    requestUtilityFocus('dev-center');
   };
 
   const handleOpenPresets = () => {
     if (isPortable) {
       setIosPresetsEditorOpen(true);
     } else {
-      setPresetsEditorOpen(true);
-      setPresetsEditorMinimized(false);
+      requestUtilityFocus('presets-editor');
     }
   };
 
@@ -54,8 +48,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     if (isPortable) {
       setIosFileManagerOpen(true);
     } else {
-      setFileManagerOpen(true);
-      setFileManagerMinimized(false);
+      requestUtilityFocus('file-manager');
     }
   };
 
@@ -63,8 +56,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     if (isPortable) {
       setIosPresetImporterOpen(true);
     } else {
-      setPresetImporterOpen(true);
-      setPresetImporterMinimized(false);
+      requestUtilityFocus('preset-importer');
     }
   };
 
@@ -73,8 +65,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       setIosRedisAdminOpen(true);
       return;
     }
-    setRedisAdminOpen(true);
-    setRedisAdminMinimized(false);
+    requestUtilityFocus('redis-admin');
   };
 
   const handleOpenModelProvidersManager = () => {
@@ -82,8 +73,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       setIosModelProvidersManagerOpen(true);
       return;
     }
-    setModelProvidersManagerOpen(true);
-    setModelProvidersManagerMinimized(false);
+    requestUtilityFocus('model-providers-manager');
   };
 
   const {

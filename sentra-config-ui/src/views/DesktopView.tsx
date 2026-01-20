@@ -853,7 +853,8 @@ export const DesktopView = (props: DesktopViewProps) => {
         {/* Folder Modal */}
         {openFolder && desktopFolders && (
           <AppFolderModal
-            folder={desktopFolders.find(f => f.id === openFolder.id)!}
+            folders={desktopFolders}
+            initialFolderId={openFolder.id}
             anchorRect={openFolder.anchorRect}
             theme={theme}
             onAppClick={(_, onClick) => onClick()}

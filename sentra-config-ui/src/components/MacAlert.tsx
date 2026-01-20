@@ -47,11 +47,11 @@ export const MacAlert: React.FC<MacAlertProps> = ({
                         onClick={e => e.stopPropagation()}
                         style={{
                             width: 320,
-                            background: 'rgba(255, 255, 255, 0.90)', // More opaque
+                            background: 'linear-gradient(var(--sentra-accent-tint-12), var(--sentra-accent-tint-12)), var(--sentra-panel-bg-strong)',
                             backdropFilter: 'blur(10px)', // Reduced blur
                             WebkitBackdropFilter: 'blur(10px)',
                             borderRadius: '12px',
-                            boxShadow: '0 20px 40px rgba(0,0,0,0.2), 0 0 0 1px rgba(255,255,255,0.4) inset',
+                            boxShadow: '0 20px 40px rgba(0,0,0,0.2), 0 0 0 1px var(--sentra-border) inset',
                             padding: '24px',
                             display: 'flex',
                             flexDirection: 'column',
@@ -68,14 +68,14 @@ export const MacAlert: React.FC<MacAlertProps> = ({
                             margin: '0 0 8px 0',
                             fontSize: '15px',
                             fontWeight: 600,
-                            color: '#333'
+                            color: 'var(--sentra-fg)'
                         }}>
                             {title}
                         </h3>
                         <p style={{
                             margin: '0 0 24px 0',
                             fontSize: '13px',
-                            color: '#666',
+                            color: 'var(--sentra-muted-fg)',
                             lineHeight: '1.4'
                         }}>
                             {message}
@@ -92,17 +92,17 @@ export const MacAlert: React.FC<MacAlertProps> = ({
                                     flex: 1,
                                     padding: '6px 12px',
                                     borderRadius: '6px',
-                                    border: '1px solid rgba(0,0,0,0.1)',
-                                    background: 'white',
+                                    border: '1px solid var(--sentra-border)',
+                                    background: 'var(--sentra-glass-bg-strong)',
                                     fontSize: '13px',
                                     fontWeight: 500,
-                                    color: '#333',
+                                    color: 'var(--sentra-fg)',
                                     cursor: 'pointer',
                                     outline: 'none',
                                     boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
                                 }}
-                                onMouseOver={e => e.currentTarget.style.background = '#f5f5f5'}
-                                onMouseOut={e => e.currentTarget.style.background = 'white'}
+                                onMouseOver={e => e.currentTarget.style.background = 'rgba(var(--sentra-accent-rgb), 0.10)'}
+                                onMouseOut={e => e.currentTarget.style.background = 'var(--sentra-glass-bg-strong)'}
                             >
                                 {cancelText}
                             </button>

@@ -27,6 +27,7 @@ export function DesktopIconsLayer(props: DesktopIconsLayerProps) {
         >
           {desktopFolders.map(folder => (
             renderTopTile(folder.id, folder.name, folder.icon, (e) => {
+              e.stopPropagation();
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               onOpenFolder(folder.id, { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
             })

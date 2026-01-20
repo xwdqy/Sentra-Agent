@@ -1,29 +1,29 @@
 :global(:root) {
-  --mpm-window-bg: rgba(255, 255, 255, 0.92);
-  --mpm-border: rgba(0, 0, 0, 0.08);
-  --mpm-border-strong: rgba(0, 0, 0, 0.12);
-  --mpm-text: rgba(17, 24, 39, 0.96);
-  --mpm-muted: rgba(0, 0, 0, 0.60);
-  --mpm-muted-2: rgba(0, 0, 0, 0.55);
+  --mpm-window-bg: linear-gradient(var(--sentra-accent-tint-08), var(--sentra-accent-tint-08)), var(--sentra-panel-bg-strong);
+  --mpm-border: var(--sentra-border);
+  --mpm-border-strong: var(--sentra-border-strong);
+  --mpm-text: var(--sentra-fg);
+  --mpm-muted: var(--sentra-muted-fg);
+  --mpm-muted-2: var(--sentra-muted-fg);
 
   --mpm-scrollbar-thumb: var(--local-scrollbar-thumb, var(--scrollbar-thumb));
   --mpm-scrollbar-thumb-hover: var(--local-scrollbar-thumb-hover, var(--scrollbar-thumb-hover));
 
-  --mpm-surface-1: rgba(255, 255, 255, 0.55);
-  --mpm-surface-1-hover: rgba(255, 255, 255, 0.78);
-  --mpm-surface-2: rgba(255, 255, 255, 0.60);
-  --mpm-surface-2-hover: rgba(255, 255, 255, 0.88);
-  --mpm-surface-3: rgba(255, 255, 255, 0.72);
+  --mpm-surface-1: var(--sentra-glass-bg);
+  --mpm-surface-1-hover: var(--sentra-glass-bg-strong);
+  --mpm-surface-2: var(--sentra-panel-bg);
+  --mpm-surface-2-hover: var(--sentra-panel-bg-strong);
+  --mpm-surface-3: var(--sentra-panel-bg-strong);
 
-  --mpm-input-bg: rgba(255, 255, 255, 0.65);
-  --mpm-input-bg-strong: rgba(255, 255, 255, 0.82);
-  --mpm-input-border: rgba(0, 0, 0, 0.10);
+  --mpm-input-bg: var(--sentra-glass-bg-strong);
+  --mpm-input-bg-strong: var(--sentra-panel-bg-strong);
+  --mpm-input-border: var(--sentra-border-strong);
 
-  --mpm-input-fg: rgba(17, 24, 39, 0.96);
-  --mpm-placeholder: rgba(17, 24, 39, 0.45);
-  --mpm-caret: rgba(17, 24, 39, 0.96);
+  --mpm-input-fg: var(--sentra-fg);
+  --mpm-placeholder: var(--sentra-muted-fg);
+  --mpm-caret: var(--sentra-fg);
 
-  --mpm-button-fg: rgba(17, 24, 39, 0.92);
+  --mpm-button-fg: var(--sentra-fg);
 
   --mpm-danger-fg: rgba(185, 28, 28, 1);
   --mpm-danger-bg: rgba(239, 68, 68, 0.08);
@@ -53,41 +53,41 @@
   --mpm-shadow-1: 0 18px 48px rgba(0, 0, 0, 0.20);
   --mpm-modal-overlay: rgba(0, 0, 0, 0.22);
 
-  --mpm-switch-track: rgba(0, 0, 0, 0.26);
-  --mpm-switch-track-border: rgba(0, 0, 0, 0.14);
-  --mpm-switch-thumb: rgba(255, 255, 255, 0.92);
+  --mpm-switch-track: rgba(var(--sentra-accent-rgb), 0.18);
+  --mpm-switch-track-border: rgba(var(--sentra-accent-rgb), 0.14);
+  --mpm-switch-thumb: var(--sentra-panel-bg-strong);
   --mpm-switch-thumb-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
 
   --mpm-backdrop-filter: blur(10px);
 }
 
 :global(:root[data-theme='dark']) {
-  --mpm-window-bg: #0B0B0D;
-  --mpm-border: rgba(255, 255, 255, 0.10);
-  --mpm-border-strong: rgba(255, 255, 255, 0.14);
-  --mpm-text: rgba(255, 255, 255, 0.92);
-  --mpm-muted: rgba(255, 255, 255, 0.66);
-  --mpm-muted-2: rgba(255, 255, 255, 0.56);
+  --mpm-window-bg: linear-gradient(var(--sentra-accent-tint-08), var(--sentra-accent-tint-08)), var(--sentra-panel-bg-strong);
+  --mpm-border: var(--sentra-border);
+  --mpm-border-strong: var(--sentra-border-strong);
+  --mpm-text: var(--sentra-fg);
+  --mpm-muted: var(--sentra-muted-fg);
+  --mpm-muted-2: var(--sentra-muted-fg);
 
   --mpm-scrollbar-thumb: var(--local-scrollbar-thumb, var(--scrollbar-thumb));
   --mpm-scrollbar-thumb-hover: var(--local-scrollbar-thumb-hover, var(--scrollbar-thumb-hover));
 
   /* Solid surfaces (avoid wallpaper bleed-through) */
-  --mpm-surface-1: #121214;
-  --mpm-surface-1-hover: #17171A;
-  --mpm-surface-2: #141417;
-  --mpm-surface-2-hover: #1A1A1E;
-  --mpm-surface-3: #16161A;
+  --mpm-surface-1: var(--sentra-glass-bg);
+  --mpm-surface-1-hover: var(--sentra-glass-bg-strong);
+  --mpm-surface-2: var(--sentra-panel-bg);
+  --mpm-surface-2-hover: var(--sentra-panel-bg-strong);
+  --mpm-surface-3: var(--sentra-panel-bg-strong);
 
-  --mpm-input-bg: #131316;
-  --mpm-input-bg-strong: #17171B;
-  --mpm-input-border: rgba(255, 255, 255, 0.14);
+  --mpm-input-bg: var(--sentra-glass-bg-strong);
+  --mpm-input-bg-strong: var(--sentra-panel-bg-strong);
+  --mpm-input-border: var(--sentra-border-strong);
 
-  --mpm-input-fg: rgba(255, 255, 255, 0.92);
-  --mpm-placeholder: rgba(255, 255, 255, 0.36);
-  --mpm-caret: rgba(255, 255, 255, 0.92);
+  --mpm-input-fg: var(--sentra-fg);
+  --mpm-placeholder: var(--sentra-muted-fg);
+  --mpm-caret: var(--sentra-fg);
 
-  --mpm-button-fg: rgba(255, 255, 255, 0.88);
+  --mpm-button-fg: var(--sentra-fg);
 
   --mpm-danger-fg: rgba(255, 255, 255, 0.92);
   --mpm-danger-bg: rgba(239, 68, 68, 0.16);
@@ -109,9 +109,9 @@
   --mpm-shadow-1: 0 18px 48px rgba(0, 0, 0, 0.65);
   --mpm-modal-overlay: rgba(0, 0, 0, 0.65);
 
-  --mpm-switch-track: rgba(255, 255, 255, 0.22);
-  --mpm-switch-track-border: rgba(255, 255, 255, 0.16);
-  --mpm-switch-thumb: rgba(255, 255, 255, 0.95);
+  --mpm-switch-track: rgba(var(--sentra-accent-rgb), 0.22);
+  --mpm-switch-track-border: rgba(var(--sentra-accent-rgb), 0.16);
+  --mpm-switch-thumb: var(--sentra-panel-bg-strong);
   --mpm-switch-thumb-shadow: 0 2px 12px rgba(0, 0, 0, 0.55);
 
   --mpm-badge-off-fg: rgba(255, 255, 255, 0.72);

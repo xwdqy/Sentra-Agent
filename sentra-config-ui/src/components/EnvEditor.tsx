@@ -274,10 +274,8 @@ export const EnvEditor: React.FC<EnvEditorProps> = ({
             </div>
           </div>
           <div className={styles.sidebarContent}>
-            <div className={styles.groupTitle}>通用设置</div>
             <div className={`${styles.sidebarItem} ${styles.active}`}>
-              <span className="material-icons" style={{ fontSize: 16, marginRight: 8 }}>tune</span>
-              环境变量
+              右侧配置相关变量
             </div>
           </div>
         </div>

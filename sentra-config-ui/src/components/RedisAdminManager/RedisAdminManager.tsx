@@ -1269,7 +1269,6 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
       <div className={styles.topBar}>
         <div className={styles.headerLeft}>
           <div className={styles.headerTitleRow}>
-            <div className={styles.headerTitle}>Redis 管理器</div>
             <div className={styles.headerBadge}>{busy ? '加载中' : '可用'}</div>
           </div>
           <div className={styles.headerMetaRow}>
@@ -1305,8 +1304,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
         <div className={`${styles.sidebar} ${isCompact && mobilePane !== 'filters' ? styles.mobileHidden : ''}`}>
           <div className={styles.panelHeader}>
             <div>
-              <div className={styles.panelTitle}>筛选与定位</div>
-              <div className={styles.small}>左侧筛选，中间列表，右侧详情</div>
+              <div className={styles.panelTitle}>左侧筛选，中间列表，右侧详情</div>
             </div>
           </div>
 
@@ -1324,7 +1322,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                 type="info"
                 showIcon
                 title="连接信息"
-                description="这里展示当前 Redis Admin 连接来源与基础信息（Profile/Root/Env/Redis/DB）。"
+                description="这里展示当前 Redis Admin 连接来源与基础信息等等"
               />
 
               <Descriptions className={styles.sidebarDescriptions} size="small" column={1} bordered style={{ marginTop: 10 }}>
@@ -1528,8 +1526,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
         <div className={`${styles.main} ${isCompact && mobilePane !== 'keys' ? styles.mobileHidden : ''}`}>
           <div className={styles.panelHeader}>
             <div>
-              <div className={styles.panelTitle}>Keys</div>
-              <div className={styles.small}>点击一行，右侧查看详情（不会遮挡列表）</div>
+              <div className={styles.panelTitle}>键值</div>
             </div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <div className={styles.small}>keys={filteredItems.length} / raw={items.length}</div>
@@ -1690,7 +1687,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
               <>
                 <div className={styles.panelHeader} style={{ borderBottom: 'none', padding: 0 }}>
                   <div>
-                    <div className={styles.panelTitle}>Key 详情</div>
+                    <div className={styles.panelTitle}>键值详情</div>
                     <div className={styles.small}>{selectedItem ? (selectedItem.category || '其他') : '未选择 key'}</div>
                   </div>
                   <Space size={8}>

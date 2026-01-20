@@ -70,6 +70,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   const [showAccentPicker, setShowAccentPicker] = useState(false);
   const [showFontPicker, setShowFontPicker] = useState(false);
   const [spotlightQuery, setSpotlightQuery] = useState('');
+  const accentButtonRef = useRef<HTMLDivElement | null>(null);
+  const [accentPickerPos, setAccentPickerPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const fontButtonRef = useRef<HTMLDivElement | null>(null);
   const [fontPickerPos, setFontPickerPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const [activeFontFile, setActiveFontFile] = useState<string | null>(() => {
@@ -91,6 +93,22 @@ export const MenuBar: React.FC<MenuBarProps> = ({
     if (left > maxLeft) left = maxLeft;
 
     setFontPickerPos({ top, left, width: panelWidth });
+  };
+
+  const computeAccentPickerPos = () => {
+    const rect = accentButtonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const panelWidth = 244;
+    const gap = 8;
+    const margin = 12;
+    const top = Math.round(rect.bottom + gap);
+    let left = Math.round(rect.right - panelWidth);
+    const maxLeft = Math.max(margin, window.innerWidth - panelWidth - margin);
+    if (left < margin) left = margin;
+    if (left > maxLeft) left = maxLeft;
+
+    setAccentPickerPos({ top, left, width: panelWidth });
   };
 
   const setSystemFont = async (fileName: string | null) => {
@@ -195,6 +213,19 @@ export const MenuBar: React.FC<MenuBarProps> = ({
     };
   }, [showFontPicker]);
 
+  useEffect(() => {
+    if (!showAccentPicker) return;
+    computeAccentPickerPos();
+
+    const handle = () => computeAccentPickerPos();
+    window.addEventListener('resize', handle);
+    window.addEventListener('scroll', handle, true);
+    return () => {
+      window.removeEventListener('resize', handle);
+      window.removeEventListener('scroll', handle, true);
+    };
+  }, [showAccentPicker]);
+
   const handleSpotlightSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (spotlightQuery.trim()) {
@@ -257,9 +288,15 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               setShowControlCenter(false);
               setShowSpotlight(false);
               setShowFontPicker(false);
-              setShowAccentPicker(v => !v);
+              if (showAccentPicker) {
+                setShowAccentPicker(false);
+              } else {
+                computeAccentPickerPos();
+                setShowAccentPicker(true);
+              }
             }}
             title="切换应用主题颜色（Accent）"
+            ref={accentButtonRef}
           >
             <div className={styles.accentButton}>
               <span className={styles.accentDot} />
@@ -356,13 +393,13 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               left: 0,
               width: '100vw',
               height: '100vh',
-              background: 'rgba(255, 255, 255, 0.95)',
-              zIndex: 99999,
+              background: 'linear-gradient(var(--sentra-accent-tint-12), var(--sentra-accent-tint-12)), var(--sentra-panel-bg-strong)',
+              zIndex: 1000000002,
               display: 'flex',
               flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
-              color: '#333',
+              color: 'var(--sentra-fg)',
               fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
               transform: 'translateZ(0)', // Hardware acceleration
             }}
@@ -370,7 +407,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             <div style={{
               width: 40,
               height: 40,
-              border: '4px solid rgba(0,0,0,0.1)',
+              border: '4px solid var(--sentra-border-strong)',
               borderTop: '4px solid var(--sentra-accent)',
               borderRadius: '50%',
               marginBottom: 20,
@@ -478,6 +515,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
         {showAccentPicker ? (
           <motion.div
             className={styles.accentPicker}
+            style={accentPickerPos ? { top: accentPickerPos.top, left: accentPickerPos.left, width: accentPickerPos.width } : undefined}
             initial={{ opacity: 0, scale: 0.96, x: 10, y: -10 }}
             animate={{ opacity: 1, scale: 1, x: 0, y: 0 }}
             exit={{ opacity: 0, scale: 0.96 }}

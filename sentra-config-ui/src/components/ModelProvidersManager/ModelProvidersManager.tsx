@@ -2023,7 +2023,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
             <div className={styles.card}>
               <div className={styles.cardTitleRow}>
                 <div className={styles.cardTitle}>供应商设置</div>
-                <div className={styles.cardMeta}>用于连接与鉴权（不会上传到服务器，保存在浏览器本地）</div>
+                <div className={styles.cardMeta}>用于连接与鉴权</div>
               </div>
 
               <div className={styles.formGridSingle}>
@@ -2065,7 +2065,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                         ? '加载配置中...'
                         : (llmTab === 'mcp-plugins'
                           ? '配置 sentra-mcp/plugins 本地插件环境变量'
-                          : (llmMappingLoading ? '加载映射中...' : '按模块编辑所有 LLM 相关环境变量（OpenAI-compat）'))}
+                          : (llmMappingLoading ? '加载映射中...' : '按模块编辑所有 LLM 相关环境变量'))}
                     </Descriptions.Item>
                     <Descriptions.Item label="目标">
                       {llmTab === 'mcp-plugins' ? 'sentra-mcp/plugins' : String(llmModule || '')}
@@ -2654,7 +2654,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                     className={styles.antdInput}
                     value={modelSearch}
                     onChange={(e) => setModelSearch(e.target.value)}
-                    placeholder="搜索模型 id / owned_by"
+                    placeholder="搜索模型id或供应商"
                     allowClear
                     prefix={<SearchOutlined />}
                     size="small"
