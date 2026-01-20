@@ -79,7 +79,7 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
     const toolsApps: typeof items = [];
     const qqApps: typeof items = [];
 
-    const builtinToolOrder = ['file-manager', 'presets-editor', 'preset-importer', 'model-providers-manager', 'dev-center'];
+    const builtinToolOrder = ['file-manager', 'presets-editor', 'preset-importer', 'emoji-stickers-manager', 'model-providers-manager', 'dev-center'];
     const builtinToolSet = new Set(builtinToolOrder);
     const builtinTools: typeof items = [];
 
@@ -117,7 +117,7 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
     // Priority items
     const isPriority = (it: typeof items[number]) => {
       const n = it.name.toLowerCase();
-      return n === '.' || n.includes('utils/emoji-stickers') || n.includes('sentra-config-ui');
+      return n === '.' || n.includes('sentra-config-ui');
     };
 
     const priority: typeof items = [] as any;

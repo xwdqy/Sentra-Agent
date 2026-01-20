@@ -65,6 +65,10 @@ export const EnvWindowItem = memo(({
     setOpenWindows(ws => ws.map(win => win.id === w.id ? { ...win, pos: { x, y } } : win));
   }, [setOpenWindows, w.id]);
 
+  const handleResizeWin = useCallback((width: number, height: number) => {
+    setOpenWindows(ws => ws.map(win => win.id === w.id ? { ...win, size: { width, height } } : win));
+  }, [setOpenWindows, w.id]);
+
   const handleUpdateVar = useCallback((idx: number, field: 'key' | 'value' | 'comment', val: string) => {
     handleVarChange(w.id, idx, field, val);
   }, [handleVarChange, w.id]);
@@ -101,12 +105,14 @@ export const EnvWindowItem = memo(({
       isMinimized={w.minimized}
       performanceMode={performanceMode}
       initialPos={w.pos}
+      initialSize={w.size}
       initialMaximized={!!w.maximized}
       onClose={handleCloseWin}
       onMinimize={handleMinimizeWin}
       onMaximize={handleMaximizeWin}
       onFocus={handleFocusWin}
       onMove={handleMoveWin}
+      onResize={handleResizeWin}
     >
       <EnvEditor
         appName={getDisplayName(w.file.name)}

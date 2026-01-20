@@ -51,6 +51,10 @@ export function DesktopDock(props: DesktopDockProps) {
     setModelProvidersManagerOpen,
     setModelProvidersManagerMinimized,
 
+    emojiStickersManagerOpen,
+    setEmojiStickersManagerOpen,
+    setEmojiStickersManagerMinimized,
+
     presetsEditorOpen,
     setPresetsEditorOpen,
     setPresetsEditorMinimized,
@@ -81,6 +85,9 @@ export function DesktopDock(props: DesktopDockProps) {
           break;
         case 'model-providers-manager':
           void import('../../components/ModelProvidersManager/ModelProvidersManager');
+          break;
+        case 'emoji-stickers-manager':
+          void import('../../components/EmojiStickersManager/EmojiStickersManager');
           break;
         case 'redis-admin':
           void import('../../components/RedisAdminManager/RedisAdminManager');
@@ -172,6 +179,22 @@ export function DesktopDock(props: DesktopDockProps) {
         },
       },
       {
+        id: 'emoji-stickers-manager-app',
+        name: '表情包配置',
+        icon: getIconForType('emoji-stickers-manager', 'module'),
+        isOpen: emojiStickersManagerOpen,
+        onHover: () => prefetchUtilityChunk('emoji-stickers-manager'),
+        onClick: () => {
+          setEmojiStickersManagerOpen(true);
+          setEmojiStickersManagerMinimized(false);
+          requestUtilityFocus('emoji-stickers-manager');
+        },
+        onClose: () => {
+          setEmojiStickersManagerOpen(false);
+          setEmojiStickersManagerMinimized(false);
+        },
+      },
+      {
         id: 'redis-admin-app',
         name: 'Redis 管理',
         icon: getIconForType('redis-admin', 'module'),
@@ -225,6 +248,7 @@ export function DesktopDock(props: DesktopDockProps) {
       .map((favId) => {
         const item = allItems.find((i) => `${i.type}-${i.name}` === favId);
         if (!item) return null;
+        if (item.name === 'utils/emoji-stickers') return null;
         const isOpen = openWindows.some((w) => w.file.name === item.name && w.file.type === item.type);
         return {
           id: favId,
@@ -271,6 +295,7 @@ export function DesktopDock(props: DesktopDockProps) {
     devCenterOpen,
     dockFavorites,
     fileManagerOpen,
+    emojiStickersManagerOpen,
     closeWindow,
     loadConfigs,
     modelProvidersManagerOpen,
@@ -290,6 +315,8 @@ export function DesktopDock(props: DesktopDockProps) {
     setLaunchpadOpen,
     setModelProvidersManagerMinimized,
     setModelProvidersManagerOpen,
+    setEmojiStickersManagerMinimized,
+    setEmojiStickersManagerOpen,
     setPresetImporterMinimized,
     setPresetImporterOpen,
     setPresetsEditorMinimized,

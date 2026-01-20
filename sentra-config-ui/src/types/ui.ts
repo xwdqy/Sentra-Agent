@@ -7,6 +7,7 @@ export type DeskWindow = {
   id: string;
   file: FileItem;
   pos?: { x: number; y: number };
+  size?: { width: number; height: number };
   z: number;
   minimized: boolean;
   editedVars: EnvVariable[];
@@ -19,8 +20,10 @@ export type TerminalWin = {
   processId: string;
   appKey: string;
   pos: { x: number; y: number };
+  size?: { width: number; height: number };
   z: number;
   minimized: boolean;
+  maximized?: boolean;
   theme?: any; // ITheme from xterm is not exported here, using any for now or need to import
   headerText?: string;
 };

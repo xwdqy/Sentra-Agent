@@ -1,16 +1,18 @@
-import { Component, Suspense, lazy, memo, type ReactNode } from 'react';
+import { Component, Suspense, lazy, memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { IoBookOutline } from 'react-icons/io5';
 import { MacWindow } from '../../components/MacWindow';
 import { SentraLoading } from '../../components/SentraLoading';
 import { getIconForType } from '../../utils/icons';
 import type { FileItem } from '../../types/ui';
 import type { PresetsEditorState } from '../../hooks/usePresetsEditor';
+import { storage } from '../../utils/storage';
 
 const PresetsEditor = lazy(() => import('../../components/PresetsEditor').then(module => ({ default: module.PresetsEditor })));
 const FileManager = lazy(() => import('../../components/FileManager').then(module => ({ default: module.FileManager })));
 const DeepWikiChat = lazy(() => import('../../components/DeepWikiChat').then(module => ({ default: module.DeepWikiChat })));
 const PresetImporter = lazy(() => import('../../components/PresetImporter').then(module => ({ default: module.PresetImporter })));
 const ModelProvidersManager = lazy(() => import('../../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
+const EmojiStickersManager = lazy(() => import('../../components/EmojiStickersManager/EmojiStickersManager').then(module => ({ default: module.default })));
 const DevCenterV2 = lazy(() => import('../../components/DevCenterV2').then(module => ({ default: module.DevCenterV2 })));
 const RedisAdminManager = lazy(() => import('../../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
 
@@ -77,6 +79,11 @@ type DesktopUtilityWindowsLayerProps = {
   modelProvidersManagerMinimized: boolean;
   setModelProvidersManagerMinimized: (v: boolean) => void;
 
+  emojiStickersManagerOpen: boolean;
+  setEmojiStickersManagerOpen: (v: boolean) => void;
+  emojiStickersManagerMinimized: boolean;
+  setEmojiStickersManagerMinimized: (v: boolean) => void;
+
   presetImporterOpen: boolean;
   setPresetImporterOpen: (v: boolean) => void;
   presetImporterMinimized: boolean;
@@ -125,6 +132,10 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
     setModelProvidersManagerOpen,
     modelProvidersManagerMinimized,
     setModelProvidersManagerMinimized,
+    emojiStickersManagerOpen,
+    setEmojiStickersManagerOpen,
+    emojiStickersManagerMinimized,
+    setEmojiStickersManagerMinimized,
     presetImporterOpen,
     setPresetImporterOpen,
     presetImporterMinimized,
@@ -143,6 +154,64 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
     setFileManagerMinimized,
   } = props;
 
+  const LAYOUT_KEY = 'sentra_utility_window_layouts_v1';
+
+  type UtilityLayout = {
+    pos?: { x: number; y: number };
+    size?: { width: number; height: number };
+    maximized?: boolean;
+  };
+
+  const [layouts, setLayouts] = useState<Record<string, UtilityLayout>>(() => {
+    return storage.getJson<Record<string, UtilityLayout>>(LAYOUT_KEY, { fallback: {} });
+  });
+
+  useEffect(() => {
+    storage.setJson(LAYOUT_KEY, layouts);
+  }, [layouts]);
+
+  const getLayout = useCallback((id: string) => layouts[id] || {}, [layouts]);
+
+  const updateLayout = useCallback((id: string, patch: UtilityLayout) => {
+    setLayouts(prev => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || {}),
+        ...patch,
+      }
+    }));
+  }, []);
+
+  const getInitialPos = useCallback((id: string) => {
+    const l = getLayout(id);
+    return l.pos;
+  }, [getLayout]);
+
+  const getInitialSize = useCallback((id: string, fallback: { width: number; height: number }) => {
+    const l = getLayout(id);
+    return l.size || fallback;
+  }, [getLayout]);
+
+  const getInitialMaximized = useCallback((id: string) => {
+    const l = getLayout(id);
+    return !!l.maximized;
+  }, [getLayout]);
+
+  const handleMove = useMemo(() => {
+    return (id: string) => (x: number, y: number) => updateLayout(id, { pos: { x, y } });
+  }, [updateLayout]);
+
+  const handleResize = useMemo(() => {
+    return (id: string) => (width: number, height: number) => updateLayout(id, { size: { width, height } });
+  }, [updateLayout]);
+
+  const handleMaximizePersist = useMemo(() => {
+    return (id: string) => (isMax: boolean) => {
+      handleWindowMaximize(id, isMax);
+      updateLayout(id, { maximized: isMax });
+    };
+  }, [handleWindowMaximize, updateLayout]);
+
   return (
     <>
       {devCenterOpen && (
@@ -150,14 +219,17 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
           id="dev-center"
           title="开发中心"
           icon={getIconForType('dev-center', 'module')}
+          initialPos={getInitialPos('dev-center')}
           safeArea={desktopSafeArea}
           zIndex={utilityZMap['dev-center'] ?? 2000}
           isActive={activeUtilityId === 'dev-center'}
           isMinimized={devCenterMinimized}
           performanceMode={performanceMode}
-          initialSize={{ width: 940, height: 620 }}
+          initialSize={getInitialSize('dev-center', { width: 940, height: 620 })}
+          initialMaximized={getInitialMaximized('dev-center')}
           onClose={() => {
             handleWindowMaximize('dev-center', false);
+            updateLayout('dev-center', { maximized: false });
             setDevCenterOpen(false);
             setDevCenterMinimized(false);
           }}
@@ -166,13 +238,14 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
             setDevCenterMinimized(true);
             setActiveUtilityId(null);
           }}
-          onMaximize={(isMax) => handleWindowMaximize('dev-center', isMax)}
+          onMaximize={handleMaximizePersist('dev-center')}
           onFocus={() => { bringUtilityToFront('dev-center'); }}
-          onMove={() => { }}
+          onMove={handleMove('dev-center')}
+          onResize={handleResize('dev-center')}
         >
           <Suspense fallback={<SentraLoading title="加载 开发中心" subtitle="首次打开可能较慢，请稍等..." />}>
             <DevCenterV2
-              allItems={allItems}
+              allItems={allItems.filter(item => item.name !== 'utils/emoji-stickers')}
               tools={[
                 {
                   id: 'redis-admin',
@@ -192,6 +265,16 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
                     setModelProvidersManagerOpen(true);
                     setModelProvidersManagerMinimized(false);
                     bringUtilityToFront('model-providers-manager');
+                  },
+                },
+                {
+                  id: 'emoji-stickers-manager',
+                  name: 'emoji-stickers-manager',
+                  subtitle: '表情包配置（上传/预览/一键写入 .env）',
+                  onOpen: () => {
+                    setEmojiStickersManagerOpen(true);
+                    setEmojiStickersManagerMinimized(false);
+                    bringUtilityToFront('emoji-stickers-manager');
                   },
                 },
                 {
@@ -244,15 +327,17 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
           id="redis-admin"
           title="Redis 管理器"
           icon={getIconForType('redis-admin', 'module')}
+          initialPos={getInitialPos('redis-admin')}
           safeArea={desktopSafeArea}
           zIndex={utilityZMap['redis-admin'] ?? 2006}
           isActive={activeUtilityId === 'redis-admin'}
           isMinimized={redisAdminMinimized}
           performanceMode={performanceMode}
-          initialSize={{ width: 1360, height: 820 }}
-          initialMaximized={false}
+          initialSize={getInitialSize('redis-admin', { width: 1360, height: 820 })}
+          initialMaximized={getInitialMaximized('redis-admin')}
           onClose={() => {
             handleWindowMaximize('redis-admin', false);
+            updateLayout('redis-admin', { maximized: false });
             setRedisAdminOpen(false);
             setRedisAdminMinimized(false);
           }}
@@ -261,9 +346,10 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
             setRedisAdminMinimized(true);
             setActiveUtilityId(null);
           }}
-          onMaximize={(isMax) => handleWindowMaximize('redis-admin', isMax)}
+          onMaximize={handleMaximizePersist('redis-admin')}
           onFocus={() => { bringUtilityToFront('redis-admin'); }}
-          onMove={() => { }}
+          onMove={handleMove('redis-admin')}
+          onResize={handleResize('redis-admin')}
         >
           <Suspense fallback={<LazyWindowFallback title="加载 Redis 管理器" />}>
             <RedisAdminManager
@@ -279,14 +365,17 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
           id="model-providers-manager"
           title="模型供应商"
           icon={getIconForType('model-providers-manager', 'module')}
+          initialPos={getInitialPos('model-providers-manager')}
           safeArea={desktopSafeArea}
           zIndex={utilityZMap['model-providers-manager'] ?? 2007}
           isActive={activeUtilityId === 'model-providers-manager'}
           isMinimized={modelProvidersManagerMinimized}
           performanceMode={performanceMode}
-          initialSize={{ width: 1120, height: 720 }}
+          initialSize={getInitialSize('model-providers-manager', { width: 1120, height: 720 })}
+          initialMaximized={getInitialMaximized('model-providers-manager')}
           onClose={() => {
             handleWindowMaximize('model-providers-manager', false);
+            updateLayout('model-providers-manager', { maximized: false });
             setModelProvidersManagerOpen(false);
             setModelProvidersManagerMinimized(false);
           }}
@@ -295,12 +384,48 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
             setModelProvidersManagerMinimized(true);
             setActiveUtilityId(null);
           }}
-          onMaximize={(isMax) => handleWindowMaximize('model-providers-manager', isMax)}
+          onMaximize={handleMaximizePersist('model-providers-manager')}
           onFocus={() => { bringUtilityToFront('model-providers-manager'); }}
-          onMove={() => { }}
+          onMove={handleMove('model-providers-manager')}
+          onResize={handleResize('model-providers-manager')}
         >
           <Suspense fallback={<LazyWindowFallback title="加载 模型供应商" />}>
             <ModelProvidersManager addToast={addToast as any} />
+          </Suspense>
+        </MacWindow>
+      )}
+
+      {emojiStickersManagerOpen && (
+        <MacWindow
+          id="emoji-stickers-manager"
+          title="表情包配置"
+          icon={getIconForType('emoji-stickers-manager', 'module')}
+          initialPos={getInitialPos('emoji-stickers-manager')}
+          safeArea={desktopSafeArea}
+          zIndex={utilityZMap['emoji-stickers-manager'] ?? 2008}
+          isActive={activeUtilityId === 'emoji-stickers-manager'}
+          isMinimized={emojiStickersManagerMinimized}
+          performanceMode={performanceMode}
+          initialSize={getInitialSize('emoji-stickers-manager', { width: 1080, height: 720 })}
+          initialMaximized={getInitialMaximized('emoji-stickers-manager')}
+          onClose={() => {
+            handleWindowMaximize('emoji-stickers-manager', false);
+            updateLayout('emoji-stickers-manager', { maximized: false });
+            setEmojiStickersManagerOpen(false);
+            setEmojiStickersManagerMinimized(false);
+          }}
+          onMinimize={() => {
+            handleWindowMaximize('emoji-stickers-manager', false);
+            setEmojiStickersManagerMinimized(true);
+            setActiveUtilityId(null);
+          }}
+          onMaximize={handleMaximizePersist('emoji-stickers-manager')}
+          onFocus={() => { bringUtilityToFront('emoji-stickers-manager'); }}
+          onMove={handleMove('emoji-stickers-manager')}
+          onResize={handleResize('emoji-stickers-manager')}
+        >
+          <Suspense fallback={<LazyWindowFallback title="加载 表情包配置" />}>
+            <EmojiStickersManager addToast={addToast as any} />
           </Suspense>
         </MacWindow>
       )}
@@ -310,14 +435,17 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
           id="preset-importer"
           title="预设导入"
           icon={getIconForType('preset-importer', 'module')}
+          initialPos={getInitialPos('preset-importer')}
           safeArea={desktopSafeArea}
           zIndex={utilityZMap['preset-importer'] ?? 2003}
           isActive={activeUtilityId === 'preset-importer'}
           isMinimized={presetImporterMinimized}
           performanceMode={performanceMode}
-          initialSize={{ width: 880, height: 600 }}
+          initialSize={getInitialSize('preset-importer', { width: 880, height: 600 })}
+          initialMaximized={getInitialMaximized('preset-importer')}
           onClose={() => {
             handleWindowMaximize('preset-importer', false);
+            updateLayout('preset-importer', { maximized: false });
             setPresetImporterOpen(false);
             setPresetImporterMinimized(false);
           }}
@@ -326,9 +454,10 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
             setPresetImporterMinimized(true);
             setActiveUtilityId(null);
           }}
-          onMaximize={(isMax) => handleWindowMaximize('preset-importer', isMax)}
+          onMaximize={handleMaximizePersist('preset-importer')}
           onFocus={() => { bringUtilityToFront('preset-importer'); }}
-          onMove={() => { }}
+          onMove={handleMove('preset-importer')}
+          onResize={handleResize('preset-importer')}
         >
           <Suspense fallback={<SentraLoading title="加载 预设导入" subtitle="首次打开可能较慢，请稍等..." />}>
             <PresetImporter
@@ -346,14 +475,17 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
           id="deepwiki"
           title="DeepWiki · Sentra Agent"
           icon={<IoBookOutline style={{ color: '#2563eb' }} />}
+          initialPos={getInitialPos('deepwiki')}
           safeArea={desktopSafeArea}
           zIndex={utilityZMap['deepwiki'] ?? 2001}
           isActive={activeUtilityId === 'deepwiki'}
           isMinimized={deepWikiMinimized}
           performanceMode={performanceMode}
-          initialSize={{ width: 960, height: 640 }}
+          initialSize={getInitialSize('deepwiki', { width: 960, height: 640 })}
+          initialMaximized={getInitialMaximized('deepwiki')}
           onClose={() => {
             handleWindowMaximize('deepwiki', false);
+            updateLayout('deepwiki', { maximized: false });
             setDeepWikiOpen(false);
             setDeepWikiMinimized(false);
           }}
@@ -362,9 +494,10 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
             setDeepWikiMinimized(true);
             setActiveUtilityId(null);
           }}
-          onMaximize={(isMax) => handleWindowMaximize('deepwiki', isMax)}
+          onMaximize={handleMaximizePersist('deepwiki')}
           onFocus={() => { bringUtilityToFront('deepwiki'); }}
-          onMove={() => { }}
+          onMove={handleMove('deepwiki')}
+          onResize={handleResize('deepwiki')}
         >
           <Suspense fallback={<SentraLoading title="加载 DeepWiki 助手" subtitle="首次打开可能较慢，请稍等..." />}>
             <DeepWikiChat theme={theme} />
@@ -377,14 +510,17 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
           id="presets-editor"
           title="预设撰写"
           icon={getIconForType('agent-presets', 'module')}
+          initialPos={getInitialPos('presets-editor')}
           safeArea={desktopSafeArea}
           zIndex={utilityZMap['presets-editor'] ?? 2002}
           isActive={activeUtilityId === 'presets-editor'}
           isMinimized={presetsEditorMinimized}
           performanceMode={performanceMode}
-          initialSize={{ width: 900, height: 600 }}
+          initialSize={getInitialSize('presets-editor', { width: 900, height: 600 })}
+          initialMaximized={getInitialMaximized('presets-editor')}
           onClose={() => {
             handleWindowMaximize('presets-editor', false);
+            updateLayout('presets-editor', { maximized: false });
             setPresetsEditorOpen(false);
             setPresetsEditorMinimized(false);
           }}
@@ -393,9 +529,10 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
             setPresetsEditorMinimized(true);
             setActiveUtilityId(null);
           }}
-          onMaximize={(isMax) => handleWindowMaximize('presets-editor', isMax)}
+          onMaximize={handleMaximizePersist('presets-editor')}
           onFocus={() => { bringUtilityToFront('presets-editor'); }}
-          onMove={() => { }}
+          onMove={handleMove('presets-editor')}
+          onResize={handleResize('presets-editor')}
         >
           <Suspense fallback={<SentraLoading title="加载 预设撰写" subtitle="首次打开可能较慢，请稍等..." />}>
             <PresetsEditor
@@ -419,14 +556,17 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
           id="file-manager"
           title="文件管理"
           icon={getIconForType('file-manager', 'module')}
+          initialPos={getInitialPos('file-manager')}
           safeArea={desktopSafeArea}
           zIndex={utilityZMap['file-manager'] ?? 2004}
           isActive={activeUtilityId === 'file-manager'}
           isMinimized={fileManagerMinimized}
           performanceMode={performanceMode}
-          initialSize={{ width: 1000, height: 700 }}
+          initialSize={getInitialSize('file-manager', { width: 1000, height: 700 })}
+          initialMaximized={getInitialMaximized('file-manager')}
           onClose={() => {
             handleWindowMaximize('file-manager', false);
+            updateLayout('file-manager', { maximized: false });
             setFileManagerOpen(false);
             setFileManagerMinimized(false);
           }}
@@ -435,9 +575,10 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
             setFileManagerMinimized(true);
             setActiveUtilityId(null);
           }}
-          onMaximize={(isMax) => handleWindowMaximize('file-manager', isMax)}
+          onMaximize={handleMaximizePersist('file-manager')}
           onFocus={() => { bringUtilityToFront('file-manager'); }}
-          onMove={() => { }}
+          onMove={handleMove('file-manager')}
+          onResize={handleResize('file-manager')}
         >
           <Suspense fallback={<SentraLoading title="加载 文件管理" subtitle="首次打开可能较慢，请稍等..." />}>
             <WindowErrorBoundary

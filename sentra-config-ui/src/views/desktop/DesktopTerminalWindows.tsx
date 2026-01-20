@@ -44,6 +44,8 @@ export function DesktopTerminalWindows(props: DesktopTerminalWindowsProps) {
             </span>
           }
           initialPos={terminal.pos}
+          initialSize={terminal.size}
+          initialMaximized={!!terminal.maximized}
           safeArea={desktopSafeArea}
           zIndex={terminal.z}
           isActive={activeTerminalId === terminal.id}
@@ -57,10 +59,16 @@ export function DesktopTerminalWindows(props: DesktopTerminalWindowsProps) {
             handleWindowMaximize(terminal.id, false);
             handleMinimizeTerminal(terminal.id);
           }}
-          onMaximize={(isMax) => handleWindowMaximize(terminal.id, isMax)}
+          onMaximize={(isMax) => {
+            handleWindowMaximize(terminal.id, isMax);
+            setTerminalWindows(prev => prev.map(w => w.id === terminal.id ? { ...w, maximized: isMax } : w));
+          }}
           onFocus={() => bringTerminalToFront(terminal.id)}
           onMove={(x, y) => {
             setTerminalWindows(prev => prev.map(w => w.id === terminal.id ? { ...w, pos: { x, y } } : w));
+          }}
+          onResize={(width, height) => {
+            setTerminalWindows(prev => prev.map(w => w.id === terminal.id ? { ...w, size: { width, height } } : w));
           }}
         >
           <Suspense fallback={<SentraLoading title="加载终端" subtitle="首次打开可能较慢，请稍等..." />}>

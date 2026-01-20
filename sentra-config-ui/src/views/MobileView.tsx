@@ -17,6 +17,7 @@ import { useTerminals } from '../hooks/useTerminals';
 import { useIOSEditor } from '../hooks/useIOSEditor';
 
 const ModelProvidersManager = React.lazy(() => import('../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
+const EmojiStickersManager = React.lazy(() => import('../components/EmojiStickersManager/EmojiStickersManager').then(module => ({ default: module.default })));
 const RedisAdminManager = React.lazy(() => import('../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
 const TerminalWindow = React.lazy(() => import('../components/TerminalWindow').then(module => ({ default: module.TerminalWindow })));
 
@@ -61,6 +62,8 @@ export function MobileView(props: MobileViewProps) {
     setIosFileManagerOpen,
     iosModelProvidersManagerOpen,
     setIosModelProvidersManagerOpen,
+    iosEmojiStickersManagerOpen,
+    setIosEmojiStickersManagerOpen,
     iosRedisAdminOpen,
     setIosRedisAdminOpen,
   } = useUIStore();
@@ -115,6 +118,10 @@ export function MobileView(props: MobileViewProps) {
   React.useEffect(() => {
     if (iosModelProvidersManagerOpen && iosZMap['ios-model-providers-manager'] == null) bringIOSAppToFront('ios-model-providers-manager');
   }, [bringIOSAppToFront, iosModelProvidersManagerOpen, iosZMap]);
+
+  React.useEffect(() => {
+    if (iosEmojiStickersManagerOpen && iosZMap['ios-emoji-stickers-manager'] == null) bringIOSAppToFront('ios-emoji-stickers-manager');
+  }, [bringIOSAppToFront, iosEmojiStickersManagerOpen, iosZMap]);
 
   React.useEffect(() => {
     if (iosRedisAdminOpen && iosZMap['ios-redis-admin'] == null) bringIOSAppToFront('ios-redis-admin');
@@ -280,6 +287,17 @@ export function MobileView(props: MobileViewProps) {
             }
           },
           {
+            name: 'emoji-stickers-manager',
+            type: 'module' as const,
+            onClick: () => {
+              recordUsage('app:emoji-stickers-manager');
+              setReturnToLaunchpad(true);
+              setIosEmojiStickersManagerOpen(true);
+              bringIOSAppToFront('ios-emoji-stickers-manager');
+              setLaunchpadOpen(false);
+            }
+          },
+          {
             name: 'redis-admin',
             type: 'module' as const,
             onClick: () => {
@@ -290,7 +308,7 @@ export function MobileView(props: MobileViewProps) {
               setLaunchpadOpen(false);
             }
           },
-          ...allItems.map(item => ({
+          ...allItems.filter(item => item.name !== 'utils/emoji-stickers').map(item => ({
             name: item.name,
             type: item.type,
             onClick: () => {
@@ -343,6 +361,33 @@ export function MobileView(props: MobileViewProps) {
             addToast={addToast}
             state={presetsState}
           />
+        </div>
+      )}
+
+      {iosEmojiStickersManagerOpen && (
+        <div
+          style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: iosZMap['ios-emoji-stickers-manager'] ?? 2000 }}
+          onPointerDownCapture={() => bringIOSAppToFront('ios-emoji-stickers-manager')}
+        >
+          <div className="ios-app-window" style={{ display: 'flex' }}>
+            <div className="ios-app-header">
+              <div className="ios-back-btn" onClick={() => {
+                setIosEmojiStickersManagerOpen(false);
+                if (returnToLaunchpad) setLaunchpadOpen(true);
+              }}>
+                <IoChevronBack /> {returnToLaunchpad ? '应用' : '主页'}
+              </div>
+              <div>表情包配置</div>
+              <div style={{ color: '#ff3b30', cursor: 'pointer', fontWeight: 'bold' }} onClick={() => setIosEmojiStickersManagerOpen(false)}>
+                关闭
+              </div>
+            </div>
+            <div className="ios-app-content">
+              <Suspense fallback={<SentraLoading title="加载 表情包配置" subtitle="首次打开可能较慢，请稍等..." />}>
+                <EmojiStickersManager addToast={addToast as any} />
+              </Suspense>
+            </div>
+          </div>
         </div>
       )}
 

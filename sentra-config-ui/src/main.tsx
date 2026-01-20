@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { ConfigProvider } from 'antd';
+import { App as AntdApp, ConfigProvider } from 'antd';
 import App from './App';
 import { storage } from './utils/storage';
 
@@ -24,7 +24,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         },
       }}
     >
-      <App />
+      <AntdApp>
+        <App />
+      </AntdApp>
     </ConfigProvider>
   </React.StrictMode>
 );

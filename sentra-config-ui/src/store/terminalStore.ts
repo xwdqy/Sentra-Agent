@@ -23,20 +23,102 @@ function ensureLegacyCleanup() {
   }
 }
 
+const TERMINAL_WINDOWS_KEY = 'sentra_terminal_windows_v2';
+const ACTIVE_TERMINAL_ID_KEY = 'sentra_active_terminal_id_v2';
+
+let persistTimer: number | null = null;
+let persisted = false;
+
+function schedulePersist() {
+  if (persistTimer != null) {
+    window.clearTimeout(persistTimer);
+  }
+  persistTimer = window.setTimeout(() => {
+    const st = useTerminalStore.getState();
+    storage.setJson(TERMINAL_WINDOWS_KEY, st.terminalWindows);
+    storage.setString(ACTIVE_TERMINAL_ID_KEY, st.activeTerminalId || '');
+  }, 800);
+}
+
+function flushPersist() {
+  if (persistTimer != null) {
+    window.clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  const st = useTerminalStore.getState();
+  storage.setJson(TERMINAL_WINDOWS_KEY, st.terminalWindows);
+  storage.setString(ACTIVE_TERMINAL_ID_KEY, st.activeTerminalId || '');
+}
+
+function ensurePersistenceHooks() {
+  if (persisted) return;
+  persisted = true;
+  const onVis = () => {
+    if (document.visibilityState === 'hidden') flushPersist();
+  };
+  window.addEventListener('pagehide', flushPersist);
+  document.addEventListener('visibilitychange', onVis);
+}
+
+function centerPos() {
+  return {
+    x: Math.max(0, window.innerWidth / 2 - 350),
+    y: Math.max(40, window.innerHeight / 2 - 250),
+  };
+}
+
+function normalizePersistedTerminals(raw: any): TerminalWin[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const c = centerPos();
+  return raw
+    .filter((t: any) => t && typeof t.processId === 'string' && typeof t.appKey === 'string')
+    .map((t: any) => {
+      const p = t?.pos || { x: 0, y: 0 };
+      const invalid =
+        p.x == null || p.y == null ||
+        p.x < 0 || p.y < 30 ||
+        p.x > window.innerWidth - 120 || p.y > window.innerHeight - 120;
+      const pos = invalid ? c : { x: Number(p.x), y: Number(p.y) };
+      const z = Number.isFinite(Number(t.z)) ? Number(t.z) : 1001;
+      const minimized = !!t.minimized;
+      const maximized = !!t.maximized;
+      const size = t?.size && Number.isFinite(Number(t.size.width)) && Number.isFinite(Number(t.size.height))
+        ? { width: Number(t.size.width), height: Number(t.size.height) }
+        : undefined;
+      return {
+        ...t,
+        pos,
+        z,
+        minimized,
+        maximized,
+        size,
+      } as TerminalWin;
+    });
+}
+
 export const useTerminalStore = create<TerminalStore>((set) => {
   ensureLegacyCleanup();
+  ensurePersistenceHooks();
+
+  const terminalWindows = normalizePersistedTerminals(storage.getJson<any>(TERMINAL_WINDOWS_KEY, { fallback: [] }));
+  const savedActive = storage.getString(ACTIVE_TERMINAL_ID_KEY, { fallback: '' });
+  const activeTerminalId = savedActive ? savedActive : null;
 
   const setTerminalWindows: SetTerminalWindows = (next) => {
     set(prev => ({
       ...prev,
       terminalWindows: typeof next === 'function' ? (next as any)(prev.terminalWindows) : next,
     }));
+    schedulePersist();
   };
 
   return {
-    terminalWindows: [],
-    activeTerminalId: null,
+    terminalWindows,
+    activeTerminalId,
     setTerminalWindows,
-    setActiveTerminalId: (id: string | null) => set({ activeTerminalId: id }),
+    setActiveTerminalId: (id: string | null) => {
+      set({ activeTerminalId: id });
+      schedulePersist();
+    },
   };
 });

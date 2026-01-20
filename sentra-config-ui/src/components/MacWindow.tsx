@@ -20,6 +20,7 @@ interface MacWindowProps {
   onMaximize: (isMaximized: boolean) => void;
   onFocus: () => void;
   onMove: (x: number, y: number) => void;
+  onResize?: (width: number, height: number) => void;
   children: React.ReactNode;
 }
 
@@ -39,6 +40,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
   onMaximize,
   onFocus,
   onMove,
+  onResize,
   children
 }) => {
   const [isMaximized, setIsMaximized] = useState(!!initialMaximized);
@@ -57,15 +59,23 @@ export const MacWindow: React.FC<MacWindowProps> = ({
   const safeLeft = safeArea?.left ?? 0;
   const safeRight = safeArea?.right ?? 0;
 
+  const snap = (v: number) => {
+    const dpr = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
+    return Math.round(v * dpr) / dpr;
+  };
+
+  const snapPos = (p: { x: number; y: number }) => ({ x: snap(p.x), y: snap(p.y) });
+  const snapSize = (s: { width: number; height: number }) => ({ width: snap(s.width), height: snap(s.height) });
+
   // Initialize position from props or calculate center immediately to avoid flash/wrong position
   const [defaultPos] = useState(() => {
-    if (initialPos) return initialPos;
+    if (initialPos) return snapPos(initialPos);
     const width = initialSize?.width || 800;
     const height = initialSize?.height || 500;
-    return {
+    return snapPos({
       x: Math.max(safeLeft, (window.innerWidth - width) / 2),
       y: Math.max(safeTop, (window.innerHeight - height) / 2)
-    };
+    });
   });
 
   useEffect(() => {
@@ -133,7 +143,8 @@ export const MacWindow: React.FC<MacWindowProps> = ({
 
   const applyDragTransform = (next: { x: number; y: number }) => {
     if (!nodeRef.current) return;
-    nodeRef.current.style.transform = `translate3d(${next.x}px, ${next.y}px, 0)`;
+    const p = snapPos(next);
+    nodeRef.current.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`;
   };
 
   const handleDragStart = (e: React.PointerEvent) => {
@@ -145,6 +156,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     // Apply dragging styles immediately to avoid a frame of delay before React state updates.
     if (nodeRef.current) {
       nodeRef.current.classList.add(styles.dragging);
+      nodeRef.current.style.willChange = 'transform';
     }
 
     setIsDragging(true);
@@ -176,11 +188,13 @@ export const MacWindow: React.FC<MacWindowProps> = ({
 
       if (nodeRef.current) {
         nodeRef.current.classList.remove(styles.dragging);
+        nodeRef.current.style.willChange = '';
       }
 
       setIsDragging(false);
-      setPos(last);
-      onMove(last.x, last.y);
+      const snapped = snapPos(last);
+      setPos(snapped);
+      onMove(snapped.x, snapped.y);
     };
 
     window.addEventListener('pointermove', handleMove);
@@ -280,9 +294,11 @@ export const MacWindow: React.FC<MacWindowProps> = ({
       const last = lastResizeRef.current;
       const node = nodeRef.current;
       if (!last || !node) return;
-      node.style.width = `${last.width}px`;
-      node.style.height = `${last.height}px`;
-      node.style.transform = `translate3d(${last.x}px, ${last.y}px, 0)`;
+      const p = snapPos({ x: last.x, y: last.y });
+      const s = snapSize({ width: last.width, height: last.height });
+      node.style.width = `${s.width}px`;
+      node.style.height = `${s.height}px`;
+      node.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`;
     });
   };
 
@@ -297,7 +313,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     const maxY = Math.max(minY, viewportH - h - safeBottom);
     const clampedX = Math.min(Math.max(x, minX), maxX);
     const clampedY = Math.min(Math.max(y, minY), maxY);
-    return { x: clampedX, y: clampedY };
+    return snapPos({ x: clampedX, y: clampedY });
   };
 
   const onResizeEnd = () => {
@@ -308,6 +324,10 @@ export const MacWindow: React.FC<MacWindowProps> = ({
       window.removeEventListener('touchmove', onResizeMove as any);
       window.removeEventListener('touchend', onResizeEnd);
 
+      if (nodeRef.current) {
+        nodeRef.current.style.willChange = '';
+      }
+
       if (resizeRafRef.current != null) {
         window.cancelAnimationFrame(resizeRafRef.current);
         resizeRafRef.current = null;
@@ -315,9 +335,12 @@ export const MacWindow: React.FC<MacWindowProps> = ({
 
       const last = lastResizeRef.current;
       if (last) {
-        setPos({ x: last.x, y: last.y });
-        setSize({ width: last.width, height: last.height });
-        onMove(last.x, last.y);
+        const p = snapPos({ x: last.x, y: last.y });
+        const s = snapSize({ width: last.width, height: last.height });
+        setPos(p);
+        setSize(s);
+        onMove(p.x, p.y);
+        onResize?.(s.width, s.height);
       } else if (pos) {
         onMove(pos.x, pos.y);
       }
@@ -328,6 +351,9 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     if (isMaximized) return;
     e.preventDefault();
     e.stopPropagation();
+    if (nodeRef.current) {
+      nodeRef.current.style.willChange = 'transform,width,height';
+    }
     const base = pos || defaultPos;
     const point = 'nativeEvent' in e ? (e as any).nativeEvent : e;
     const p = getPoint(point as MouseEvent | TouchEvent);
@@ -349,13 +375,16 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     ref: nodeRef,
     className: `${styles.window} ${isActive ? styles.active : ''} ${isMaximized ? styles.maximized : ''} ${performanceMode ? styles.performance : ''} ${isDragging ? styles.dragging : ''}`,
     style: {
-      width: isMaximized ? `calc(100vw - ${safeLeft + safeRight}px)` : size.width,
-      height: isMaximized ? `calc(100vh - ${safeTop + safeBottom}px)` : size.height,
+      width: isMaximized ? `calc(100vw - ${safeLeft + safeRight}px)` : snap(typeof size.width === 'number' ? size.width : 800),
+      height: isMaximized ? `calc(100vh - ${safeTop + safeBottom}px)` : snap(typeof size.height === 'number' ? size.height : 500),
       zIndex,
       position: isMaximized ? 'fixed' : 'absolute',
       top: isMaximized ? safeTop : 0,
       left: isMaximized ? safeLeft : 0,
-      transform: isMaximized ? 'none' : `translate3d(${(pos || defaultPos).x}px, ${(pos || defaultPos).y}px, 0)`,
+      transform: isMaximized ? 'none' : (() => {
+        const p = snapPos(pos || defaultPos);
+        return `translate3d(${p.x}px, ${p.y}px, 0)`;
+      })(),
       borderRadius: isMaximized ? 0 : 8,
       resize: 'none',
     } as React.CSSProperties,

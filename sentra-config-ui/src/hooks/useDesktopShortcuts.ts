@@ -24,6 +24,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     setIosPresetImporterOpen,
     setIosFileManagerOpen,
     setIosModelProvidersManagerOpen,
+    setIosEmojiStickersManagerOpen,
     setIosRedisAdminOpen,
   } = useUIStore();
 
@@ -76,6 +77,14 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     requestUtilityFocus('model-providers-manager');
   };
 
+  const handleOpenEmojiStickersManager = () => {
+    if (isPortable) {
+      setIosEmojiStickersManagerOpen(true);
+      return;
+    }
+    requestUtilityFocus('emoji-stickers-manager');
+  };
+
   const {
     handleRunBootstrap,
     handleRunStart,
@@ -101,12 +110,14 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       handleOpenDevCenter,
       handleOpenPresetImporter,
       handleOpenModelProvidersManager,
+      handleOpenEmojiStickersManager,
       handleOpenRedisAdmin,
     );
   }, [
     handleOpenDevCenter,
     handleOpenFileManager,
     handleOpenModelProvidersManager,
+    handleOpenEmojiStickersManager,
     handleOpenPresetImporter,
     handleOpenPresets,
     handleOpenRedisAdmin,

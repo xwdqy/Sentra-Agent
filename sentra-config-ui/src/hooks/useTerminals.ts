@@ -32,8 +32,10 @@ export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
       processId,
       appKey,
       pos: { x: window.innerWidth / 2 - 350, y: window.innerHeight / 2 - 250 },
+      size: { width: 900, height: 600 },
       z,
       minimized: false,
+      maximized: false,
       theme: options?.theme,
       headerText: options?.headerText,
     };

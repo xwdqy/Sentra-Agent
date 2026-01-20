@@ -70,6 +70,7 @@ export const getDisplayName = (name: string): string => {
     'sentra-config-ui': 'WebUI配置',
     'dev-center': '开发中心',
     'utils/emoji-stickers': '表情包配置',
+    'emoji-stickers-manager': '表情包配置',
     'agent-presets': '预设撰写',
     'presets-editor': '预设撰写',
     'preset-importer': '预设导入',
@@ -206,6 +207,7 @@ export const getIconForType = (name: string, type: 'module' | 'plugin'): React.R
   if (n.includes('agent-presets') || n.includes('presets-editor')) return <AppIconWrapper bg="linear-gradient(135deg, #00b09b 0%, #96c93d 100%)"><IoDocumentText color="white" /></AppIconWrapper>;
   if (n.includes('redis-admin')) return <AppIconWrapper bg="linear-gradient(135deg, #7c3aed 0%, #2563eb 100%)"><IoServer color="white" /></AppIconWrapper>;
   if (n.includes('model-providers-manager')) return <AppIconWrapper bg="linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%)"><LLMIcon width={34} height={34} /></AppIconWrapper>;
+  if (n.includes('emoji-stickers-manager')) return <AppIconWrapper bg="linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%)"><FcPicture /></AppIconWrapper>;
 
   // Core Modules - Distinct colors for each
   if (n.includes('sentra-prompts')) return <AppIconWrapper bg="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"><BsRobot color="white" /></AppIconWrapper>;

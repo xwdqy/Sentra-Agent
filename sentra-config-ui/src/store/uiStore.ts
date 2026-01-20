@@ -65,6 +65,11 @@ export type UIStore = {
   modelProvidersManagerMinimized: boolean;
   setModelProvidersManagerMinimized: (min: boolean) => void;
 
+  emojiStickersManagerOpen: boolean;
+  setEmojiStickersManagerOpen: (open: boolean) => void;
+  emojiStickersManagerMinimized: boolean;
+  setEmojiStickersManagerMinimized: (min: boolean) => void;
+
   presetsEditorOpen: boolean;
   setPresetsEditorOpen: (open: boolean) => void;
   presetsEditorMinimized: boolean;
@@ -93,6 +98,8 @@ export type UIStore = {
   setIosFileManagerOpen: (open: boolean) => void;
   iosModelProvidersManagerOpen: boolean;
   setIosModelProvidersManagerOpen: (open: boolean) => void;
+  iosEmojiStickersManagerOpen: boolean;
+  setIosEmojiStickersManagerOpen: (open: boolean) => void;
   iosRedisAdminOpen: boolean;
   setIosRedisAdminOpen: (open: boolean) => void;
 };
@@ -229,6 +236,17 @@ export const useUIStore = create<UIStore>((set: SetState<UIStore>) => {
       set({ modelProvidersManagerMinimized: min });
     },
 
+    emojiStickersManagerOpen: readBool('sentra_emoji_stickers_manager_open', false),
+    setEmojiStickersManagerOpen: (open: boolean) => {
+      storage.setBool('sentra_emoji_stickers_manager_open', open);
+      set({ emojiStickersManagerOpen: open });
+    },
+    emojiStickersManagerMinimized: readBool('sentra_emoji_stickers_manager_minimized', false),
+    setEmojiStickersManagerMinimized: (min: boolean) => {
+      storage.setBool('sentra_emoji_stickers_manager_minimized', min);
+      set({ emojiStickersManagerMinimized: min });
+    },
+
     presetsEditorOpen: readBool('sentra_presets_editor_open', false),
     setPresetsEditorOpen: (open: boolean) => {
       storage.setBool('sentra_presets_editor_open', open);
@@ -280,6 +298,8 @@ export const useUIStore = create<UIStore>((set: SetState<UIStore>) => {
     setIosFileManagerOpen: (open: boolean) => set({ iosFileManagerOpen: open }),
     iosModelProvidersManagerOpen: false,
     setIosModelProvidersManagerOpen: (open: boolean) => set({ iosModelProvidersManagerOpen: open }),
+    iosEmojiStickersManagerOpen: false,
+    setIosEmojiStickersManagerOpen: (open: boolean) => set({ iosEmojiStickersManagerOpen: open }),
     iosRedisAdminOpen: false,
     setIosRedisAdminOpen: (open: boolean) => set({ iosRedisAdminOpen: open }),
   };

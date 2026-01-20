@@ -223,6 +223,42 @@ export function buildDesktopIcons(
     handleOpenPresetImporter: () => void,
     handleOpenModelProvidersManager?: () => void,
     handleOpenRedisAdmin?: () => void,
+): DesktopIcon[];
+
+export function buildDesktopIcons(
+    recordUsage: (key: string) => void,
+    handleRunBootstrap: () => void,
+    handleRunStart: () => void,
+    handleRunNapcatBuild: () => void,
+    handleRunNapcatStart: () => void,
+    handleRunUpdate: () => void,
+    handleRunForceUpdate: () => void,
+    handleRunSentiment: () => void,
+    handleOpenPresets: () => void,
+    handleOpenFileManager: () => void,
+    handleOpenDevCenter: () => void,
+    handleOpenPresetImporter: () => void,
+    handleOpenModelProvidersManager?: () => void,
+    handleOpenEmojiStickersManager?: () => void,
+    handleOpenRedisAdmin?: () => void,
+): DesktopIcon[];
+
+export function buildDesktopIcons(
+    recordUsage: (key: string) => void,
+    handleRunBootstrap: () => void,
+    handleRunStart: () => void,
+    handleRunNapcatBuild: () => void,
+    handleRunNapcatStart: () => void,
+    handleRunUpdate: () => void,
+    handleRunForceUpdate: () => void,
+    handleRunSentiment: () => void,
+    handleOpenPresets: () => void,
+    handleOpenFileManager: () => void,
+    handleOpenDevCenter: () => void,
+    handleOpenPresetImporter: () => void,
+    handleOpenModelProvidersManager?: () => void,
+    handleOpenEmojiStickersManager?: () => void,
+    handleOpenRedisAdmin?: () => void,
 ): DesktopIcon[] {
     const iconSize = 56;
     const gap = 100;
@@ -230,6 +266,17 @@ export function buildDesktopIcons(
     const startY = 80;
 
     return [
+        {
+            id: 'desktop-emoji-stickers-manager',
+            name: '表情包配置',
+            icon: getIconForType('emoji-stickers-manager', 'module'),
+            position: { x: startX + gap * 6, y: startY },
+            onClick: () => {
+                recordUsage('app:emoji-stickers-manager');
+                if (handleOpenEmojiStickersManager) handleOpenEmojiStickersManager();
+                else handleOpenDevCenter();
+            }
+        },
         {
             id: 'desktop-model-providers-manager',
             name: '模型供应商',

@@ -123,6 +123,10 @@ export const DesktopView = (props: DesktopViewProps) => {
     setModelProvidersManagerOpen,
     modelProvidersManagerMinimized,
     setModelProvidersManagerMinimized,
+    emojiStickersManagerOpen,
+    setEmojiStickersManagerOpen,
+    emojiStickersManagerMinimized,
+    setEmojiStickersManagerMinimized,
     presetsEditorOpen,
     setPresetsEditorOpen,
     presetsEditorMinimized,
@@ -202,6 +206,7 @@ export const DesktopView = (props: DesktopViewProps) => {
     (deepWikiOpen ? 1 : 0) +
     (redisAdminOpen ? 1 : 0) +
     (modelProvidersManagerOpen ? 1 : 0) +
+    (emojiStickersManagerOpen ? 1 : 0) +
     (presetsEditorOpen ? 1 : 0) +
     (presetImporterOpen ? 1 : 0) +
     (fileManagerOpen ? 1 : 0);
@@ -263,6 +268,7 @@ export const DesktopView = (props: DesktopViewProps) => {
     const id = schedule(() => {
       void import('../components/RedisAdminManager/RedisAdminManager');
       void import('../components/ModelProvidersManager/ModelProvidersManager');
+      void import('../components/EmojiStickersManager/EmojiStickersManager');
     });
 
     return () => cancel(id);
@@ -320,6 +326,9 @@ export const DesktopView = (props: DesktopViewProps) => {
     } else if (id === 'model-providers-manager') {
       setModelProvidersManagerOpen(true);
       setModelProvidersManagerMinimized(false);
+    } else if (id === 'emoji-stickers-manager') {
+      setEmojiStickersManagerOpen(true);
+      setEmojiStickersManagerMinimized(false);
     } else if (id === 'presets-editor') {
       setPresetsEditorOpen(true);
       setPresetsEditorMinimized(false);
@@ -346,6 +355,8 @@ export const DesktopView = (props: DesktopViewProps) => {
     setRedisAdminMinimized,
     setModelProvidersManagerOpen,
     setModelProvidersManagerMinimized,
+    setEmojiStickersManagerOpen,
+    setEmojiStickersManagerMinimized,
     setPresetsEditorOpen,
     setPresetsEditorMinimized,
     setPresetImporterOpen,
@@ -384,6 +395,12 @@ export const DesktopView = (props: DesktopViewProps) => {
       bringUtilityToFront('model-providers-manager');
     }
   }, [modelProvidersManagerOpen, utilityZMap, bringUtilityToFront]);
+
+  useEffect(() => {
+    if (emojiStickersManagerOpen && utilityZMap['emoji-stickers-manager'] == null) {
+      bringUtilityToFront('emoji-stickers-manager');
+    }
+  }, [emojiStickersManagerOpen, utilityZMap, bringUtilityToFront]);
 
   useEffect(() => {
     if (presetsEditorOpen && utilityZMap['presets-editor'] == null) {
@@ -537,6 +554,27 @@ export const DesktopView = (props: DesktopViewProps) => {
     });
   }
 
+  if (emojiStickersManagerOpen) {
+    extraTabs.push({
+      id: 'emoji-stickers-manager',
+      title: '表情包配置',
+      icon: getIconForType('emoji-stickers-manager', 'module'),
+      isActive: activeUtilityId === 'emoji-stickers-manager',
+      onActivate: () => {
+        setEmojiStickersManagerOpen(true);
+        setEmojiStickersManagerMinimized(false);
+        bringUtilityToFront('emoji-stickers-manager');
+      },
+      onClose: () => {
+        setEmojiStickersManagerOpen(false);
+        setEmojiStickersManagerMinimized(false);
+        if (activeUtilityId === 'emoji-stickers-manager') {
+          setActiveUtilityId(null);
+        }
+      },
+    });
+  }
+
   if (presetsEditorOpen) {
     extraTabs.push({
       id: 'presets-editor',
@@ -669,7 +707,17 @@ export const DesktopView = (props: DesktopViewProps) => {
         bringUtilityToFront('model-providers-manager');
       }
     },
-    ...allItems.map(item => ({
+    {
+      name: 'emoji-stickers-manager',
+      type: 'module' as const,
+      onClick: () => {
+        recordUsage('app:emoji-stickers-manager');
+        setEmojiStickersManagerOpen(true);
+        setEmojiStickersManagerMinimized(false);
+        bringUtilityToFront('emoji-stickers-manager');
+      }
+    },
+    ...allItems.filter(item => item.name !== 'utils/emoji-stickers').map(item => ({
       name: item.name,
       type: item.type,
       onClick: () => {
@@ -803,6 +851,10 @@ export const DesktopView = (props: DesktopViewProps) => {
           setModelProvidersManagerOpen={setModelProvidersManagerOpen}
           modelProvidersManagerMinimized={modelProvidersManagerMinimized}
           setModelProvidersManagerMinimized={setModelProvidersManagerMinimized}
+          emojiStickersManagerOpen={emojiStickersManagerOpen}
+          setEmojiStickersManagerOpen={setEmojiStickersManagerOpen}
+          emojiStickersManagerMinimized={emojiStickersManagerMinimized}
+          setEmojiStickersManagerMinimized={setEmojiStickersManagerMinimized}
           presetImporterOpen={presetImporterOpen}
           setPresetImporterOpen={setPresetImporterOpen}
           presetImporterMinimized={presetImporterMinimized}

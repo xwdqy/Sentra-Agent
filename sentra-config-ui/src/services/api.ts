@@ -3,13 +3,16 @@ import { storage } from '../utils/storage';
 
 const API_BASE = '/api';
 
-export function getAuthHeaders() {
+export function getAuthHeaders(options?: { json?: boolean }) {
   const token = storage.getString('sentra_auth_token', { backend: 'session', fallback: '' })
     || storage.getString('sentra_auth_token', { fallback: '' });
-  return {
-    'Content-Type': 'application/json',
+  const headers: Record<string, string> = {
     'x-auth-token': token || ''
   };
+  if (options?.json !== false) {
+    headers['Content-Type'] = 'application/json';
+  }
+  return headers;
 }
 
 export async function verifyToken(token: string): Promise<boolean> {
