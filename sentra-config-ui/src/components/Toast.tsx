@@ -29,6 +29,62 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, removeTo
   );
 };
 
+function safeJsonParse(text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseMaybeJsonDeep(input: unknown, depth = 0): unknown {
+  if (depth >= 3) return input;
+  if (typeof input === 'string') {
+    const t = input.trim();
+    if (!t) return input;
+    const looksJson = (t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'));
+    if (!looksJson) return input;
+    const parsed = safeJsonParse(t);
+    if (parsed === undefined) return input;
+    return parseMaybeJsonDeep(parsed, depth + 1);
+  }
+  if (input && typeof input === 'object') {
+    const anyObj = input as any;
+    if (typeof anyObj.error === 'string') {
+      const next = parseMaybeJsonDeep(anyObj.error, depth + 1);
+      if (next !== anyObj.error) return { ...anyObj, error: next };
+    }
+    return input;
+  }
+  return input;
+}
+
+function extractSummary(input: unknown): string {
+  if (input == null) return '';
+  if (typeof input === 'string') return input;
+  if (typeof input !== 'object') return String(input);
+  const anyObj = input as any;
+
+  if (typeof anyObj.message === 'string') return anyObj.message;
+  if (typeof anyObj.error === 'string') return anyObj.error;
+  if (anyObj.error && typeof anyObj.error === 'object') {
+    const nested = extractSummary(anyObj.error);
+    if (nested) return nested;
+  }
+  if (anyObj.err && typeof anyObj.err === 'object') {
+    const nested = extractSummary(anyObj.err);
+    if (nested) return nested;
+  }
+  return '';
+}
+
+function truncateText(s: string, max = 140) {
+  const t = String(s || '').trim();
+  if (!t) return '';
+  if (t.length <= max) return t;
+  return t.slice(0, max - 1) + '…';
+}
+
 const ToastItem: React.FC<{ toast: ToastMessage; onRemove: (id: string) => void }> = ({ toast, onRemove }) => {
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -45,6 +101,22 @@ const ToastItem: React.FC<{ toast: ToastMessage; onRemove: (id: string) => void 
     }
   };
 
+  const rawMessage = typeof toast.message === 'string' ? toast.message : '';
+  const parsed = rawMessage ? parseMaybeJsonDeep(rawMessage) : undefined;
+  const summary = rawMessage ? (extractSummary(parsed) || extractSummary(rawMessage)) : '';
+  const displayMessage = truncateText(summary || rawMessage, 140);
+  const fullMessage = (() => {
+    if (!rawMessage) return '';
+    if (parsed && typeof parsed === 'object') {
+      try {
+        return JSON.stringify(parsed, null, 2);
+      } catch {
+        return rawMessage;
+      }
+    }
+    return rawMessage;
+  })();
+
   return (
     <motion.div
       layout
@@ -56,7 +128,7 @@ const ToastItem: React.FC<{ toast: ToastMessage; onRemove: (id: string) => void 
       {getIcon()}
       <div className={styles.content}>
         <div className={styles.title}>{toast.title}</div>
-        {toast.message && <div className={styles.message}>{toast.message}</div>}
+        {displayMessage ? <div className={styles.message} title={fullMessage}>{displayMessage}</div> : null}
       </div>
     </motion.div>
   );

@@ -59,52 +59,6 @@ type CustomIconRef =
   | { type: 'lobe'; iconName: string }
   | { type: 'upload'; dataUrl: string };
 
-function safeJsonParse(text: string) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
-function parseMaybeJsonDeep(input: unknown, depth = 0): unknown {
-  if (depth >= 3) return input;
-  if (typeof input === 'string') {
-    const t = input.trim();
-    if (!t) return input;
-    const looksJson = (t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'));
-    if (!looksJson) return input;
-    const parsed = safeJsonParse(t);
-    if (parsed === undefined) return input;
-    return parseMaybeJsonDeep(parsed, depth + 1);
-  }
-
-  if (input && typeof input === 'object') {
-    const anyObj = input as any;
-    if (typeof anyObj.error === 'string') {
-      const next = parseMaybeJsonDeep(anyObj.error, depth + 1);
-      if (next !== anyObj.error) return { ...anyObj, error: next };
-    }
-    return input;
-  }
-
-  return input;
-}
-
-function extractErrorSummary(input: unknown): string {
-  if (input == null) return '';
-  if (typeof input === 'string') return input;
-  if (typeof input !== 'object') return String(input);
-  const anyObj = input as any;
-  if (typeof anyObj.message === 'string') return anyObj.message;
-  if (typeof anyObj.error === 'string') return anyObj.error;
-  if (anyObj.error && typeof anyObj.error === 'object') {
-    const nested = extractErrorSummary(anyObj.error);
-    if (nested) return nested;
-  }
-  return '';
-}
-
 function parseCsvValue(raw: string) {
   return String(raw || '')
     .split(',')
@@ -837,33 +791,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
   const [activeId, setActiveId] = useState<string>(() => (providers[0]?.id ? providers[0].id : ''));
   const [busy, setBusy] = useState(false);
-  const [errorText, setErrorText] = useState('');
-  const [errorDetailsOpen, setErrorDetailsOpen] = useState(false);
-
-  const parsedErrorPayload = useMemo(() => {
-    if (!errorText) return null;
-    return parseMaybeJsonDeep(errorText);
-  }, [errorText]);
-
-  const prettyErrorText = useMemo(() => {
-    if (!errorText) return '';
-    const v = parsedErrorPayload;
-    if (v && typeof v === 'object') {
-      try {
-        return JSON.stringify(v, null, 2);
-      } catch {
-        return errorText;
-      }
-    }
-    return errorText;
-  }, [errorText, parsedErrorPayload]);
-
-  const errorSummaryText = useMemo(() => {
-    if (!errorText) return '';
-    const v = parsedErrorPayload;
-    const msg = extractErrorSummary(v) || extractErrorSummary(errorText);
-    return String(msg || '').trim();
-  }, [errorText, parsedErrorPayload]);
 
   useEffect(() => {
     storage.setJson(STORAGE_KEY, providers);
@@ -1075,8 +1002,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     }
 
     setBusy(true);
-    setErrorText('');
-    setErrorDetailsOpen(false);
 
     try {
       const data = await testProviderModels({
@@ -1096,16 +1021,9 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
         }
       }));
 
-      if (models.length === 0 && (data as any)?.debug) {
-        setErrorText(JSON.stringify((data as any).debug, null, 2));
-        setErrorDetailsOpen(true);
-      }
-
       addToast('success', '检测成功', `已获取 ${models.length} 个模型`);
     } catch (e: any) {
       const msg = e?.message ? String(e.message) : String(e);
-      setErrorText(msg);
-      setErrorDetailsOpen(true);
       addToast('error', '检测失败', msg);
     } finally {
       setBusy(false);
@@ -2739,46 +2657,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                   />
                 </div>
               </div>
-
-              {errorText ? (
-                <div className={styles.errorPanel}>
-                  <div className={styles.errorPanelHeader}>
-                    <div className={styles.errorPanelTitleRow}>
-                      <span className={styles.errorDot} />
-                      <div className={styles.errorPanelTitle}>
-                        {errorSummaryText || '请求失败'}
-                      </div>
-                    </div>
-                    <div className={styles.errorPanelActions}>
-                      <Button
-                        size="small"
-                        type="text"
-                        className={styles.errorPanelActionBtn}
-                        icon={<CopyOutlined />}
-                        onClick={() => {
-                          const text = prettyErrorText || errorText;
-                          navigator.clipboard?.writeText(String(text || ''))
-                            .then(() => addToast('success', '已复制'))
-                            .catch((err) => addToast('error', '复制失败', String((err as any)?.message || err)));
-                        }}
-                      />
-                      <Button
-                        size="small"
-                        type="text"
-                        className={styles.errorPanelActionBtn}
-                        icon={errorDetailsOpen ? <DownOutlined /> : <RightOutlined />}
-                        onClick={() => setErrorDetailsOpen(v => !v)}
-                      />
-                    </div>
-                  </div>
-
-                  {errorDetailsOpen ? (
-                    <div className={styles.errorPanelBody}>
-                      <pre className={styles.errorPanelPre}>{prettyErrorText || errorText}</pre>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
 
               {filteredModels.length === 0 ? (
                 <>

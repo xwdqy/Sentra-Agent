@@ -409,11 +409,11 @@ export const MacWindow: React.FC<MacWindowProps> = ({
   return (
     <motion.div
       {...(commonProps as any)}
-      initial={performanceMode ? false : 'hidden'}
-      animate={performanceMode ? undefined : 'visible'}
-      exit={performanceMode ? undefined : 'exit'}
-      variants={performanceMode ? undefined : (variants as any)}
-      transition={performanceMode ? undefined : { duration: 0.12 }}
+      initial={performanceMode ? 'visible' : 'hidden'}
+      animate={'visible' as any}
+      exit={'exit' as any}
+      variants={variants as any}
+      transition={{ duration: performanceMode ? 0 : 0.12 }}
     >
       {inner}
     </motion.div>

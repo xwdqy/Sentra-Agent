@@ -32,7 +32,8 @@
     -webkit-backdrop-filter: none;
     box-shadow: none;
     will-change: auto;
-    contain: none;
+    contain: layout paint;
+    isolation: isolate;
 }
 
 .window.maximized.active {

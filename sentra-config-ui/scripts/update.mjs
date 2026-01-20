@@ -2,6 +2,7 @@
 
 import { spawn } from 'child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import chalk from 'chalk';
@@ -16,10 +17,32 @@ const ROOT_DIR = path.resolve(__dirname, '..', '..');
 
 const args = process.argv.slice(2);
 const isForce = args.includes('force') || args.includes('--force');
+const trustGitDir = args.includes('trust-git-dir') || args.includes('--trust-git-dir');
 
 console.log(chalk.blue.bold('\n🔄 Sentra Agent Update Script\n'));
 console.log(chalk.gray(`Root Directory: ${ROOT_DIR}`));
 console.log(chalk.gray(`Update Mode: ${isForce ? 'FORCE' : 'NORMAL'}\n`));
+
+function normalizeGitPath(p) {
+    return String(p || '').replace(/\\/g, '/');
+}
+
+function isDubiousOwnershipText(text) {
+    const t = String(text || '');
+    return /detected\s+dubious\s+ownership/i.test(t) || /safe\.directory/i.test(t);
+}
+
+async function ensureGitSafeDirectory(repoDir) {
+    const safeDir = normalizeGitPath(repoDir);
+    try {
+        await execCommand('git', ['config', '--global', '--add', 'safe.directory', safeDir], os.homedir());
+        console.log(chalk.green(`✅ Added git safe.directory: ${safeDir}`));
+    } catch (e) {
+        console.warn(chalk.yellow(`⚠️ Failed to set safe.directory automatically. You can run:`));
+        console.warn(chalk.cyan(`   git config --global --add safe.directory ${safeDir}`));
+        throw e;
+    }
+}
 
 function exists(p) {
     try {
@@ -250,7 +273,6 @@ async function execCommand(command, args, cwd, extraEnv = {}) {
     return new Promise((resolve, reject) => {
         const proc = spawn(command, args, {
             cwd,
-            stdio: 'inherit',
             shell: true,
             env: {
                 ...process.env,
@@ -259,11 +281,33 @@ async function execCommand(command, args, cwd, extraEnv = {}) {
             }
         });
 
+        let stdout = '';
+        let stderr = '';
+
+        proc.stdout?.on('data', (data) => {
+            const s = data.toString();
+            stdout += s;
+            try { process.stdout.write(s); } catch { }
+        });
+
+        proc.stderr?.on('data', (data) => {
+            const s = data.toString();
+            stderr += s;
+            try { process.stderr.write(s); } catch { }
+        });
+
         proc.on('close', (code) => {
             if (code === 0) {
                 resolve();
             } else {
-                reject(new Error(`Command failed with exit code ${code}`));
+                const combined = `${stdout}\n${stderr}`;
+                const err = new Error(`Command failed with exit code ${code}`);
+                err.code = code;
+                err.details = combined;
+                if (isDubiousOwnershipText(combined)) {
+                    err.kind = 'DUBIOUS_OWNERSHIP';
+                }
+                reject(err);
             }
         });
 
@@ -326,8 +370,23 @@ async function execCommandOutput(command, args, cwd) {
     return new Promise((resolve, reject) => {
         const proc = spawn(command, args, { cwd, shell: true });
         let output = '';
+        let errOutput = '';
         proc.stdout.on('data', (data) => output += data.toString());
-        proc.on('close', (code) => code === 0 ? resolve(output) : reject(new Error(`Command failed: ${command}`)));
+        proc.stderr?.on('data', (data) => errOutput += data.toString());
+        proc.on('close', (code) => {
+            if (code === 0) {
+                resolve(output);
+                return;
+            }
+            const combined = `${output}\n${errOutput}`;
+            const err = new Error(`Command failed: ${command}`);
+            err.code = code;
+            err.details = combined;
+            if (isDubiousOwnershipText(combined)) {
+                err.kind = 'DUBIOUS_OWNERSHIP';
+            }
+            reject(err);
+        });
         proc.on('error', reject);
     });
 }
@@ -416,6 +475,13 @@ async function update() {
     const spinner = ora();
 
     try {
+        // Step -1: Git safety check for Windows 'dubious ownership' (optional auto-fix)
+        if (trustGitDir) {
+            console.log(chalk.cyan('\n🔐 Git Safe Directory: enabled (will auto add safe.directory if needed)')); 
+            await ensureGitSafeDirectory(ROOT_DIR);
+            console.log();
+        }
+
         // Step 0: Configure Remote
         const targetUrl = getUpdateSourceUrl();
         console.log(chalk.cyan(`\n🌐 Update Source: ${env.UPDATE_SOURCE || 'github'} (${targetUrl})`));
@@ -615,7 +681,19 @@ async function update() {
         process.exit(0);
     } catch (error) {
         spinner.fail('Update failed');
-        console.error(chalk.red('\n❌ Error:'), error.message);
+
+        if (error && error.kind === 'DUBIOUS_OWNERSHIP') {
+            const safeDir = normalizeGitPath(ROOT_DIR);
+            console.error(chalk.red('\n❌ Error: Git detected dubious ownership for this repository.'));
+            console.log(chalk.yellow('\n原因：仓库目录的所有者与当前用户不一致（Windows 常见于管理员/解压/复制导致）。Git 会拒绝执行任何操作。'));
+            console.log(chalk.cyan('\n✅ 解决方案（推荐）：'));
+            console.log(chalk.cyan(`   git config --global --add safe.directory ${safeDir}`));
+            console.log(chalk.gray('\n然后重新执行更新即可。'));
+            console.log(chalk.gray('\n你也可以用参数自动修复：'));
+            console.log(chalk.cyan('   node scripts/update.mjs --trust-git-dir'));
+        } else {
+            console.error(chalk.red('\n❌ Error:'), error?.message || String(error));
+        }
         process.exit(1);
     }
 }

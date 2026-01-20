@@ -56,6 +56,12 @@
   font-size: 13px;
   color: #86868b;
   line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  line-clamp: 3;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
 }
 
 /* Dark mode support if needed later */
