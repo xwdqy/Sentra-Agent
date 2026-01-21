@@ -1,8 +1,8 @@
 import os from 'os';
 import crypto from 'crypto';
 import { EventEmitter } from 'events';
-import type { IPty } from 'node-pty';
-import pty from 'node-pty';
+import type { IPty } from '@lydell/node-pty';
+import pty from '@lydell/node-pty';
 import fs from 'fs';
 import path from 'path';
 
@@ -161,7 +161,7 @@ class TerminalExecutorManager {
       }
     }
 
-    p.onData((d) => {
+    p.onData((d: string) => {
       capBuffer(session, d);
       try {
         emitter.emit('data', d);
@@ -170,7 +170,7 @@ class TerminalExecutorManager {
       }
     });
 
-    p.onExit((ev) => {
+    p.onExit((ev: { exitCode: number; signal: number }) => {
       session.exited = true;
       session.exitCode = typeof ev.exitCode === 'number' ? ev.exitCode : null;
       session.exitSignal = typeof ev.signal === 'number' ? ev.signal : null;
