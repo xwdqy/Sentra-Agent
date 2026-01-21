@@ -18,6 +18,8 @@ const ROOT_DIR = path.resolve(__dirname, '..', '..');
 const args = process.argv.slice(2);
 const isForce = args.includes('force') || args.includes('--force');
 const trustGitDir = args.includes('trust-git-dir') || args.includes('--trust-git-dir');
+const skipBuildDist = args.includes('no-build') || args.includes('--no-build');
+const forceBuildDist = args.includes('build-dist') || args.includes('--build-dist') || args.includes('--build');
 
 console.log(chalk.blue.bold('\n🔄 Sentra Agent Update Script\n'));
 console.log(chalk.gray(`Root Directory: ${ROOT_DIR}`));
@@ -207,6 +209,22 @@ function resolveNpmRegistry() {
         npmRegistryDefault ||
         ''
     );
+}
+
+function resolveBuildMaxOldSpaceSizeMb() {
+    const gb = os.totalmem() / (1024 * 1024 * 1024);
+    if (!Number.isFinite(gb) || gb <= 0) return 2048;
+    if (gb >= 16) return 6144;
+    if (gb >= 8) return 4096;
+    if (gb >= 4) return 3072;
+    return 2048;
+}
+
+function shouldAutoBuildDist() {
+    if (skipBuildDist) return false;
+    if (forceBuildDist) return true;
+    // Avoid building on very low-memory machines by default.
+    return os.totalmem() >= 3 * 1024 * 1024 * 1024;
 }
 
 function hasPuppeteerDependency(projectDir) {
@@ -633,10 +651,11 @@ async function update() {
         }
 
         // Step 4: Execute Installations
+        const npmRegistry = resolveNpmRegistry();
+        const pm = choosePM(env.PACKAGE_MANAGER || 'auto');
+
         if (installQueue.length > 0) {
             console.log(chalk.cyan(`\n📥 Installing dependencies for ${installQueue.length} targets...\n`));
-            const npmRegistry = resolveNpmRegistry();
-            const pm = choosePM(env.PACKAGE_MANAGER || 'auto');
 
             for (const item of installQueue) {
                 const { dir, label, type, reason } = item;
@@ -675,6 +694,30 @@ async function update() {
             await ensurePuppeteerBrowserForMcp(pm);
         } else {
             console.log(chalk.green('\n✨ No dependency changes detected, skipping installation\n'));
+        }
+
+        // Step 5: Build Web UI dist for fast startup (optional)
+        const uiDir = path.resolve(ROOT_DIR, 'sentra-config-ui');
+        if (shouldAutoBuildDist() && isNodeProject(uiDir)) {
+            const maxOldSpaceSizeMb = resolveBuildMaxOldSpaceSizeMb();
+            spinner.start(`[UI] Building dist (NODE_OPTIONS=--max-old-space-size=${maxOldSpaceSizeMb})...`);
+            try {
+                await execCommand(pm, ['run', 'build:dist'], uiDir, {
+                    NODE_OPTIONS: `--max-old-space-size=${maxOldSpaceSizeMb}`,
+                    npm_config_registry: npmRegistry || undefined,
+                    NPM_CONFIG_REGISTRY: npmRegistry || undefined,
+                });
+                spinner.succeed('[UI] dist build completed');
+            } catch (e) {
+                spinner.fail('[UI] dist build failed');
+                console.log(chalk.yellow('\n💡 Tip: If you see "JavaScript heap out of memory" during build:'));
+                console.log(chalk.gray('   - Use a higher-memory machine to build dist, then deploy dist to low-spec machines'));
+                console.log(chalk.gray('   - Or run: node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build'));
+                console.log(chalk.gray('   - Or re-run update with: node scripts/update.mjs --build-dist'));
+            }
+        } else if (!skipBuildDist && !forceBuildDist) {
+            const gb = (os.totalmem() / (1024 * 1024 * 1024)).toFixed(1);
+            console.log(chalk.gray(`\n[UI] dist build skipped (total memory ~${gb} GB). Use --build-dist to force, or --no-build to silence.`));
         }
 
         console.log(chalk.green.bold('\n✅ Update completed successfully!\n'));
