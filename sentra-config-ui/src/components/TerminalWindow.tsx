@@ -408,12 +408,13 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
                         safeWrite(String(data.data || ''));
                         outputCursorRef.current += 1;
                     } else if (data.type === 'exit') {
+                        const exitCode = (data?.code ?? data?.exitCode) as any;
+                        safeWrite(`\r\n\x1b[32m✓ Process exited with code ${exitCode ?? 'unknown'}\x1b[0m\r\n`);
                         stoppedRef.current = true;
                         if (reconnectTimerRef.current) {
                             window.clearTimeout(reconnectTimerRef.current);
                             reconnectTimerRef.current = null;
                         }
-                        safeWrite(`\r\n\x1b[32m✓ Process exited with code ${data.code}\x1b[0m\r\n`);
                         cleanupEventSource();
                     }
                 } catch (e) {
