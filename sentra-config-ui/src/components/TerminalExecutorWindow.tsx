@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -7,6 +7,9 @@ import '@xterm/xterm/css/xterm.css';
 import styles from './TerminalWindow.module.css';
 import { storage } from '../utils/storage';
 import { fontFiles } from 'virtual:sentra-fonts';
+
+const TERMINAL_FONT_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Mono", "Courier New", monospace';
+const TERMINAL_PERSIST_TTL_MS = 1000 * 60 * 60 * 24;
 
 interface TerminalExecutorWindowProps {
   sessionId: string;
@@ -22,6 +25,10 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
   const wsRef = useRef<WebSocket | null>(null);
   const openedRef = useRef(false);
   const cursorRef = useRef(0);
+  const snapshotRef = useRef('');
+  const snapshotSavedAtRef = useRef(0);
+  const lastSavedCursorRef = useRef(0);
+  const [uiFontFamily, setUiFontFamily] = useState(TERMINAL_FONT_FALLBACK);
   const reconnectTimerRef = useRef<number | null>(null);
   const stoppedRef = useRef(false);
   const onSessionNotFoundRef = useRef<TerminalExecutorWindowProps['onSessionNotFound']>(onSessionNotFound);
@@ -62,9 +69,38 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
     let openRaf: number | null = null;
     let wsStarted = false;
 
+    const cursorKey = `sentra_exec_terminal_cursor:${String(sessionId || '')}`;
+    const snapshotKey = `sentra_exec_terminal_snapshot:${String(sessionId || '')}`;
+    const tsKey = `sentra_exec_terminal_persist_ts:${String(sessionId || '')}`;
+    const restoredTsSession = storage.getNumber(tsKey, { backend: 'session', fallback: NaN });
+    const restoredTsLocal = storage.getNumber(tsKey, { backend: 'local', fallback: NaN });
+    const restoredTs = Number.isFinite(restoredTsSession) ? restoredTsSession : (Number.isFinite(restoredTsLocal) ? restoredTsLocal : 0);
+    const isFresh = restoredTs > 0 && Date.now() - restoredTs <= TERMINAL_PERSIST_TTL_MS;
+    const cursorSession = storage.getNumber(cursorKey, { backend: 'session', fallback: NaN });
+    const cursorLocal = storage.getNumber(cursorKey, { backend: 'local', fallback: NaN });
+    const restoredCursor = isFresh
+      ? (Number.isFinite(cursorSession) ? cursorSession : (Number.isFinite(cursorLocal) ? cursorLocal : 0))
+      : 0;
+    const snapSession = storage.getString(snapshotKey, { backend: 'session', fallback: '' });
+    const snapLocal = storage.getString(snapshotKey, { backend: 'local', fallback: '' });
+    const restoredSnapshot = isFresh
+      ? (snapSession || snapLocal)
+      : '';
+
+    if (!isFresh && restoredTs > 0) {
+      try { storage.remove(tsKey, 'session'); } catch { }
+      try { storage.remove(cursorKey, 'session'); } catch { }
+      try { storage.remove(snapshotKey, 'session'); } catch { }
+      try { storage.remove(tsKey, 'local'); } catch { }
+      try { storage.remove(cursorKey, 'local'); } catch { }
+      try { storage.remove(snapshotKey, 'local'); } catch { }
+    }
+
     stoppedRef.current = false;
     openedRef.current = false;
-    cursorRef.current = 0;
+    cursorRef.current = restoredCursor;
+    lastSavedCursorRef.current = restoredCursor;
+    snapshotRef.current = restoredSnapshot;
 
     if (reconnectTimerRef.current) {
       window.clearTimeout(reconnectTimerRef.current);
@@ -88,12 +124,12 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
       selectionBackground: 'rgba(226, 232, 240, 0.20)',
     };
 
-    const terminalFontFallback = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Mono", "Courier New", monospace';
+    setUiFontFamily(TERMINAL_FONT_FALLBACK);
 
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: terminalFontFallback,
+      fontFamily: TERMINAL_FONT_FALLBACK,
       theme: theme || fallbackTheme,
       allowProposedApi: true,
       convertEol: true,
@@ -144,9 +180,15 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
           document.fonts.add(face);
 
           if (forcedFile) {
-            term.options.fontFamily = `"${family}", ${terminalFontFallback}`;
+            const next = `"${family}", ${TERMINAL_FONT_FALLBACK}`;
+            term.options.fontFamily = next;
+            if (!disposed) setUiFontFamily(next);
             try {
               fitAddonRef.current?.fit();
+              term.refresh(0, term.rows - 1);
+              requestAnimationFrame(() => {
+                try { term.refresh(0, term.rows - 1); } catch { }
+              });
             } catch { }
             return;
           }
@@ -164,9 +206,15 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
           } catch { }
 
           if (isMono) {
-            term.options.fontFamily = `"${family}", ${terminalFontFallback}`;
+            const next = `"${family}", ${TERMINAL_FONT_FALLBACK}`;
+            term.options.fontFamily = next;
+            if (!disposed) setUiFontFamily(next);
             try {
               fitAddonRef.current?.fit();
+              term.refresh(0, term.rows - 1);
+              requestAnimationFrame(() => {
+                try { term.refresh(0, term.rows - 1); } catch { }
+              });
             } catch { }
           }
         } catch { }
@@ -187,6 +235,22 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
 
     xtermInstance.current = term;
 
+    const persistState = (force = false) => {
+      const now = Date.now();
+      const cursor = cursorRef.current;
+      if (!force) {
+        if (cursor - lastSavedCursorRef.current < 25 && now - snapshotSavedAtRef.current < 800) return;
+      }
+      snapshotSavedAtRef.current = now;
+      lastSavedCursorRef.current = cursor;
+      try { storage.setNumber(tsKey, now, 'session'); } catch { }
+      try { storage.setNumber(cursorKey, cursor, 'session'); } catch { }
+      try { storage.setString(snapshotKey, snapshotRef.current, 'session'); } catch { }
+      try { storage.setNumber(tsKey, now, 'local'); } catch { }
+      try { storage.setNumber(cursorKey, cursor, 'local'); } catch { }
+      try { storage.setString(snapshotKey, snapshotRef.current, 'local'); } catch { }
+    };
+
     const canFitNow = () => {
       const el = terminalRef.current;
       if (!el) return false;
@@ -203,6 +267,10 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
         // ignore
       }
     };
+
+    if (restoredSnapshot) {
+      safeWrite(restoredSnapshot);
+    }
 
     function getToken() {
       return (
@@ -245,15 +313,24 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
 
         if (msg?.type === 'init' || msg?.type === 'data') {
           const data = String(msg?.data || '');
-          if (data) safeWrite(data);
+          if (data) {
+            safeWrite(data);
+            const maxChars = 200000;
+            snapshotRef.current = (snapshotRef.current || '') + data;
+            if (snapshotRef.current.length > maxChars) {
+              snapshotRef.current = snapshotRef.current.slice(-maxChars);
+            }
+          }
           const c = Number(msg?.cursor);
           if (Number.isFinite(c)) cursorRef.current = c;
+          persistState(false);
           if (msg?.type === 'init') {
             try { console.debug('[TerminalExecutor] init', { sessionId, len: data.length, cursor: c }); } catch { }
           }
           if (msg?.type === 'init' && msg?.exited) {
             const ec = msg?.exitCode;
             safeWrite(`\r\n\x1b[33m[process exited: ${ec ?? 'unknown'}]\x1b[0m\r\n`);
+            persistState(true);
           }
           return;
         }
@@ -263,12 +340,19 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
           safeWrite(`\r\n\x1b[33m[process exited: ${ec ?? 'unknown'}]\x1b[0m\r\n`);
           const c = Number(msg?.cursor);
           if (Number.isFinite(c)) cursorRef.current = c;
+          persistState(true);
           return;
         }
 
         if (msg?.type === 'error') {
           const m = String(msg?.message || '');
           if (m.toLowerCase().includes('not found')) {
+            try { storage.remove(tsKey, 'session'); } catch { }
+            try { storage.remove(cursorKey, 'session'); } catch { }
+            try { storage.remove(snapshotKey, 'session'); } catch { }
+            try { storage.remove(tsKey, 'local'); } catch { }
+            try { storage.remove(cursorKey, 'local'); } catch { }
+            try { storage.remove(snapshotKey, 'local'); } catch { }
             try { onSessionNotFoundRef.current?.(); } catch { }
           }
           safeWrite(`\r\n\x1b[31m[error] ${m}\x1b[0m\r\n`);
@@ -398,6 +482,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
     return () => {
       disposed = true;
       stoppedRef.current = true;
+      persistState(true);
 
       window.removeEventListener('resize', onResize);
       terminalRef.current?.removeEventListener('pointerdown', focusOnPointer);
@@ -479,7 +564,12 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
   };
 
   return (
-    <div className={styles.terminalContainer} style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden' }}>
+    <div className={styles.terminalContainer} style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden', fontFamily: uiFontFamily }}>
+      {headerText && (
+        <div className={styles.header} style={{ flexShrink: 0 }}>
+          {headerText}
+        </div>
+      )}
       <div style={{ flex: 1, position: 'relative', width: '100%', overflow: 'hidden' }}>
         <div
           ref={terminalRef}

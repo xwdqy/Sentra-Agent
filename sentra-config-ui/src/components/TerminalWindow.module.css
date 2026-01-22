@@ -13,7 +13,7 @@
     background-color: rgba(148, 163, 184, 0.14);
     color: rgba(226, 232, 240, 0.92);
     font-size: 12px;
-    font-family: var(--system-font);
+    font-family: inherit;
     border-bottom: 1px solid rgba(148, 163, 184, 0.14);
 }
 
@@ -28,11 +28,6 @@
     letter-spacing: 0 !important;
     font-variant-ligatures: none;
     font-feature-settings: "liga" 0, "calt" 0;
-}
-
-.terminalWrapper :global(.xterm-screen),
-.terminalWrapper :global(.xterm-rows) {
-    line-height: 1 !important;
 }
 
 /* Custom scrollbar for xterm viewport */

@@ -275,6 +275,8 @@ export const DesktopView = (props: DesktopViewProps) => {
       void import('../components/RedisAdminManager/RedisAdminManager');
       void import('../components/ModelProvidersManager/ModelProvidersManager');
       void import('../components/EmojiStickersManager/EmojiStickersManager');
+      void import('../components/TerminalWindow');
+      void import('../components/TerminalExecutorWindow');
     });
 
     return () => cancel(id);
