@@ -1034,6 +1034,24 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     }
 
     if (config.flags.enableVerboseSteps) logger.info(`参数确定`, { label: 'ARGS', aiName, toolArgsPreview: clip(toolArgs) });
+
+    let scheduleArgValue = null;
+    const schemaHasSchedule = !!(currentToolFull?.inputSchema?.properties?.schedule);
+    const scheduleArgPresent = !!(
+      schemaHasSchedule &&
+      toolArgs &&
+      Object.prototype.hasOwnProperty.call(toolArgs, 'schedule') &&
+      toolArgs.schedule
+    );
+    if (scheduleArgPresent) {
+      scheduleArgValue = toolArgs.schedule;
+      try {
+        const cloned = { ...toolArgs };
+        delete cloned.schedule;
+        toolArgs = cloned;
+      } catch {}
+    }
+
     // 将最终用于调用的参数写入历史，并通过事件总线实时分发
     try {
       const depOnA = depsArr[i] || [];
@@ -1062,13 +1080,12 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     let scheduleText = '';
     let scheduleParsed = null;
     let scheduleMode = 'none'; // 'immediate_exec' | 'delayed_exec' | 'none'
-    const schemaHasSchedule = !!(currentToolFull?.inputSchema?.properties?.schedule);
     
-    if (schemaHasSchedule && toolArgs && Object.prototype.hasOwnProperty.call(toolArgs, 'schedule') && toolArgs.schedule) {
+    if (scheduleArgPresent && scheduleArgValue) {
       scheduleDetected = true;
       try {
         // 统一提取文本与语言
-        const rawSchedule = toolArgs.schedule;
+        const rawSchedule = scheduleArgValue;
         scheduleText = typeof rawSchedule === 'string'
           ? rawSchedule
           : (rawSchedule.when || rawSchedule.text || '');
@@ -1218,7 +1235,14 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
       toolMeta: toolMetaInherited,
     };
-    if (scheduleDetected && delayMs > 0 && scheduleMode && scheduleMode !== 'none') {
+    if (!(scheduleDetected && delayMs > 0 && scheduleMode === 'delayed_exec' && res?.success && res?.code === 'SCHEDULED')) {
+      ev.completion = {
+        state: 'completed',
+        mustAnswerFromResult: true,
+        instruction: 'Tool execution has finished for this step. Answer the user based on the tool result and extracted files/resources.'
+      };
+    }
+    if (scheduleDetected && delayMs > 0 && scheduleMode === 'delayed_exec') {
       ev.schedule = {
         text: scheduleText,
         targetISO: scheduleParsed?.parsedISO,

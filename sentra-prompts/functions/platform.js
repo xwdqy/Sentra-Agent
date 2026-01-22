@@ -760,6 +760,21 @@ export async function getSandboxSystemPrompt() {
       '**Purpose**: System-generated tool execution results\n' +
       '**Priority**: Data source for answering user questions\n' +
       '**Action**: Extract information, present naturally, NEVER mention tool details\n\n' +
+
+      '##### NEW: `<completion>` (final-answer marker)\n\n' +
+      'Some `<sentra-result>` blocks include a `<completion>` section. This is a system-generated marker that tells you whether this tool step is already finished and whether you MUST answer from the result.\n' +
+      'Structure (example):\n' +
+      '\n' +
+      '<completion>\n' +
+      '  <state>completed</state>\n' +
+      '  <must_answer_from_result>true</must_answer_from_result>\n' +
+      '  <instruction>...human readable...</instruction>\n' +
+      '</completion>\n' +
+      '\n' +
+      '**Rules (MANDATORY):**\n' +
+      '- If `<completion><state>completed</state></completion>` AND `<must_answer_from_result>true</must_answer_from_result>`, you MUST treat the tool execution as DONE and deliver a final user-facing answer based on `<result>` / `<data>` / `<extracted_files>` immediately.\n' +
+      '- In this case, you MUST NOT respond with vague bridge / schedule language such as “我去看看/我马上/稍后给你/我等会给你送过去”.\n' +
+      '- If the result contains a real deliverable file/link (or `<extracted_files>` provides paths), you MUST attach it in `<resources>` in your `<sentra-response>`.\n\n' +
       
       'Structure:\n' +
       '\n' +

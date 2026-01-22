@@ -485,6 +485,19 @@ function buildSingleResultXML(ev) {
   if (reason) lines.push(`  <reason>${valueToXMLString(reason, 0)}</reason>`);
   // 同时输出 <aiName> 以便旧解析器兼容
   lines.push(`  <aiName>${valueToXMLString(aiName, 0)}</aiName>`);
+  try {
+    const completion = ev?.completion;
+    if (completion && typeof completion === 'object') {
+      const state = typeof completion.state === 'string' ? completion.state : '';
+      const must = completion.mustAnswerFromResult === true;
+      const instr = typeof completion.instruction === 'string' ? completion.instruction : '';
+      lines.push('  <completion>');
+      if (state) lines.push(`    <state>${valueToXMLString(state, 0)}</state>`);
+      lines.push(`    <must_answer_from_result>${must}</must_answer_from_result>`);
+      if (instr) lines.push(`    <instruction>${valueToXMLString(instr, 0)}</instruction>`);
+      lines.push('  </completion>');
+    }
+  } catch {}
   // args：同时提供结构化与 JSON 两种表示
   try {
     lines.push('  <args>');

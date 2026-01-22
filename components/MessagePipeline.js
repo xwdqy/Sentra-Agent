@@ -1512,9 +1512,43 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               hasReplied = true;
               hasToolPreReplied = true;
 
-              const swallow = shouldSwallowReplyForConversation(conversationId, hasSupplementDuringTask);
-              if (!swallow) {
-                await smartSend(latestMsgJudgeNeed, preReply, sendAndWaitWithConv, true, { hasTool: true });
+              await smartSend(latestMsgJudgeNeed, preReply, sendAndWaitWithConv, true, { hasTool: true });
+
+              try {
+                const preReplyPairId = await historyManager.startAssistantMessage(groupId);
+                const preReplyForHistory = normalizeAssistantContentForHistory(preReply);
+                await historyManager.appendToAssistantMessage(groupId, preReplyForHistory, preReplyPairId);
+
+                const savedPreReply = await historyManager.finishConversationPair(
+                  groupId,
+                  preReplyPairId,
+                  baseUserContentNoRoot
+                );
+
+                if (savedPreReply) {
+                  const chatType = msg?.group_id ? 'group' : 'private';
+                  const userIdForMemory = userid || '';
+
+                  triggerContextSummarizationIfNeeded({
+                    groupId,
+                    chatType,
+                    userId: userIdForMemory
+                  }).catch((e) => {
+                    logger.debug(`ContextMemory: 异步摘要触发失败 ${groupId}`, { err: String(e) });
+                  });
+
+                  triggerPresetTeachingIfNeeded({
+                    groupId,
+                    chatType,
+                    userId: userIdForMemory,
+                    userContent: baseUserContentNoRoot,
+                    assistantContent: preReplyForHistory
+                  }).catch((e) => {
+                    logger.debug(`PresetTeaching: 异步教导触发失败 ${groupId}`, { err: String(e) });
+                  });
+                }
+              } catch (e) {
+                logger.debug('ToolPreReply: 保存预回复对话对失败', { err: String(e) });
               }
             }
           }
@@ -1586,6 +1620,7 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
             }
           }
 
+          let scheduleJobEnqueued = false;
           if (isScheduled && typeof enqueueDelayedJob === 'function') {
             try {
               const baseArgs = ev.args && typeof ev.args === 'object' ? { ...ev.args } : {};
@@ -1631,6 +1666,7 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               };
 
               await enqueueDelayedJob(job);
+              scheduleJobEnqueued = true;
 
               const mode = scheduleMode || 'delayed_exec';
               if (mode === 'delayed_exec' && sdk && typeof sdk.cancelRun === 'function' && ev.runId) {
@@ -1652,6 +1688,11 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                 err: String(e)
               });
             }
+          }
+
+          if (isScheduled && scheduleJobEnqueued && hasToolPreReplied) {
+            endedBySchedule = true;
+            break;
           }
 
           const progressEv = {
