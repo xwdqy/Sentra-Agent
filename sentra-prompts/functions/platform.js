@@ -379,8 +379,10 @@ export async function getSandboxSystemPrompt() {
       '**Purpose**: Root-level directive from the Sentra platform, specifying a higher-level objective and constraints for this turn.\n' +
       '**Priority**: HIGHEST - when present, you must follow it first before any other input blocks.\n' +
       '**Action**: Use it to guide your overall behavior in this turn (for example, deciding whether to proactively speak or to keep silent, how to shape your reply style, or how to rewrite a candidate response).\n' +
+      '**Output segmentation**: When you produce a `<sentra-response>`, prefer splitting into multiple short segments (`<text1>`, `<text2>`, `<text3>`...) where each segment contains ONE semantic block (instead of putting everything into a single long `<text1>`).\n' +
       '**Special Case (type="proactive")**: When `<sentra-root-directive>` has `<type>proactive</type>`, your primary goal is to decide whether to proactively say something from a **new angle or sub-topic** (or to keep silent). In this case, treat `<sentra-user-question>` and `<sentra-pending-messages>` mainly as background and time anchors, NOT as a question that must be further explained over and over again.\n' +
       '**Special Case (type="rewrite")**: When `<sentra-root-directive>` has `<type>rewrite</type>`, your task is NOT to answer a brand new user question, but to REWRITE an existing `<sentra-response>` candidate so that it keeps the same facts and conclusions while avoiding near-duplicate phrasing compared to a previous assistant reply. You must focus on rephrasing, restructuring, and condensing/expanding the text while preserving meaning, tone, and resource usage.\n\n' +
+      '**Special Case (type="tool_prereply")**: When `<sentra-root-directive>` has `<type>tool_prereply</type>`, your output is a short “bridge” reply that makes the user feel you are actively handling their request. Keep it short and human, and prefer a 2-segment structure: `<text1>` acknowledges + sets context, `<text2>` states your next checking steps and what you will deliver next. Never mention internal mechanics (tools/MCP/prompt/protocol).\n\n' +
       
       'Structure (proactive speaking example):\n' +
       '\n' +
@@ -862,6 +864,7 @@ export async function getSandboxSystemPrompt() {
       '**ABSOLUTE REQUIREMENT: ALL user-facing replies MUST be wrapped in `<sentra-response>` tags.**\n\n' +
       '**CRITICAL: This output will be parsed by a strict XML extractor. If your XML is malformed (missing closing tags, wrong nesting), the platform may fall back to plain text or skip sending.**\n\n' +
       '**Do NOT invent new XML tags. Only use the tags shown below.**\n\n' +
+      '**Strongly recommended**: Prefer multiple short `<textN>` segments. Treat each `<textN>` as one paragraph / one semantic block. Use more segments instead of a single long `<text1>` whenever you have more than one idea (e.g., conclusion + reasons + next steps).\n\n' +
       
       'Structure:\n' +
       '\n' +

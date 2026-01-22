@@ -4,24 +4,13 @@
  */
 
 import { z } from 'zod';
-import { jsonToXMLLines, extractXMLTag, extractAllXMLTags, extractFilesFromContent, valueToXMLString, USER_QUESTION_FILTER_KEYS, extractFullXMLTag, extractAllFullXMLTags, escapeXmlAttr, unescapeXml, stripTypedValueWrapper, extractXmlAttrValue, extractInnerXmlFromFullTag } from './xmlUtils.js';
+import { jsonToXMLLines, extractXMLTag, extractAllXMLTags, extractFilesFromContent, valueToXMLString, USER_QUESTION_FILTER_KEYS, extractFullXMLTag, extractAllFullXMLTags, escapeXmlAttr, unescapeXml, stripTypedValueWrapper, extractXmlAttrValue, extractInnerXmlFromFullTag, getFastXmlParser } from './xmlUtils.js';
 import { createLogger } from './logger.js';
-import { XMLParser } from 'fast-xml-parser';
 
 const logger = createLogger('ProtocolUtils');
 
-let __xmlParser;
 function getXmlParser() {
-  if (__xmlParser) return __xmlParser;
-  __xmlParser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: '',
-    textNodeName: '#text',
-    trimValues: true,
-    parseTagValue: false,
-    parseAttributeValue: false,
-  });
-  return __xmlParser;
+  return getFastXmlParser();
 }
 
 function getTextNode(v) {

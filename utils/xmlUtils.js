@@ -3,14 +3,47 @@
  * 包含XML标签提取、JSON转XML、敏感信息过滤等功能
  */
 import extractPathModule from 'extract-path';
+ import { XMLParser } from 'fast-xml-parser';
 
 const extractPath = extractPathModule.default || extractPathModule;
 
-// 敏感字段列表
-const SENSITIVE_KEYS = [
-  'apikey', 'api_key', 'api-key', 'token', 'access_token', 'refresh_token', 'authorization',
-  'cookie', 'cookies', 'set-cookie', 'password', 'secret', 'session', 'x-api-key'
-];
+let __xmlParser;
+export function getFastXmlParser() {
+  if (__xmlParser) return __xmlParser;
+  __xmlParser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '',
+    textNodeName: '#text',
+    trimValues: true,
+    parseTagValue: false,
+    parseAttributeValue: false
+  });
+  return __xmlParser;
+}
+
+export function tryParseXmlFragment(xmlFragment, rootTag = 'root') {
+  const frag = typeof xmlFragment === 'string' ? xmlFragment : '';
+  if (!frag.trim()) return null;
+  const root = typeof rootTag === 'string' && rootTag.trim() ? rootTag.trim() : 'root';
+  try {
+    const wrapped = `<${root}>${frag}</${root}>`;
+    const doc = getFastXmlParser().parse(wrapped);
+    return doc && typeof doc === 'object' ? doc[root] : null;
+  } catch {
+    return null;
+  }
+}
+
+export function tryParseXmlTag(text, tagName) {
+  const s = typeof text === 'string' ? text : '';
+  const name = typeof tagName === 'string' ? tagName.trim() : '';
+  if (!s || !name) return null;
+  const full = extractFullXMLTag(s, name);
+  if (!full) return null;
+  const parsed = tryParseXmlFragment(full, 'root');
+  if (!parsed || typeof parsed !== 'object') return null;
+  return parsed[name] ?? null;
+}
 
 // 用户消息中需要过滤的字段（避免冗余）
 export const USER_QUESTION_FILTER_KEYS = [
@@ -60,13 +93,6 @@ export function extractInnerXmlFromFullTag(fullTagXml, tagName) {
   return String(fullTagXml)
     .replace(new RegExp(`^<${safe}[^>]*>`, 'i'), '')
     .replace(new RegExp(`<\\/${safe}>\\s*$`, 'i'), '');
-}
-
-/**
- * 检查是否为敏感字段
- */
-export function isSensitiveKey(key = '') {
-  return SENSITIVE_KEYS.includes(String(key).toLowerCase());
 }
 
 /**
@@ -262,17 +288,6 @@ export function jsonToXMLLines(data, indent = 1, depth = 0, maxDepth = 100, filt
     keys.forEach(key => {
       // 过滤指定的键
       if (filterKeys.includes(key)) {
-        return;
-      }
-      
-      // 过滤敏感字段
-      if (isSensitiveKey(key)) {
-        const norm = normalizeTagName(key);
-        if (norm.attrName) {
-          lines.push(`${indentStr}<${norm.tag} name="${escapeXmlAttr(norm.attrName)}">[REDACTED]</${norm.tag}>`);
-        } else {
-          lines.push(`${indentStr}<${norm.tag}>[REDACTED]</${norm.tag}>`);
-        }
         return;
       }
       

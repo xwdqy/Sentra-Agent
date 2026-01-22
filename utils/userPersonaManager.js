@@ -19,7 +19,6 @@ import { fileURLToPath } from 'url';
 import { extractXMLTag, extractAllXMLTags } from './xmlUtils.js';
 import { escapeXml, escapeXmlAttr, unescapeXml } from './xmlUtils.js';
 import { createLogger } from './logger.js';
-import { repairSentraPersona } from './formatRepair.js';
 import { getEnv, getEnvInt, getEnvBool, onEnvReload } from './envHotReloader.js';
 import { loadPrompt } from '../prompts/loader.js';
 
@@ -203,6 +202,7 @@ class UserPersonaManager {
         messageCount: 0, // 总消息数
         lastUpdateCount: 0, // 上次更新时的消息数
         lastUpdateTime: null, // 上次更新的时间戳（毫秒）
+        lastAttemptTime: null, // 上次尝试更新的时间戳（毫秒，包含失败）
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         version: 0, // 画像版本号
@@ -222,6 +222,9 @@ class UserPersonaManager {
       const data = JSON.parse(content);
       if (!data.personaStats) {
         data.personaStats = { traits: {}, interests: {}, patterns: {}, insights: {} };
+      }
+      if (!Object.prototype.hasOwnProperty.call(data, 'lastAttemptTime')) {
+        data.lastAttemptTime = null;
       }
 
        let dirty = false;
@@ -316,10 +319,14 @@ class UserPersonaManager {
     // 4. 检查时间间隔
     const now = Date.now();
     const lastUpdateTime = userData.lastUpdateTime;
+    const lastAttemptTime = userData.lastAttemptTime;
+    const effectiveLastTime = (lastAttemptTime && lastAttemptTime > 0)
+      ? lastAttemptTime
+      : lastUpdateTime;
     
     // 如果不是首次更新，检查时间间隔
-    if (lastUpdateTime && lastUpdateTime > 0) {
-      const timeSinceUpdate = now - lastUpdateTime;
+    if (effectiveLastTime && effectiveLastTime > 0) {
+      const timeSinceUpdate = now - effectiveLastTime;
       
       if (timeSinceUpdate < this.updateIntervalMs) {
         const remainingMinutes = Math.ceil((this.updateIntervalMs - timeSinceUpdate) / 60000);
@@ -356,6 +363,10 @@ class UserPersonaManager {
     if (!userData || userData.messages.length === 0) return;
 
     try {
+      // 记录“尝试更新时间”，用于失败时也能进行时间门控
+      userData.lastAttemptTime = Date.now();
+      this._saveUserData(senderId, userData);
+
       logger.info(`[画像] 开始分析用户画像 (${senderId})...`);
 
       // 准备分析数据
@@ -376,6 +387,7 @@ class UserPersonaManager {
         userData.version++;
         userData.lastUpdateCount = userData.messageCount;
         userData.lastUpdateTime = Date.now(); // ✅ 记录更新时间
+        userData.lastAttemptTime = userData.lastUpdateTime;
         
         this._saveUserData(senderId, userData);
         
@@ -536,22 +548,6 @@ class UserPersonaManager {
       }
       
       if (!personaXML) {
-        // 使用格式修复器尝试修复为 <sentra-persona>
-        const enableRepair = getEnvBool('ENABLE_FORMAT_REPAIR', true);
-        if (enableRepair && typeof content === 'string' && content.trim()) {
-          try {
-            const repaired = await repairSentraPersona(content, { agent: this.agent, model: getEnv('REPAIR_AI_MODEL') });
-            const extracted = extractXMLTag(repaired, 'sentra-persona');
-            if (extracted) {
-              personaXML = extracted;
-            }
-          } catch (repairErr) {
-            logger.warn('画像格式修复失败', repairErr);
-          }
-        }
-      }
-      
-      if (!personaXML) {
         logger.error('解析画像失败：未找到 <sentra-persona> 标签');
         return null;
       }
@@ -563,14 +559,7 @@ class UserPersonaManager {
       
     } catch (error) {
       logger.error('解析画像异常', error);
-      
-      // 最终降级方案
-      return {
-        summary: '解析失败，保留原始内容',
-        _raw_content: content,
-        _error: error.message,
-        confidence: 'low'
-      };
+      return null;
     }
   }
   

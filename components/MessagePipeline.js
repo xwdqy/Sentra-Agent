@@ -7,6 +7,7 @@ import {
   buildSentraToolsBlockFromInvocations
 } from '../utils/protocolUtils.js';
 import { judgeReplySimilarity } from '../utils/replySimilarityJudge.js';
+import { generateToolPreReply } from './ToolPreReplyGenerator.js';
 
 import { createRagSdk } from 'sentra-rag';
 import { textSegmentation } from '../src/segmentation.js';
@@ -26,6 +27,12 @@ function ensureRagEnvLoaded() {
     const ragEnvPath = path.resolve(__dirname, '..', 'sentra-rag', '.env');
     loadEnv(ragEnvPath);
   } catch {}
+}
+
+function getToolPreReplyRuntimeConfig() {
+  return {
+    enabled: getEnvBool('ENABLE_TOOL_PREREPLY', true)
+  };
 }
 
 let ragSdkPromise = null;
@@ -519,6 +526,7 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
   let currentUserContent = '';
   let isCancelled = false; // 任务取消标记：检测到新消息时设置为 true
   let hasReplied = false; // 引用控制标记：记录是否已经发送过第一次回复（只有第一次引用消息）
+  let hasToolPreReplied = false;
   let hasSupplementDuringTask = false; // 本次任务期间是否检测到补充消息，用于单次吞吐控制
   let endedBySchedule = false; // 当遇到 schedule 延迟任务并成功入队时，提前结束本轮事件循环
   const pendingToolArgsByStepIndex = new Map();
@@ -1469,6 +1477,49 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
 
           pairId = null;
           return;
+        }
+
+        try {
+          const cfg = getToolPreReplyRuntimeConfig();
+          if (cfg.enabled && !hasToolPreReplied && !isCancelled) {
+            const senderMsgsNow = getAllSenderMessages();
+            const latestMsgJudgeNeed = senderMsgsNow[senderMsgsNow.length - 1] || msg;
+
+            const baseUserContentNoRoot = (() => {
+              if (isProactive && !isProactiveFirst) return '';
+              const pendingContextXml = historyManager.getPendingMessagesContext(groupId, userid);
+              const userQuestionXml = buildSentraUserQuestionBlock(latestMsgJudgeNeed);
+              return pendingContextXml
+                ? pendingContextXml + '\n\n' + userQuestionXml
+                : userQuestionXml;
+            })();
+
+            const preReplyRaw = await generateToolPreReply({
+              chatWithRetry,
+              model: MAIN_AI_MODEL,
+              groupId,
+              baseConversations: conversations,
+              userContentNoRoot: baseUserContentNoRoot,
+              judgeSummary: ev.summary,
+              toolNames: ev.toolNames,
+              originalRootXml: proactiveRootXml,
+              timeoutMs: getEnvInt('TOOL_PREREPLY_TIMEOUT_MS', 6000)
+            });
+
+            if (preReplyRaw) {
+              const preReply = ensureSentraResponseHasTarget(preReplyRaw, msg);
+
+              hasReplied = true;
+              hasToolPreReplied = true;
+
+              const swallow = shouldSwallowReplyForConversation(conversationId, hasSupplementDuringTask);
+              if (!swallow) {
+                await smartSend(latestMsgJudgeNeed, preReply, sendAndWaitWithConv, true, { hasTool: true });
+              }
+            }
+          }
+        } catch (e) {
+          logger.debug('ToolPreReply: failed', { err: String(e) });
         }
       }
 
