@@ -6,6 +6,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import styles from './TerminalWindow.module.css';
 import { storage } from '../utils/storage';
+import { fontFiles } from 'virtual:sentra-fonts';
 
 interface TerminalWindowProps {
     processId: string;
@@ -70,15 +71,90 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             selectionBackground: 'rgba(226, 232, 240, 0.20)',
         };
 
+        const terminalFontFallback = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Mono", "Courier New", monospace';
+
         const term = new Terminal({
             cursorBlink: true,
             fontSize: 14,
-            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            fontFamily: terminalFontFallback,
             theme: theme || fallbackTheme,
             allowProposedApi: true,
             convertEol: true,
             scrollback: 50000,
         });
+
+        const pickSentraTermFontFile = () => {
+            const files = Array.isArray(fontFiles) ? [...fontFiles] : [];
+            const hit = files.find((f) => /^均衡\.(ttf|otf|woff2?|ttc)$/i.test(String(f || '')));
+            return hit ? String(hit) : '';
+        };
+
+        const autoPickTerminalFontFile = () => {
+            const files = Array.isArray(fontFiles) ? [...fontFiles] : [];
+            const candidates = files
+                .filter((f) => /\.(ttf|otf|woff2?|ttc)$/i.test(String(f || '')))
+                .map((f) => String(f));
+            if (!candidates.length) return '';
+
+            const score = (name: string) => {
+                const n = name.toLowerCase();
+                let s = 0;
+                if (n.includes('jetbrainsmono')) s += 100;
+                if (n.includes('caskaydiacove') || n.includes('cascadiacove')) s += 90;
+                if (n.includes('firacode')) s += 80;
+                if (n.includes('cascadiacode')) s += 70;
+                if (n.includes('nerd')) s += 30;
+                if (n.includes('mono')) s += 15;
+                if (n.includes('regular')) s += 5;
+                if (n.includes('bold')) s -= 4;
+                if (n.includes('italic')) s -= 4;
+                return s;
+            };
+
+            return candidates.sort((a, b) => score(b) - score(a))[0] || '';
+        };
+
+        const forcedFile = pickSentraTermFontFile();
+        const pickedFile = forcedFile || autoPickTerminalFontFile();
+
+        if (pickedFile) {
+            const baseName = String(pickedFile).replace(/\.[^/.]+$/, '');
+            const family = `SentraFont_${baseName.replace(/[^a-zA-Z0-9_-]+/g, '_')}`;
+            void (async () => {
+                try {
+                    const face = new FontFace(family, `url(/fonts/${encodeURIComponent(pickedFile)})`);
+                    await face.load();
+                    document.fonts.add(face);
+
+                    if (forcedFile) {
+                        term.options.fontFamily = `"${family}", ${terminalFontFallback}`;
+                        try {
+                            fitAddonRef.current?.fit();
+                        } catch { }
+                        return;
+                    }
+
+                    let isMono = false;
+                    try {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        if (ctx) {
+                            ctx.font = `16px "${family}", monospace`;
+                            const w1 = ctx.measureText('iiiiiiiiii').width;
+                            const w2 = ctx.measureText('WWWWWWWWWW').width;
+                            isMono = Number.isFinite(w1) && Number.isFinite(w2) && Math.abs(w1 - w2) < 0.5;
+                        }
+                    } catch { }
+
+                    if (isMono) {
+                        term.options.fontFamily = `"${family}", ${terminalFontFallback}`;
+                        try {
+                            fitAddonRef.current?.fit();
+                        } catch { }
+                    }
+                } catch { }
+            })();
+        }
 
         const fitAddon = new FitAddon();
         term.loadAddon(fitAddon);

@@ -14,6 +14,7 @@ interface MacWindowProps {
   zIndex: number;
   isActive: boolean;
   isMinimized: boolean;
+  keepMountedWhenMinimized?: boolean;
   performanceMode?: boolean;
   onClose: () => void;
   onMinimize: () => void;
@@ -34,6 +35,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
   zIndex,
   isActive,
   isMinimized,
+  keepMountedWhenMinimized = false,
   performanceMode = false,
   onClose,
   onMinimize,
@@ -387,6 +389,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
       })(),
       borderRadius: isMaximized ? 0 : 8,
       resize: 'none',
+      display: isMinimized && keepMountedWhenMinimized ? 'none' : undefined,
     } as React.CSSProperties,
     onPointerDownCapture: onFocus,
   };
@@ -433,7 +436,7 @@ export const MacWindow: React.FC<MacWindowProps> = ({
     </>
   );
 
-  if (isMinimized) return null;
+  if (isMinimized && !keepMountedWhenMinimized) return null;
 
   return (
     <motion.div

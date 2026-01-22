@@ -51,6 +51,7 @@ export function DesktopTerminalWindows(props: DesktopTerminalWindowsProps) {
           zIndex={terminal.z}
           isActive={activeTerminalId === terminal.id}
           isMinimized={terminal.minimized}
+          keepMountedWhenMinimized
           performanceMode={performanceMode}
           onClose={() => {
             handleWindowMaximize(terminal.id, false);
