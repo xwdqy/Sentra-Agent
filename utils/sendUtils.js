@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
+import mimeTypes from 'mime-types';
 import { parseSentraResponse } from './protocolUtils.js';
 import { parseTextSegments, buildSegmentMessage } from './messageUtils.js';
 import { getReplyableMessageId, updateConversationHistory } from './conversationUtils.js';
@@ -310,10 +311,31 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
     logger.debug(`处理协议资源: ${res.type} ${source}`);
     if (source) {
       const isHttpUrl = /^https?:\/\//i.test(source);
+      const resolvedLocalPath = (!isHttpUrl) ? _resolveLocalPathFromFileField(source) : '';
+
+      if (isHttpUrl) {
+        const urlPath = source.split('?')[0];
+        const t = String(res?.type || '').trim().toLowerCase();
+        const isLinkType = t === 'link' || t === 'url';
+        const inferredMime = mimeTypes.lookup(urlPath);
+        const mime = typeof inferredMime === 'string' ? inferredMime : '';
+        const isHtml = mime === 'text/html';
+
+        if (!mime || isHtml) {
+          if (isLinkType) {
+            logger.debug(`跳过 HTTP link 资源（无法推断直链文件 MIME）: ${source}`);
+          } else {
+            logger.warn(`HTTP 资源无法推断有效文件 MIME，已跳过: ${source}`, { mime: mime || '(unknown)' });
+          }
+          return;
+        }
+      }
       
       // 本地文件：检查是否存在
-      if (!isHttpUrl && !fs.existsSync(source)) {
-        logger.warn(`协议资源文件不存在: ${source}`);
+      if (!isHttpUrl && (!resolvedLocalPath || !fs.existsSync(resolvedLocalPath))) {
+        logger.warn(`协议资源文件不存在: ${source}`, {
+          resolvedLocalPath: resolvedLocalPath || '(empty)'
+        });
         return;
       }
       
@@ -324,14 +346,18 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
         const urlPath = source.split('?')[0];
         ext = path.extname(urlPath).toLowerCase();
       } else {
-        ext = path.extname(source).toLowerCase();
+        ext = path.extname(resolvedLocalPath || source).toLowerCase();
       }
       
       // 根据扩展名判断文件类型
       let fileType = 'file';
-      if (['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'].includes(ext)) fileType = 'image';
-      else if (['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm'].includes(ext)) fileType = 'video';
-      else if (['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a'].includes(ext)) fileType = 'record';
+      {
+        const inferredMime = mimeTypes.lookup(isHttpUrl ? (source.split('?')[0]) : (resolvedLocalPath || source));
+        const mime = typeof inferredMime === 'string' ? inferredMime : '';
+        if (mime.startsWith('image/')) fileType = 'image';
+        else if (mime.startsWith('video/')) fileType = 'video';
+        else if (mime.startsWith('audio/')) fileType = 'record';
+      }
       
       // 提取文件名
       let fileName = '';
@@ -340,11 +366,11 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
         const urlPath = source.split('?')[0];
         fileName = path.basename(urlPath) || 'download' + ext;
       } else {
-        fileName = path.basename(source);
+        fileName = path.basename(resolvedLocalPath || source);
       }
       
       protocolFiles.push({
-        path: source,
+        path: isHttpUrl ? source : (resolvedLocalPath || source),
         fileName: fileName,
         fileType,
         caption: res.caption,
@@ -914,6 +940,10 @@ export async function smartSend(msg, response, sendAndWaitResult, allowReply = t
 
   if (typeof options.hasTool === 'boolean') {
     meta.hasTool = options.hasTool;
+  }
+
+  if (typeof options.immediate === 'boolean') {
+    meta.immediate = options.immediate;
   }
 
   return replySendQueue.enqueue(async () => {

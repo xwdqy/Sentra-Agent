@@ -87,11 +87,12 @@ class ReplySendQueue {
       const first = this.queue.shift();
       const batch = [first];
       const groupId = first?.meta?.groupId ? String(first.meta.groupId) : null;
+      const immediate = !!first?.meta?.immediate;
 
       const runtimeCfg = getSendQueueRuntimeConfig();
 
       // 在发送前等待一个窗口，收集同一会话的其他待发送任务，用于语义去重
-      if (groupId) {
+      if (groupId && !immediate) {
         logger.debug(`等待 ${this.sendDelayMs}ms 收集同一会话的待发送回复用于去重 (groupId=${groupId})...`);
         await sleep(this.sendDelayMs);
 
@@ -106,6 +107,8 @@ class ReplySendQueue {
         }
         this.queue = remaining;
         logger.debug(`发送阶段语义去重批次组装完成: groupId=${groupId}, 批次大小=${batch.length}, 队列剩余=${this.queue.length}`);
+      } else if (groupId && immediate) {
+        logger.debug(`immediate send: 跳过收集窗口等待 (groupId=${groupId})`);
       }
 
       let selectedIndices = null;
@@ -301,7 +304,7 @@ class ReplySendQueue {
         const hasTextOrResourceForRecent = !!textForRecent || resourcesForRecent.length > 0;
 
         // 跨批次/跨轮的最近已发送去重：仅在资源集合完全一致的前提下，避免在同一会话里前后两轮说几乎一样的话
-        if (groupIdForRecent && hasTextOrResourceForRecent) {
+        if (groupIdForRecent && hasTextOrResourceForRecent && !meta?.immediate) {
           try {
             const recentAction = await this._applyRecentDedupAndMaybeRewrite(groupIdForRecent, meta);
             if (recentAction) {

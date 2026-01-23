@@ -1512,7 +1512,7 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               hasReplied = true;
               hasToolPreReplied = true;
 
-              await smartSend(latestMsgJudgeNeed, preReply, sendAndWaitWithConv, true, { hasTool: true });
+              await smartSend(latestMsgJudgeNeed, preReply, sendAndWaitWithConv, true, { hasTool: true, immediate: true });
 
               try {
                 const preReplyPairId = await historyManager.startAssistantMessage(groupId);
