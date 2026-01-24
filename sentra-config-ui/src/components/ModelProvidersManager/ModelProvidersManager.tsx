@@ -5,8 +5,8 @@ import { testProviderModels } from '../../services/llmProvidersApi.ts';
 import type { ConfigData, EnvVariable } from '../../types/config.ts';
 import type { ToastMessage } from '../Toast';
 import { getDisplayName } from '../../utils/icons.tsx';
-import { Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, InputNumber, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import { OpenAI as OpenAIIcon } from '@lobehub/icons';
+import { Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
 import styles from './ModelProvidersManager.module.css';
 import modelVendorMap from './modelVendorMap.json';
 import llmEnvMapping from './llmEnvMapping.json';
@@ -14,30 +14,46 @@ import {
   ArrowLeftOutlined,
   ApiOutlined,
   AppstoreOutlined,
+  AudioOutlined,
   BgColorsOutlined,
   BulbOutlined,
   CheckOutlined,
+  ClockCircleOutlined,
+  CodeOutlined,
   CopyOutlined,
+  CustomerServiceOutlined,
   DeleteOutlined,
   DownOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
+  FileTextOutlined,
+  GlobalOutlined,
   KeyOutlined,
+  LaptopOutlined,
+  LineChartOutlined,
   LinkOutlined,
   LockOutlined,
   NumberOutlined,
   PictureOutlined,
+  PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
   RightOutlined,
+  SafetyCertificateOutlined,
   SaveOutlined,
   SearchOutlined,
   SettingOutlined,
   SlidersOutlined,
+  SoundOutlined,
+  SwapOutlined,
+  SyncOutlined,
   ThunderboltOutlined,
+  ToolOutlined,
+  TranslationOutlined,
   UploadOutlined,
+  VideoCameraOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
-import { IoBulbOutline, IoChatbubbleEllipsesOutline, IoCodeSlashOutline, IoConstructOutline, IoDocumentTextOutline, IoEyeOutline, IoFlashOutline, IoGlobeOutline, IoLayersOutline, IoLaptopOutline, IoLanguageOutline, IoMicOutline, IoMusicalNotesOutline, IoPlayCircleOutline, IoPulseOutline, IoShieldCheckmarkOutline, IoShuffleOutline, IoTimeOutline, IoVideocamOutline, IoVolumeHighOutline } from 'react-icons/io5';
 import { useDevice } from '../../hooks/useDevice';
 import { storage } from '../../utils/storage';
 
@@ -53,6 +69,7 @@ type Provider = {
   apiKey: string;
   apiKeyHeader: string;
   apiKeyPrefix: string;
+  icon?: CustomIconRef | null;
 };
 
 type CustomIconRef =
@@ -416,34 +433,34 @@ function capStyleVars(capKey: string) {
 }
 
 const CAPABILITY_ICON_MAP: Record<string, ReactNode> = {
-  chatbubble: <IoChatbubbleEllipsesOutline />,
+  chatbubble: <MessageOutlined />,
   eye: <EyeOutlined />,
-  globe: <IoGlobeOutline />,
-  mic: <IoMicOutline />,
-  eye_outline: <IoEyeOutline />,
+  globe: <GlobalOutlined />,
+  mic: <AudioOutlined />,
+  eye_outline: <EyeOutlined />,
   image: <PictureOutlined />,
   brush: <BgColorsOutlined />,
-  music: <IoMusicalNotesOutline />,
-  volume: <IoVolumeHighOutline />,
-  play: <IoPlayCircleOutline />,
-  videocam: <IoVideocamOutline />,
-  layers: <IoLayersOutline />,
-  shuffle: <IoShuffleOutline />,
-  bulb: <IoBulbOutline />,
-  pulse: <IoPulseOutline />,
-  code: <IoCodeSlashOutline />,
-  tool: <IoConstructOutline />,
-  json: <IoDocumentTextOutline />,
-  time: <IoTimeOutline />,
-  shield: <IoShieldCheckmarkOutline />,
-  language: <IoLanguageOutline />,
-  laptop: <IoLaptopOutline />,
+  music: <CustomerServiceOutlined />,
+  volume: <SoundOutlined />,
+  play: <PlayCircleOutlined />,
+  videocam: <VideoCameraOutlined />,
+  layers: <AppstoreOutlined />,
+  shuffle: <SwapOutlined />,
+  bulb: <BulbOutlined />,
+  pulse: <LineChartOutlined />,
+  code: <CodeOutlined />,
+  tool: <ToolOutlined />,
+  json: <FileTextOutlined />,
+  time: <ClockCircleOutlined />,
+  shield: <SafetyCertificateOutlined />,
+  language: <TranslationOutlined />,
+  laptop: <LaptopOutlined />,
 };
 
 function CapabilityIcon(props: { capKey: string }) {
   const icon = capabilityMetaMap.get(String(props.capKey))?.icon;
   const Comp = icon ? CAPABILITY_ICON_MAP[String(icon)] : null;
-  return Comp || <IoFlashOutline />;
+  return Comp || <OpenAIIcon size={16} />;
 }
 
 function inferModelScopeFromItem(it: LlmItem): LlmModelScope {
@@ -532,7 +549,7 @@ function BrandLogo(props: { iconName: string; size: number }) {
   };
 
   const Comp = props.iconName ? getComp(props.iconName) : null;
-  const ultimateFallback = <IoFlashOutline size={props.size} />;
+  const ultimateFallback = <OpenAIIcon size={props.size} />;
   if (!Comp && props.iconName && LOBE_ICON_FULL_LIB) {
     try {
       // eslint-disable-next-line no-console
@@ -659,6 +676,8 @@ function providerTypeFallbackVendor(type: ProviderType): ModelVendor {
 export default function ModelProvidersManager(props: { addToast: (type: ToastMessage['type'], title: string, message?: string) => void }) {
   const addToast = props.addToast;
 
+  const MODELS_COLLAPSE_KEY = 'mpm_models_collapsed';
+
   const { isMobile, isTablet } = useDevice();
   const isCompact = isMobile || isTablet;
 
@@ -666,6 +685,14 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const selectPopupStyles = { popup: { root: { minWidth: 240 } } } as const;
   const [mobilePane, setMobilePane] = useState<'list' | 'detail'>('list');
   const [mobileSection, setMobileSection] = useState<'provider' | 'config' | 'models'>('provider');
+
+  const [modelsCollapsed, setModelsCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(MODELS_COLLAPSE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const [llmMappingState, setLlmMappingState] = useState<LlmMapping>(() => LLM_MAPPING_STATIC);
   const [llmMappingLoading, setLlmMappingLoading] = useState(false);
@@ -737,7 +764,9 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [providerEditorOpen, setProviderEditorOpen] = useState(false);
   const [providerEditorMode, setProviderEditorMode] = useState<'add' | 'edit'>('add');
   const [providerEditorTargetId, setProviderEditorTargetId] = useState<string | null>(null);
+  const [providerEditorIcon, setProviderEditorIcon] = useState<CustomIconRef | null>(null);
   const [providerEditorForm] = Form.useForm<Pick<Provider, 'name' | 'type' | 'enabled' | 'baseUrl' | 'apiKey' | 'apiKeyHeader' | 'apiKeyPrefix'>>();
+  const providerEditorType = Form.useWatch('type', providerEditorForm);
 
   const [mcpPluginName, setMcpPluginName] = useState<string>('');
   const [mcpPluginDrafts, setMcpPluginDrafts] = useState<Record<string, EnvVariable[]>>({});
@@ -745,6 +774,15 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [mcpPluginSaving, setMcpPluginSaving] = useState(false);
   const [mcpPluginGroupCollapsed, setMcpPluginGroupCollapsed] = useState<Record<string, boolean>>({});
   const [mcpPluginShowAllVars, setMcpPluginShowAllVars] = useState(false);
+
+  const isMcpPluginLlmKey = useCallback((key0: string) => {
+    const up = String(key0 || '').toUpperCase();
+    if (!up) return false;
+    if (up.includes('BASE_URL')) return true;
+    if (up.includes('API_KEY') || up.endsWith('_KEY') || up.endsWith('_TOKEN')) return true;
+    if (up.endsWith('_MODEL') || up === 'MODEL') return true;
+    return false;
+  }, []);
 
   const [providers, setProviders] = useState<Provider[]>(() => {
     const stored = storage.getJson<Provider[]>(STORAGE_KEY, { fallback: [] });
@@ -758,6 +796,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
         apiKey: String((p as any).apiKey || ''),
         apiKeyHeader: String((p as any).apiKeyHeader || 'Authorization'),
         apiKeyPrefix: String((p as any).apiKeyPrefix || 'Bearer '),
+        icon: (p as any).icon || null,
       }));
     }
     return [
@@ -770,6 +809,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
         apiKey: '',
         apiKeyHeader: 'Authorization',
         apiKeyPrefix: 'Bearer ',
+        icon: null,
       },
       {
         id: uuidv4(),
@@ -780,6 +820,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
         apiKey: '',
         apiKeyHeader: 'Authorization',
         apiKeyPrefix: 'Bearer ',
+        icon: null,
       },
     ];
   });
@@ -791,6 +832,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
   const [activeId, setActiveId] = useState<string>(() => (providers[0]?.id ? providers[0].id : ''));
   const [busy, setBusy] = useState(false);
+  const [busyProviderId, setBusyProviderId] = useState<string | null>(null);
 
   useEffect(() => {
     storage.setJson(STORAGE_KEY, providers);
@@ -819,70 +861,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   useEffect(() => {
     loadLocalModelOverridesFromFile();
   }, [loadLocalModelOverridesFromFile]);
-
-  useEffect(() => {
-    if (!configData?.modules) return;
-    // Avoid cloning all modules env vars on open (can be thousands of rows).
-    // Keep drafts empty by default; when config reloads, drop non-dirty drafts so UI uses latest configData.
-    setLlmDrafts(prev => {
-      const next = { ...prev };
-      for (const k of Object.keys(next)) {
-        if (!llmDirty[k]) delete next[k];
-      }
-      return next;
-    });
-  }, [configData, llmDirty]);
-
-  const isMcpPluginLlmKey = useCallback((key: string) => {
-    const k = String(key || '').toUpperCase();
-    if (!k) return false;
-    if (k.startsWith('PLUGIN_')) return true;
-    if (k.includes('BASE_URL') || k.includes('API_KEY') || k.endsWith('_MODEL') || k === 'MODEL') return true;
-    if (k.includes('VISION')) return true;
-    return false;
-  }, []);
-
-  const mcpPluginCandidates = useMemo(() => {
-    const ps = Array.isArray(configData?.plugins) ? configData!.plugins : [];
-    return ps
-      .filter(p => Array.isArray(p.variables) && p.variables.some(v => isMcpPluginLlmKey(v.key)))
-      .map(p => p.name)
-      .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b));
-  }, [configData?.plugins, isMcpPluginLlmKey]);
-
-  const mcpPluginDisplayName = useMemo(() => {
-    if (!mcpPluginName) return '';
-    return getDisplayName(mcpPluginName);
-  }, [mcpPluginName]);
-
-  const mcpPluginOptions = useMemo(() => {
-    const opts = mcpPluginCandidates.map(n => ({ name: n, label: getDisplayName(n) }));
-    return opts.sort((a, b) => {
-      const x = a.label.localeCompare(b.label, 'zh-Hans-CN');
-      if (x !== 0) return x;
-      return a.name.localeCompare(b.name);
-    });
-  }, [mcpPluginCandidates]);
-
-  useEffect(() => {
-    if (!configData?.plugins) return;
-    if (!mcpPluginName && mcpPluginCandidates.length) {
-      setMcpPluginName(mcpPluginCandidates[0]);
-    }
-  }, [configData?.plugins, mcpPluginCandidates, mcpPluginDirty, mcpPluginName]);
-
-  useEffect(() => {
-    if (!configData?.plugins) return;
-    // Same as llmDrafts: do not clone all plugin vars on open. Only drop non-dirty drafts on reload.
-    setMcpPluginDrafts(prev => {
-      const next = { ...prev };
-      for (const k of Object.keys(next)) {
-        if (!mcpPluginDirty[k]) delete next[k];
-      }
-      return next;
-    });
-  }, [configData?.plugins, mcpPluginDirty]);
 
   useEffect(() => {
     try {
@@ -936,6 +914,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const openAddProvider = useCallback(() => {
     setProviderEditorMode('add');
     setProviderEditorTargetId(null);
+    setProviderEditorIcon(null);
     providerEditorForm.setFieldsValue({
       name: '新供应商',
       type: 'custom',
@@ -953,6 +932,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     if (!p) return;
     setProviderEditorMode('edit');
     setProviderEditorTargetId(p.id);
+    setProviderEditorIcon(p.icon ? (p.icon as any) : null);
     providerEditorForm.setFieldsValue({
       name: p.name,
       type: p.type,
@@ -970,11 +950,12 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     const payload = {
       name: String(values.name || '').trim() || '未命名供应商',
       type: String(values.type || '').trim() || 'custom',
-      enabled: values.enabled !== false,
-      baseUrl: normalizeBaseUrl(String(values.baseUrl || '')),
+      enabled: Boolean(values.enabled),
+      baseUrl: String(values.baseUrl || '').trim(),
       apiKey: String(values.apiKey || ''),
       apiKeyHeader: String(values.apiKeyHeader || 'Authorization'),
       apiKeyPrefix: String(values.apiKeyPrefix || 'Bearer '),
+      icon: providerEditorIcon,
     };
 
     if (providerEditorMode === 'add') {
@@ -990,7 +971,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   if (!id) return;
   setProviders(prev => prev.map(px => (px.id === id ? { ...px, ...payload } : px)));
   setProviderEditorOpen(false);
-  }, [providerEditorForm, providerEditorMode, providerEditorTargetId]);
+  }, [providerEditorForm, providerEditorIcon, providerEditorMode, providerEditorTargetId]);
 
   const runTestModels = useCallback(async () => {
     if (!activeProvider) return;
@@ -1002,6 +983,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     }
 
     setBusy(true);
+    setBusyProviderId(activeProvider.id);
 
     try {
       const data = await testProviderModels({
@@ -1027,8 +1009,50 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
       addToast('error', '检测失败', msg);
     } finally {
       setBusy(false);
+      setBusyProviderId((prev) => (prev === activeProvider.id ? null : prev));
     }
   }, [activeProvider, addToast]);
+
+  const runTestModelsForProvider = useCallback(async (providerId: string) => {
+    const p = providers.find(x => x.id === providerId);
+    if (!p) return;
+
+    const baseUrl = normalizeBaseUrlV1(p.baseUrl);
+    if (!baseUrl) {
+      addToast('error', '请填写 API Base URL');
+      return;
+    }
+
+    setBusy(true);
+    setBusyProviderId(p.id);
+
+    try {
+      const data = await testProviderModels({
+        baseUrl,
+        apiKey: p.apiKey,
+        apiKeyHeader: 'Authorization',
+        apiKeyPrefix: 'Bearer ',
+        debug: true,
+      });
+
+      const models = Array.isArray((data as any)?.models) ? (data as any).models : [];
+      setModelsCache(prev => ({
+        ...prev,
+        [p.id]: {
+          fetchedAt: Date.now(),
+          models,
+        }
+      }));
+
+      addToast('success', '检索成功', `${p.name || '供应商'}：已获取 ${models.length} 个模型`);
+    } catch (e: any) {
+      const msg = e?.message ? String(e.message) : String(e);
+      addToast('error', '检索失败', msg);
+    } finally {
+      setBusy(false);
+      setBusyProviderId((prev) => (prev === p.id ? null : prev));
+    }
+  }, [addToast, providers]);
 
   const activeModelsEntry = activeProvider ? modelsCache[activeProvider.id] : undefined;
   const activeModels = Array.isArray(activeModelsEntry?.models) ? activeModelsEntry?.models : [];
@@ -1083,70 +1107,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     }
     return Array.from(set.values()).sort((a, b) => a.localeCompare(b)).map(k => ({ value: k, label: labelOf(k) }));
   }, []);
-
-  const providerTableColumns: ColumnsType<Provider> = useMemo(() => {
-    return [
-      {
-        title: '供应商',
-        key: 'provider',
-        render: (_: any, p) => (
-          <div className={styles.providerTableRow}>
-            <div className={styles.providerMain}>
-              <div className={styles.logoRound}>
-                <ProviderLogo type={p.type} />
-              </div>
-              <div className={styles.providerText}>
-                <div className={styles.providerName}>{p.name}</div>
-                <div className={styles.providerSub}>{p.baseUrl || '未配置 Base URL'}</div>
-              </div>
-            </div>
-            <div className={styles.providerRowActions}>
-              <Switch
-                size="small"
-                checked={p.enabled}
-                onChange={(next) => setProviders(prev => prev.map(x => x.id === p.id ? { ...x, enabled: next } : x))}
-                onClick={(_checked, e) => {
-                  try { (e as any)?.stopPropagation?.(); } catch {}
-                }}
-              />
-              <Button
-                size="small"
-                type="text"
-                icon={<SettingOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openEditProvider(p.id);
-                }}
-                title="编辑供应商"
-              />
-              <Popconfirm
-                title="删除供应商"
-                description={(
-                  <div style={{ fontSize: 12, lineHeight: 1.6 }}>
-                    <div>确定删除供应商「{p.name || '未命名'}」？</div>
-                    <div style={{ marginTop: 6 }}>此操作会同时清空该供应商的模型缓存。</div>
-                  </div>
-                )}
-                okText="删除"
-                cancelText="取消"
-                okButtonProps={{ danger: true }}
-                onConfirm={() => removeProvider(p.id)}
-              >
-                <Button
-                  size="small"
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={(e) => e.stopPropagation()}
-                  title="删除供应商"
-                />
-              </Popconfirm>
-            </div>
-          </div>
-        )
-      }
-    ];
-  }, [openEditProvider, removeProvider]);
 
   const llmModuleConfig = useMemo(() => {
     return configData?.modules?.find(x => x.name === llmModule) || null;
@@ -1227,6 +1187,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   const [modelSettingsIcon, setModelSettingsIcon] = useState<CustomIconRef | null>(null);
   const [modelSettingsCaps, setModelSettingsCaps] = useState<string[]>([]);
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [iconPickerTarget, setIconPickerTarget] = useState<'model' | 'provider'>('model');
   const [lobeIconLibReady, setLobeIconLibReady] = useState(false);
   const [iconSearch, setIconSearch] = useState('');
   const [capabilitySearch, setCapabilitySearch] = useState('');
@@ -1488,10 +1449,25 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
   }, [llmModuleMapping, llmVarsMap]);
 
   const activeMcpPluginConfig = useMemo(() => {
-    if (!mcpPluginName) return null;
     const ps = Array.isArray(configData?.plugins) ? configData!.plugins : [];
     return ps.find(p => p.name === mcpPluginName) || null;
   }, [configData?.plugins, mcpPluginName]);
+
+  const mcpPluginDisplayName = useMemo(() => {
+    const raw = (activeMcpPluginConfig as any)?.displayName ?? (activeMcpPluginConfig as any)?.title;
+    return raw != null ? String(raw) : '';
+  }, [activeMcpPluginConfig]);
+
+  const mcpPluginOptions = useMemo(() => {
+    const ps = Array.isArray(configData?.plugins) ? configData!.plugins : [];
+    const opts = ps.map((p: any) => {
+      const name = String(p?.name || '').trim();
+      const label = name ? (getDisplayName(name) || name) : '';
+      return { name, label };
+    }).filter(o => o.name);
+    opts.sort((a, b) => a.label.localeCompare(b.label));
+    return opts;
+  }, [configData?.plugins]);
 
   const activeMcpPluginVars = useMemo(() => {
     if (!mcpPluginName) return [];
@@ -1882,24 +1858,108 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
         </div>
 
         <div className={styles.providerListScroll}>
-          <Table
-            className={styles.providerTable}
+          <List
+            className={styles.providerListAntd}
             dataSource={filteredProviders}
-            columns={providerTableColumns}
-            rowKey={(r) => r.id}
-            pagination={false}
-            size="small"
-            showHeader={false}
+            split={false}
             locale={{
               emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无供应商" />,
             }}
-            rowClassName={(r) => (r.id === activeId ? styles.providerTableRowActive : '')}
-            onRow={(r) => ({
-              onClick: () => {
-                setActiveId(r.id);
-                if (isCompact) setMobilePane('detail');
-              }
-            })}
+            renderItem={(p) => {
+              const active = p.id === activeId;
+              const tooltipTitle = (
+                <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                  <div style={{ fontWeight: 650 }}>{p.name || '未命名'}</div>
+                  <div style={{ opacity: 0.85 }}>{p.baseUrl || '未配置 Base URL'}</div>
+                </div>
+              );
+
+              return (
+                <List.Item
+                  className={[styles.providerListItem, active ? styles.providerListItemActive : ''].filter(Boolean).join(' ')}
+                  onClick={() => {
+                    setActiveId(p.id);
+                    if (isCompact) setMobilePane('detail');
+                  }}
+                >
+                  <div className={styles.providerListItemInner}>
+                    <div className={styles.providerMain}>
+                      <div className={styles.logoRound}>
+                        {p.icon ? (
+                          <CustomIcon icon={p.icon as any} size={18} />
+                        ) : (
+                          <ProviderLogo type={p.type} />
+                        )}
+                      </div>
+
+                      <div className={styles.providerText}>
+                        <Typography.Text
+                          className={styles.providerNameText}
+                          ellipsis={{ tooltip: tooltipTitle }}
+                        >
+                          {p.name || '未命名'}
+                        </Typography.Text>
+                      </div>
+                    </div>
+
+                    <div className={styles.providerRowActions}>
+                      <Switch
+                        size="small"
+                        checked={p.enabled}
+                        onChange={(next) => setProviders(prev => prev.map(x => x.id === p.id ? { ...x, enabled: next } : x))}
+                        onClick={(_checked, e) => {
+                          try { (e as any)?.stopPropagation?.(); } catch {}
+                        }}
+                      />
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<SyncOutlined />}
+                        loading={busy && busyProviderId === p.id}
+                        disabled={busy && busyProviderId !== p.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void runTestModelsForProvider(p.id);
+                        }}
+                        title="刷新"
+                      />
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<SettingOutlined />}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditProvider(p.id);
+                        }}
+                        title="编辑供应商"
+                      />
+                      <Popconfirm
+                        title="删除供应商"
+                        description={(
+                          <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                            <div>确定删除供应商「{p.name || '未命名'}」？</div>
+                            <div style={{ marginTop: 6 }}>此操作会同时清空该供应商的模型缓存。</div>
+                          </div>
+                        )}
+                        okText="删除"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => removeProvider(p.id)}
+                      >
+                        <Button
+                          size="small"
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={(e) => e.stopPropagation()}
+                          title="删除供应商"
+                        />
+                      </Popconfirm>
+                    </div>
+                  </div>
+                </List.Item>
+              );
+            }}
           />
         </div>
 
@@ -2045,6 +2105,189 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                   />
                 </div>
               </div>
+            </div>
+            ) : null}
+
+            {(!isCompact || mobileSection === 'models') ? (
+            <div className={styles.card}>
+              <div className={styles.modelsHeader}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={modelsCollapsed ? <RightOutlined /> : <DownOutlined />}
+                      onClick={() => {
+                        setModelsCollapsed(prev => {
+                          const next = !prev;
+                          try { localStorage.setItem(MODELS_COLLAPSE_KEY, next ? '1' : '0'); } catch {}
+                          return next;
+                        });
+                      }}
+                      aria-label={modelsCollapsed ? '展开模型列表' : '折叠模型列表'}
+                      title={modelsCollapsed ? '展开' : '折叠'}
+                    />
+                    <div className={styles.cardTitle}>模型</div>
+                    <span className={styles.badgeOff}>{filteredModels.length}</span>
+                  </div>
+                  <div className={styles.cardMeta}>
+                    {activeModelsEntry?.fetchedAt ? `更新时间：${new Date(activeModelsEntry.fetchedAt).toLocaleString()}` : '尚未获取（点击右侧刷新）'}
+                  </div>
+                </div>
+                <div className={styles.modelsHeaderActions}>
+                  <Button
+                    type="primary"
+                    icon={<ReloadOutlined />}
+                    onClick={runTestModels}
+                    loading={busy}
+                    size="small"
+                  >
+                    {busy ? '刷新中...' : '刷新'}
+                  </Button>
+
+                  <Input
+                    className={styles.antdInput}
+                    value={modelSearch}
+                    onChange={(e) => setModelSearch(e.target.value)}
+                    placeholder="搜索模型id或供应商"
+                    allowClear
+                    prefix={<SearchOutlined />}
+                    size="small"
+                    style={{ width: 320, maxWidth: '100%' }}
+                  />
+                </div>
+              </div>
+
+              {!modelsCollapsed ? (
+                <div className={styles.modelsBodyScroll}>
+                  {filteredModels.length === 0 ? (
+                    <>
+                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无模型数据，点击“刷新”获取" />
+                    </>
+                  ) : (
+                    <BrandLogoErrorBoundary
+                      resetKey={`models:${activeProvider?.id || ''}:${activeModelsEntry?.fetchedAt || 0}`}
+                      fallback={<div className={styles.errorBox}>模型列表渲染失败，请重新刷新或切换供应商。</div>}
+                    >
+                      <Collapse
+                        className={styles.modelsCollapse}
+                        size="small"
+                        destroyOnHidden
+                        activeKey={expandedVendorKeys}
+                        onChange={(keys) => {
+                          const arr = Array.isArray(keys) ? keys.map(String) : [String(keys || '')].filter(Boolean);
+                          setCollapsedGroups(prev => {
+                            const next: Record<string, boolean> = { ...prev };
+                            const allKeys = groupedModels.map(g => String(g.vendor.key || g.vendor.label || 'models'));
+                            for (const k of allKeys) {
+                              next[k] = !arr.includes(k);
+                            }
+                            return next;
+                          });
+                        }}
+                        items={groupedModels.map(({ vendor, models: ms }) => {
+                          const key = String(vendor.key || vendor.label || 'models');
+                          const expanded = expandedVendorKeys.includes(key);
+                          return {
+                            key,
+                            label: (
+                              <div className={styles.modelGroupHeaderAntd}>
+                                <div className={styles.groupHeaderLeft}>
+                                  <span className={styles.logoRound} style={{ width: 22, height: 22 }}>
+                                    <BrandLogo iconName={vendor.iconName} size={16} />
+                                  </span>
+                                  <span className={styles.vendorLabel}>{vendor.label}</span>
+                                  <span className={styles.badgeOff}>{ms.length}</span>
+                                </div>
+                              </div>
+                            ),
+                            children: expanded ? (
+                              <Table
+                                className={styles.modelAntdList}
+                                dataSource={ms}
+                                rowKey={(m) => {
+                                  const rawId = (m as any)?.id ?? (m as any)?.model ?? (m as any)?.name;
+                                  const id = rawId != null ? String(rawId).trim() : '';
+                                  return id ? id : formatModelTitle(m);
+                                }}
+                                pagination={false}
+                                size="small"
+                                showHeader={false}
+                                columns={[
+                                  {
+                                    key: 'row',
+                                    render: (_: any, m: any) => {
+                                      if (!activeProvider) return null;
+                                      const inferred = safeInferModelVendor(m, providerTypeFallbackVendor(activeProviderType));
+                                      const title = m?.id != null ? String(m.id) : formatModelTitle(m);
+                                      const override = getModelOverride(activeProvider.id, title);
+                                      const caps = (override?.caps && override.caps.length)
+                                        ? override.caps.map((k: string) => ({ key: k, label: k }))
+                                        : safeInferModelCapabilities(title);
+
+                                      return (
+                                        <div className={styles.modelRow}>
+                                          <div className={styles.modelRowMeta}>
+                                            <div className={styles.logoRound}>
+                                              {override?.icon ? (
+                                                <CustomIcon icon={override.icon as any} size={18} />
+                                              ) : (
+                                                <BrandLogo iconName={inferred.iconName} size={18} />
+                                              )}
+                                            </div>
+                                            <div style={{ minWidth: 0 }}>
+                                              <div className={styles.modelTitle}>{title}</div>
+                                              <div className={styles.modelCaps}>
+                                                {caps.map((cap: any) => (
+                                                  <Tooltip key={cap.key} title={cap.label}>
+                                                    <span
+                                                      className={styles.modelCapIcon}
+                                                      style={capStyleVars(cap.key)}
+                                                      aria-label={cap.key}
+                                                    >
+                                                      <CapabilityIcon capKey={cap.key} />
+                                                    </span>
+                                                  </Tooltip>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          </div>
+
+                                          <div className={styles.modelRowActions}>
+                                            <Button
+                                              key="settings"
+                                              size="small"
+                                              type="text"
+                                              icon={<SettingOutlined />}
+                                              onClick={() => openModelSettings(activeProvider.id, title)}
+                                            />
+                                            <Button
+                                              key="copy"
+                                              size="small"
+                                              type="text"
+                                              icon={<CopyOutlined />}
+                                              onClick={(e) => {
+                                                try { (e as any)?.stopPropagation?.(); } catch {}
+                                                navigator.clipboard?.writeText(String(title || ''))
+                                                  .then(() => addToast('success', '已复制', String(title || '')))
+                                                  .catch((err) => addToast('error', '复制失败', String((err as any)?.message || err)));
+                                              }}
+                                            />
+                                          </div>
+                                        </div>
+                                      );
+                                    },
+                                  },
+                                ]}
+                              />
+                            ) : null,
+                          };
+                        })}
+                      />
+                    </BrandLogoErrorBoundary>
+                  )}
+                </div>
+              ) : null}
             </div>
             ) : null}
 
@@ -2634,171 +2877,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
             </div>
             ) : null}
 
-            {(!isCompact || mobileSection === 'models') ? (
-            <div className={styles.card}>
-              <div className={styles.modelsHeader}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <div className={styles.cardTitle}>模型</div>
-                    <span className={styles.badgeOff}>{filteredModels.length}</span>
-                  </div>
-                  <div className={styles.cardMeta}>
-                    {activeModelsEntry?.fetchedAt ? `更新时间：${new Date(activeModelsEntry.fetchedAt).toLocaleString()}` : '尚未获取（点击下方检测 /v1/models）'}
-                  </div>
-                </div>
-                <div className={styles.modelsHeaderActions}>
-                  <Button
-                    type="primary"
-                    icon={<ApiOutlined />}
-                    onClick={runTestModels}
-                    loading={busy}
-                    size="small"
-                  >
-                    {busy ? '检测中...' : '检测 /v1/models'}
-                  </Button>
-
-                  <Input
-                    className={styles.antdInput}
-                    value={modelSearch}
-                    onChange={(e) => setModelSearch(e.target.value)}
-                    placeholder="搜索模型id或供应商"
-                    allowClear
-                    prefix={<SearchOutlined />}
-                    size="small"
-                    style={{ width: 320, maxWidth: '100%' }}
-                  />
-                </div>
-              </div>
-
-              {filteredModels.length === 0 ? (
-                <>
-                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无模型数据，点击“检测 /v1/models”获取" />
-                </>
-              ) : (
-                <BrandLogoErrorBoundary
-                  resetKey={`models:${activeProvider?.id || ''}:${activeModelsEntry?.fetchedAt || 0}`}
-                  fallback={<div className={styles.errorBox}>模型列表渲染失败，请重新检测或切换供应商。</div>}
-                >
-                  <Collapse
-                    className={styles.modelsCollapse}
-                    size="small"
-                    destroyOnHidden
-                    activeKey={expandedVendorKeys}
-                    onChange={(keys) => {
-                      const arr = Array.isArray(keys) ? keys.map(String) : [String(keys || '')].filter(Boolean);
-                      setCollapsedGroups(prev => {
-                        const next: Record<string, boolean> = { ...prev };
-                        const allKeys = groupedModels.map(g => String(g.vendor.key || g.vendor.label || 'models'));
-                        for (const k of allKeys) {
-                          next[k] = !arr.includes(k);
-                        }
-                        return next;
-                      });
-                    }}
-                    items={groupedModels.map(({ vendor, models: ms }) => {
-                      const key = String(vendor.key || vendor.label || 'models');
-                      const expanded = expandedVendorKeys.includes(key);
-                      return {
-                        key,
-                        label: (
-                          <div className={styles.modelGroupHeaderAntd}>
-                            <div className={styles.groupHeaderLeft}>
-                              <span className={styles.logoRound} style={{ width: 22, height: 22 }}>
-                                <BrandLogo iconName={vendor.iconName} size={16} />
-                              </span>
-                              <span className={styles.vendorLabel}>{vendor.label}</span>
-                              <span className={styles.badgeOff}>{ms.length}</span>
-                            </div>
-                          </div>
-                        ),
-                        children: expanded ? (
-                          <Table
-                            className={styles.modelAntdList}
-                            dataSource={ms}
-                            rowKey={(m) => {
-                              const rawId = (m as any)?.id ?? (m as any)?.model ?? (m as any)?.name;
-                              const id = rawId != null ? String(rawId).trim() : '';
-                              return id ? id : formatModelTitle(m);
-                            }}
-                            pagination={false}
-                            size="small"
-                            showHeader={false}
-                            columns={[
-                              {
-                                key: 'row',
-                                render: (_: any, m: any) => {
-                                  if (!activeProvider) return null;
-                                  const inferred = safeInferModelVendor(m, providerTypeFallbackVendor(activeProviderType));
-                                  const title = m?.id != null ? String(m.id) : formatModelTitle(m);
-                                  const override = getModelOverride(activeProvider.id, title);
-                                  const caps = (override?.caps && override.caps.length)
-                                    ? override.caps.map((k: string) => ({ key: k, label: k }))
-                                    : safeInferModelCapabilities(title);
-
-                                  return (
-                                    <div className={styles.modelRow}>
-                                      <div className={styles.modelRowMeta}>
-                                        <div className={styles.logoRound}>
-                                          {override?.icon ? (
-                                            <CustomIcon icon={override.icon as any} size={18} />
-                                          ) : (
-                                            <BrandLogo iconName={inferred.iconName} size={18} />
-                                          )}
-                                        </div>
-                                        <div style={{ minWidth: 0 }}>
-                                          <div className={styles.modelTitle}>{title}</div>
-                                          <div className={styles.modelCaps}>
-                                            {caps.map((cap: any) => (
-                                              <Tooltip key={cap.key} title={cap.label}>
-                                                <span
-                                                  className={styles.modelCapIcon}
-                                                  style={capStyleVars(cap.key)}
-                                                  aria-label={cap.key}
-                                                >
-                                                  <CapabilityIcon capKey={cap.key} />
-                                                </span>
-                                              </Tooltip>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      </div>
-
-                                      <div className={styles.modelRowActions}>
-                                        <Button
-                                          key="settings"
-                                          size="small"
-                                          type="text"
-                                          icon={<SettingOutlined />}
-                                          onClick={() => openModelSettings(activeProvider.id, title)}
-                                        />
-                                        <Button
-                                          key="copy"
-                                          size="small"
-                                          type="text"
-                                          icon={<CopyOutlined />}
-                                          onClick={(e) => {
-                                            try { (e as any)?.stopPropagation?.(); } catch {}
-                                            navigator.clipboard?.writeText(String(title || ''))
-                                              .then(() => addToast('success', '已复制', String(title || '')))
-                                              .catch((err) => addToast('error', '复制失败', String((err as any)?.message || err)));
-                                          }}
-                                        />
-                                      </div>
-                                    </div>
-                                  );
-                                },
-                              },
-                            ]}
-                          />
-                        ) : null,
-                      };
-                    })}
-                  />
-                </BrandLogoErrorBoundary>
-              )}
-            </div>
-            ) : null}
-
             <Modal
               title="模型设置"
               open={modelSettingsOpen}
@@ -2838,7 +2916,10 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                               type="text"
                               size="small"
                               icon={<BgColorsOutlined />}
-                              onClick={() => setIconPickerOpen(true)}
+                              onClick={() => {
+                                setIconPickerTarget('model');
+                                setIconPickerOpen(true);
+                              }}
                             />
                           </Tooltip>
                           <Upload
@@ -2985,7 +3066,8 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                     size="small"
                     className={styles.iconGridBtn}
                     onClick={() => {
-                      setModelSettingsIcon({ type: 'lobe', iconName: name });
+                      if (iconPickerTarget === 'provider') setProviderEditorIcon({ type: 'lobe', iconName: name });
+                      else setModelSettingsIcon({ type: 'lobe', iconName: name });
                       setIconPickerOpen(false);
                     }}
                     title={name}
@@ -3013,6 +3095,61 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
           layout="vertical"
           initialValues={{ enabled: true, apiKeyHeader: 'Authorization', apiKeyPrefix: 'Bearer ' }}
         >
+          <Form.Item label="供应商图标" extra="可选：优先显示自定义图标（仅保存在浏览器本地）">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <span className={styles.logoRound} style={{ width: 34, height: 34 }}>
+                {providerEditorIcon ? (
+                  <CustomIcon icon={providerEditorIcon} size={20} />
+                ) : (
+                  <ProviderLogo type={String(providerEditorType || 'custom')} />
+                )}
+              </span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <Tooltip title="选择图标（Lobe Icons）">
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<BgColorsOutlined />}
+                    onClick={() => {
+                      setIconPickerTarget('provider');
+                      setIconPickerOpen(true);
+                    }}
+                  />
+                </Tooltip>
+                <Upload
+                  accept="image/*"
+                  showUploadList={false}
+                  beforeUpload={(file) => {
+                    const f = file as any;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const dataUrl = String(reader.result || '');
+                      if (!dataUrl.startsWith('data:image/')) {
+                        addToast('error', '图片格式不支持');
+                        return;
+                      }
+                      setProviderEditorIcon({ type: 'upload', dataUrl });
+                    };
+                    reader.readAsDataURL(f);
+                    return false;
+                  }}
+                >
+                  <Tooltip title="上传图片">
+                    <Button type="text" size="small" icon={<UploadOutlined />} />
+                  </Tooltip>
+                </Upload>
+                <Tooltip title="清除自定义图标">
+                  <Button
+                    type="text"
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    onClick={() => setProviderEditorIcon(null)}
+                  />
+                </Tooltip>
+              </div>
+            </div>
+          </Form.Item>
           <Form.Item label="供应商名称" name="name" rules={[{ required: true, message: '请输入供应商名称' }]}>
             <Input placeholder="例如：OpenAI / Gemini / 自建服务" />
           </Form.Item>

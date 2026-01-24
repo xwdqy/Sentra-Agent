@@ -215,48 +215,75 @@
   font-weight: 800;
 }
 
-.providerTable :global(.ant-table) {
-  background: transparent;
-  table-layout: fixed;
+.providerListAntd {
   width: 100%;
+  min-width: 0;
+  overflow: hidden;
+ }
+
+.providerListAntd :global(.ant-list) {
+  min-width: 0;
 }
 
-.providerTable :global(.ant-table-container) {
+.providerListAntd :global(.ant-list-items) {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.providerListAntd :global(.ant-list-item) {
+  padding: 0;
+  border: none;
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+ }
+
+.providerListItem {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--mpm-border);
   border-radius: 14px;
-  overflow: hidden;
-  background: var(--mpm-surface-2);
+  background: var(--mpm-surface-1);
+  cursor: pointer;
+  box-sizing: border-box;
+ }
+
+.providerListItem:hover {
+  background: var(--mpm-surface-1-hover);
 }
 
-.providerTable :global(.ant-table-tbody > tr > td) {
-  border-bottom: 1px solid var(--mpm-border);
-  padding: 10px 10px;
-  overflow: hidden;
+.providerListItemActive {
+  border-color: var(--mpm-active-border);
+  background: var(--mpm-active-bg);
 }
 
-.providerTableRowActive :global(td) {
-  background: var(--mpm-active-bg) !important;
-}
+.providerListItemInner {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 10px;
+  overflow: hidden;
+  box-sizing: border-box;
+ }
 
 .providerRowActions {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
   flex: 0 0 auto;
   flex-shrink: 0;
   white-space: nowrap;
-  margin-left: auto;
-}
-
-.providerTableRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
   width: 100%;
-  min-width: 0;
-  flex-wrap: wrap;
-  row-gap: 6px;
 }
 
 .modelsCollapse :global(.ant-collapse) {
@@ -454,6 +481,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 
 @media (max-width: 820px) {
@@ -554,9 +582,11 @@
 
 .providerListScroll {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-top: 10px;
   padding-bottom: 10px;
+  min-width: 0;
 }
 
 .addBar {
@@ -727,6 +757,61 @@
 .providerText {
   min-width: 0;
   overflow: hidden;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding-left: 2px;
+}
+
+.providerNameText {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.providerNameWrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.providerOneLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.providerOneLineName {
+  font-weight: 750;
+  font-size: 13px;
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.providerOneLineSep {
+  color: var(--mpm-muted-2);
+  flex: 0 0 auto;
+}
+
+.providerOneLineUrl {
+  font-size: 12px;
+  color: var(--mpm-muted-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .providerName {
@@ -1160,6 +1245,12 @@
   row-gap: 10px;
   min-width: 0;
   max-width: 100%;
+}
+
+.modelsBodyScroll {
+  height: 320px;
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .modelsSearch {
