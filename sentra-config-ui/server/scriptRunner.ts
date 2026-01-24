@@ -96,6 +96,7 @@ export class ScriptRunner {
         } catch { }
 
         let proc;
+        const windowsHide = os.platform() === 'win32';
         if (scriptName === 'sentiment') {
             // Special handling for Sentra Emo (Python FastAPI service)
             const scriptPath = 'run.py';
@@ -118,12 +119,14 @@ export class ScriptRunner {
                 proc = spawn('uv', ['run', 'python', scriptPath, ...args], {
                     cwd,
                     env: baseEnv,
+                    windowsHide,
                 });
             } else {
                 // Fallback: plain Python
                 proc = spawn('python', [scriptPath, ...args], {
                     cwd,
                     env: baseEnv,
+                    windowsHide,
                 });
             }
         } else {
@@ -138,6 +141,7 @@ export class ScriptRunner {
                     TERM: 'xterm-256color',
                     COLORTERM: 'truecolor',
                 },
+                windowsHide,
             });
         }
 
@@ -211,6 +215,8 @@ export class ScriptRunner {
 
         const id = `shell-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const emitter = new EventEmitter();
+
+        const windowsHide = os.platform() === 'win32';
 
         let runtimeEnv: Record<string, string> = {};
         try {
@@ -294,6 +300,7 @@ export class ScriptRunner {
         const proc = spawn(cmd, cmdArgs, {
             cwd: process.cwd(),
             env: baseEnv,
+            windowsHide,
         });
 
         const scriptProcess: ScriptProcess = {

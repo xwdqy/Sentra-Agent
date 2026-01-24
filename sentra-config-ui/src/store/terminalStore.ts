@@ -25,6 +25,7 @@ function ensureLegacyCleanup() {
 
 const TERMINAL_WINDOWS_KEY = 'sentra_terminal_windows_v2';
 const ACTIVE_TERMINAL_ID_KEY = 'sentra_active_terminal_id_v2';
+ const TERMINAL_BOOT_KEY = 'sentra_terminal_boot_v2';
 
 let persistTimer: number | null = null;
 let persisted = false;
@@ -46,8 +47,6 @@ function flushPersist() {
   const st = useTerminalStore.getState();
   storage.setJson(TERMINAL_WINDOWS_KEY, st.terminalWindows, 'session');
   storage.setString(ACTIVE_TERMINAL_ID_KEY, st.activeTerminalId || '', 'session');
-  storage.setJson(TERMINAL_WINDOWS_KEY, st.terminalWindows, 'local');
-  storage.setString(ACTIVE_TERMINAL_ID_KEY, st.activeTerminalId || '', 'local');
 }
 
 function ensurePersistenceHooks() {
@@ -102,15 +101,21 @@ export const useTerminalStore = create<TerminalStore>((set) => {
   ensureLegacyCleanup();
   ensurePersistenceHooks();
 
+  const boot = storage.getString(TERMINAL_BOOT_KEY, { backend: 'session', fallback: '' });
+  const isColdStart = !boot;
+  if (isColdStart) {
+    try { storage.setString(TERMINAL_BOOT_KEY, String(Date.now()), 'session'); } catch { }
+    try { storage.remove(TERMINAL_WINDOWS_KEY, 'local'); } catch { }
+    try { storage.remove(ACTIVE_TERMINAL_ID_KEY, 'local'); } catch { }
+  }
+
   const persistedWindowsSession = storage.getJson<any>(TERMINAL_WINDOWS_KEY, { backend: 'session', fallback: [] });
-  const persistedWindowsLocal = storage.getJson<any>(TERMINAL_WINDOWS_KEY, { backend: 'local', fallback: [] });
   const terminalWindows = normalizePersistedTerminals(
-    Array.isArray(persistedWindowsSession) && persistedWindowsSession.length ? persistedWindowsSession : persistedWindowsLocal
+    Array.isArray(persistedWindowsSession) ? persistedWindowsSession : []
   );
 
   const savedActiveSession = storage.getString(ACTIVE_TERMINAL_ID_KEY, { backend: 'session', fallback: '' });
-  const savedActiveLocal = storage.getString(ACTIVE_TERMINAL_ID_KEY, { backend: 'local', fallback: '' });
-  const savedActive = savedActiveSession || savedActiveLocal;
+  const savedActive = savedActiveSession;
   const activeTerminalId = savedActive ? savedActive : null;
 
   const setTerminalWindows: SetTerminalWindows = (next) => {

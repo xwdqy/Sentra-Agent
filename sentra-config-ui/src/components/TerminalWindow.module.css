@@ -25,9 +25,18 @@
 }
 
 .terminalWrapper :global(.xterm) {
+    font-family: "SentraTerminal", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Mono", "Courier New", monospace !important;
     letter-spacing: 0 !important;
     font-variant-ligatures: none;
     font-feature-settings: "liga" 0, "calt" 0;
+}
+
+.terminalWrapper :global(.xterm *),
+.terminalWrapper :global(.xterm-rows),
+.terminalWrapper :global(.xterm-screen),
+.terminalWrapper :global(.xterm-helper-textarea),
+.terminalWrapper :global(.xterm textarea) {
+    font-family: "SentraTerminal", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Mono", "Courier New", monospace !important;
 }
 
 /* Custom scrollbar for xterm viewport */

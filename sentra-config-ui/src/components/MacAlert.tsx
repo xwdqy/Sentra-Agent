@@ -5,12 +5,13 @@ import { SentraIcon } from './SentraIcon';
 interface MacAlertProps {
     isOpen: boolean;
     title: string;
-    message: string;
+    message: React.ReactNode;
     onClose: () => void;
     onConfirm: () => void;
     confirmText?: string;
     cancelText?: string;
     isDanger?: boolean;
+    showCancel?: boolean;
 }
 
 export const MacAlert: React.FC<MacAlertProps> = ({
@@ -22,6 +23,7 @@ export const MacAlert: React.FC<MacAlertProps> = ({
     confirmText = 'OK',
     cancelText = 'Cancel',
     isDanger = false,
+    showCancel = true,
 }) => {
     return (
         <AnimatePresence>
@@ -72,40 +74,58 @@ export const MacAlert: React.FC<MacAlertProps> = ({
                         }}>
                             {title}
                         </h3>
-                        <p style={{
-                            margin: '0 0 24px 0',
-                            fontSize: '13px',
-                            color: 'var(--sentra-muted-fg)',
-                            lineHeight: '1.4'
-                        }}>
-                            {message}
-                        </p>
+                        {typeof message === 'string' ? (
+                            <p style={{
+                                margin: '0 0 24px 0',
+                                fontSize: '13px',
+                                color: 'var(--sentra-muted-fg)',
+                                lineHeight: '1.4',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                            }}>
+                                {message}
+                            </p>
+                        ) : (
+                            <div style={{
+                                margin: '0 0 24px 0',
+                                fontSize: '13px',
+                                color: 'var(--sentra-muted-fg)',
+                                lineHeight: '1.4',
+                                width: '100%',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                            }}>
+                                {message}
+                            </div>
+                        )}
                         <div style={{
                             display: 'flex',
                             gap: 12,
                             width: '100%',
                             justifyContent: 'flex-end'
                         }}>
-                            <button
-                                onClick={onClose}
-                                style={{
-                                    flex: 1,
-                                    padding: '6px 12px',
-                                    borderRadius: '6px',
-                                    border: '1px solid var(--sentra-border)',
-                                    background: 'var(--sentra-glass-bg-strong)',
-                                    fontSize: '13px',
-                                    fontWeight: 500,
-                                    color: 'var(--sentra-fg)',
-                                    cursor: 'pointer',
-                                    outline: 'none',
-                                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                                }}
-                                onMouseOver={e => e.currentTarget.style.background = 'rgba(var(--sentra-accent-rgb), 0.10)'}
-                                onMouseOut={e => e.currentTarget.style.background = 'var(--sentra-glass-bg-strong)'}
-                            >
-                                {cancelText}
-                            </button>
+                            {showCancel ? (
+                                <button
+                                    onClick={onClose}
+                                    style={{
+                                        flex: 1,
+                                        padding: '6px 12px',
+                                        borderRadius: '6px',
+                                        border: '1px solid var(--sentra-border)',
+                                        background: 'var(--sentra-glass-bg-strong)',
+                                        fontSize: '13px',
+                                        fontWeight: 500,
+                                        color: 'var(--sentra-fg)',
+                                        cursor: 'pointer',
+                                        outline: 'none',
+                                        boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                                    }}
+                                    onMouseOver={e => e.currentTarget.style.background = 'rgba(var(--sentra-accent-rgb), 0.10)'}
+                                    onMouseOut={e => e.currentTarget.style.background = 'var(--sentra-glass-bg-strong)'}
+                                >
+                                    {cancelText}
+                                </button>
+                            ) : null}
                             <button
                                 onClick={() => {
                                     onConfirm();

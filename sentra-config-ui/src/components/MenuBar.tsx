@@ -23,6 +23,7 @@ import {
 } from '@ant-design/icons';
 import { fontFiles } from 'virtual:sentra-fonts';
 import { storage } from '../utils/storage';
+import { getAuthHeaders } from '../services/api';
 
 interface MenuBarProps {
   title?: string;
@@ -71,6 +72,10 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   const [showSpotlight, setShowSpotlight] = useState(false);
   const [showAccentPicker, setShowAccentPicker] = useState(false);
   const [showFontPicker, setShowFontPicker] = useState(false);
+  const [showNetworkAlert, setShowNetworkAlert] = useState(false);
+  const [networkLoading, setNetworkLoading] = useState(false);
+  const [networkInfo, setNetworkInfo] = useState<any>(null);
+  const [networkError, setNetworkError] = useState<string>('');
   const [spotlightQuery, setSpotlightQuery] = useState('');
   const accentButtonRef = useRef<HTMLDivElement | null>(null);
   const [accentPickerPos, setAccentPickerPos] = useState<{ top: number; left: number; width: number } | null>(null);
@@ -176,16 +181,77 @@ export const MenuBar: React.FC<MenuBarProps> = ({
   const [showRestartAlert, setShowRestartAlert] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
 
+  const waitForServerReady = async () => {
+    const timeoutMs = 60_000;
+    const pollMs = 400;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const controller = new AbortController();
+        const t = window.setTimeout(() => controller.abort(), 2000);
+        const res = await fetch('/api/health', { cache: 'no-store', signal: controller.signal });
+        window.clearTimeout(t);
+        if (res.ok) return true;
+      } catch {
+        // ignore
+      }
+      await new Promise<void>(r => window.setTimeout(r, pollMs));
+    }
+    return false;
+  };
+
   const handleRestartConfirm = async () => {
     setIsRestarting(true);
     try {
-      await fetch('/api/system/restart', { method: 'POST' });
-      setTimeout(() => {
+      const res = await fetch('/api/system/restart', {
+        method: 'POST',
+        headers: getAuthHeaders({ json: false }),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        setIsRestarting(false);
+        alert(`Failed to restart system: ${res.status} ${res.statusText}${text ? `\n${text}` : ''}`);
+        return;
+      }
+      const ok = await waitForServerReady();
+      if (ok) {
         window.location.reload();
-      }, 5000);
+        return;
+      }
+      setIsRestarting(false);
+      alert('Restart started, but timed out waiting for server to come back online. Please refresh the page manually.');
     } catch (e) {
       setIsRestarting(false);
       alert('Failed to restart system: ' + e);
+    }
+  };
+
+  const fetchNetworkInfo = async () => {
+    setNetworkLoading(true);
+    setNetworkError('');
+    try {
+      const controller = new AbortController();
+      const t = window.setTimeout(() => controller.abort(), 5000);
+      const res = await fetch('/api/system/network', {
+        method: 'GET',
+        headers: getAuthHeaders({ json: false }),
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      window.clearTimeout(t);
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        setNetworkError(`HTTP ${res.status} ${res.statusText}${text ? `\n${text}` : ''}`);
+        setNetworkInfo(null);
+        return;
+      }
+      const data: any = await res.json().catch(() => null);
+      setNetworkInfo(data);
+    } catch (e) {
+      setNetworkError(e instanceof Error ? e.message : String(e));
+      setNetworkInfo(null);
+    } finally {
+      setNetworkLoading(false);
     }
   };
 
@@ -336,7 +402,20 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             </div>
           </Tooltip>
           <Tooltip title="网络">
-            <div className={styles.menuItem} aria-label="网络">
+            <div
+              className={styles.menuItem}
+              aria-label="网络"
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveMenu(null);
+                setShowControlCenter(false);
+                setShowAccentPicker(false);
+                setShowFontPicker(false);
+                setShowSpotlight(false);
+                setShowNetworkAlert(true);
+                void fetchNetworkInfo();
+              }}
+            >
               <WifiOutlined style={{ fontSize: 18 }} />
             </div>
           </Tooltip>
@@ -399,6 +478,53 @@ export const MenuBar: React.FC<MenuBarProps> = ({
         confirmText="重启"
         cancelText="取消"
         isDanger={true}
+      />
+
+      <MacAlert
+        isOpen={showNetworkAlert}
+        title="网络信息"
+        message={(
+          <div style={{ textAlign: 'left' }}>
+            <div style={{ fontWeight: 600, color: 'var(--sentra-fg)', marginBottom: 6 }}>
+              {networkLoading ? '加载中…' : (networkError ? '获取失败' : '当前网络状态')}
+            </div>
+            {networkError ? (
+              <div style={{ whiteSpace: 'pre-wrap' }}>{networkError}</div>
+            ) : null}
+            {!networkError && networkInfo ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>本机</div>
+                  <div>Hostname: {String(networkInfo?.hostname || '')}</div>
+                  <div>Server Port: {String(networkInfo?.serverPort || '')}</div>
+                  <div>Client Port: {String(networkInfo?.clientPort || '')}</div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>局域网 IP</div>
+                  <div style={{ whiteSpace: 'pre-wrap' }}>
+                    {(Array.isArray(networkInfo?.local) ? networkInfo.local : [])
+                      .filter((x: any) => x && !x.internal && String(x.family || '').toLowerCase().includes('ipv4') && String(x.address || '') && !String(x.address || '').startsWith('169.254.'))
+                      .map((x: any) => `${String(x.name || '')}: ${String(x.address || '')}${x.cidr ? ` (${String(x.cidr)})` : ''}`)
+                      .join('\n') || '未检测到'}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>公网 / 位置</div>
+                  <div>IP: {String(networkInfo?.public?.ip || '')}</div>
+                  <div>ISP/Org: {String(networkInfo?.public?.org || networkInfo?.public?.asn || '')}</div>
+                  <div>Location: {String(networkInfo?.public?.city || '')}{networkInfo?.public?.region ? `, ${String(networkInfo.public.region)}` : ''}{networkInfo?.public?.country_name ? `, ${String(networkInfo.public.country_name)}` : ''}</div>
+                  <div>Timezone: {String(networkInfo?.public?.timezone || '')}</div>
+                  <div>Lat/Lon: {String(networkInfo?.public?.latitude ?? '')}, {String(networkInfo?.public?.longitude ?? '')}</div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+        onClose={() => setShowNetworkAlert(false)}
+        onConfirm={() => {}}
+        confirmText="关闭"
+        showCancel={false}
+        isDanger={false}
       />
 
       {/* Restarting Overlay */}

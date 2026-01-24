@@ -73,7 +73,7 @@ function App() {
 
   // Presets Editor State via hook
   const presetsState = usePresetsEditor(addToast, isAuthenticated);
-  const { desktopIcons, desktopFolders } = useDesktopShortcuts({
+  const { desktopIcons, desktopFolders, updateConfirmDialog } = useDesktopShortcuts({
     recordUsage,
     isPortable,
   });
@@ -145,6 +145,7 @@ function App() {
   if (isMobile || isTablet) {
     return (
       <Suspense fallback={<div className="loading-screen">Loading...</div>}>
+        {updateConfirmDialog}
         <MobileView
           allItems={allItems}
           usageCounts={usageCounts}
@@ -161,6 +162,7 @@ function App() {
   // Desktop View
   return (
     <Suspense fallback={<div className="loading-screen">Loading...</div>}>
+      {updateConfirmDialog}
       <WallpaperEditorModal
         isOpen={wallpaperEditorOpen}
         src={wallpaperEditorSrc}

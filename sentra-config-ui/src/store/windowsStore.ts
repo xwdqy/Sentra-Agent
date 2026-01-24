@@ -25,6 +25,10 @@ type WindowsStore = {
 const WINDOW_Z_START = 1000;
 const WINDOW_Z_MAX = 999_999_900;
 
+const OPEN_WINDOWS_KEY = 'sentra_open_windows';
+const Z_NEXT_KEY = 'sentra_z_next';
+const ACTIVE_WIN_KEY = 'sentra_active_win_id';
+
 let persistTimer: number | null = null;
 let persisted = false;
 
@@ -34,9 +38,12 @@ function schedulePersist() {
   }
   persistTimer = window.setTimeout(() => {
     const st = useWindowsStore.getState();
-    storage.setJson('sentra_open_windows', st.openWindows);
-    const next = Number(st.openWindows.reduce((m, w) => Math.max(m, Number(w.z || 0)), 0) + 1);
-    storage.setNumber('sentra_z_next', Math.min(next, WINDOW_Z_MAX));
+    storage.setJson(OPEN_WINDOWS_KEY, st.openWindows);
+    storage.setString(ACTIVE_WIN_KEY, st.activeWinId || '');
+    const maxZ = st.openWindows.reduce((m, w) => Math.max(m, Number(w.z || 0)), 0);
+    const saved = storage.getNumber(Z_NEXT_KEY, { fallback: 0 });
+    const next = Math.max(saved, maxZ + 1);
+    storage.setNumber(Z_NEXT_KEY, Math.min(next, WINDOW_Z_MAX));
   }, 1000);
 }
 
@@ -46,11 +53,12 @@ function flushPersist() {
     persistTimer = null;
   }
   const st = useWindowsStore.getState();
-  storage.setJson('sentra_open_windows', st.openWindows);
+  storage.setJson(OPEN_WINDOWS_KEY, st.openWindows);
+  storage.setString(ACTIVE_WIN_KEY, st.activeWinId || '');
   const maxZ = st.openWindows.reduce((m, w) => Math.max(m, Number(w.z || 0)), 0);
-  const saved = storage.getNumber('sentra_z_next', { fallback: 0 });
+  const saved = storage.getNumber(Z_NEXT_KEY, { fallback: 0 });
   const next = Math.max(saved, maxZ + 1);
-  storage.setNumber('sentra_z_next', Math.min(next, WINDOW_Z_MAX));
+  storage.setNumber(Z_NEXT_KEY, Math.min(next, WINDOW_Z_MAX));
 }
 
 function ensurePersistenceHooks() {
@@ -106,33 +114,38 @@ function filterVarsByExample(file: FileItem, vars: FileItem['variables']) {
 export const useWindowsStore = create<WindowsStore>((set, get) => {
   ensurePersistenceHooks();
 
-  let openWindows = normalizePersistedWindows(storage.getJson<any>('sentra_open_windows', { fallback: [] }));
+  let openWindows = normalizePersistedWindows(storage.getJson<any>(OPEN_WINDOWS_KEY, { fallback: [] }));
   const persistedMaxZ = openWindows.reduce((m, w) => Math.max(m, Number(w.z || WINDOW_Z_START)), WINDOW_Z_START);
   if (persistedMaxZ >= WINDOW_Z_MAX) {
     const normalized = normalizeWindowZ(openWindows);
     openWindows = normalized.windows;
-    storage.setJson('sentra_open_windows', openWindows);
-    storage.setNumber('sentra_z_next', normalized.zNext);
+    storage.setJson(OPEN_WINDOWS_KEY, openWindows);
+    storage.setNumber(Z_NEXT_KEY, normalized.zNext);
   }
 
-  const savedZ = storage.getNumber('sentra_z_next', { fallback: 0 });
+  const savedZ = storage.getNumber(Z_NEXT_KEY, { fallback: 0 });
   const maxZ = openWindows.reduce((m, w) => Math.max(m, Number(w.z || WINDOW_Z_START)), WINDOW_Z_START) + 1;
   let zNext = Math.min(Math.max(savedZ, maxZ), WINDOW_Z_MAX);
+
+  const savedActive = storage.getString(ACTIVE_WIN_KEY, { fallback: '' });
+  const initialActiveWinId = savedActive && openWindows.some(w => w.id === savedActive && !w.minimized)
+    ? savedActive
+    : null;
 
   const ensureZCapacity = () => {
     if (zNext < WINDOW_Z_MAX) return;
     const normalized = normalizeWindowZ(get().openWindows);
     zNext = normalized.zNext;
     set(prev => ({ ...prev, openWindows: normalized.windows }));
-    storage.setJson('sentra_open_windows', normalized.windows);
-    storage.setNumber('sentra_z_next', zNext);
+    storage.setJson(OPEN_WINDOWS_KEY, normalized.windows);
+    storage.setNumber(Z_NEXT_KEY, zNext);
   };
 
   const allocateZ = () => {
     ensureZCapacity();
     zNext += 1;
     if (zNext >= WINDOW_Z_MAX) ensureZCapacity();
-    storage.setNumber('sentra_z_next', zNext);
+    storage.setNumber(Z_NEXT_KEY, zNext);
     return zNext;
   };
 
@@ -140,7 +153,7 @@ export const useWindowsStore = create<WindowsStore>((set, get) => {
     ensureZCapacity();
     zNext += 1;
     if (zNext >= WINDOW_Z_MAX) ensureZCapacity();
-    storage.setNumber('sentra_z_next', zNext);
+    storage.setNumber(Z_NEXT_KEY, zNext);
     set(prev => ({
       ...prev,
       openWindows: prev.openWindows.map(w => (w.id === id ? { ...w, z: zNext, minimized: false } : w)),
@@ -159,6 +172,7 @@ export const useWindowsStore = create<WindowsStore>((set, get) => {
 
   const setActiveWinId = (id: string | null) => {
     set(prev => ({ ...prev, activeWinId: id }));
+    schedulePersist();
   };
 
   const openWindow = (file: FileItem, opts?: OpenWindowOpts) => {
@@ -177,7 +191,7 @@ export const useWindowsStore = create<WindowsStore>((set, get) => {
     ensureZCapacity();
     zNext += 1;
     if (zNext >= WINDOW_Z_MAX) ensureZCapacity();
-    storage.setNumber('sentra_z_next', zNext);
+    storage.setNumber(Z_NEXT_KEY, zNext);
 
     const win: DeskWindow = {
       id,
@@ -233,7 +247,7 @@ export const useWindowsStore = create<WindowsStore>((set, get) => {
 
   return {
     openWindows,
-    activeWinId: null,
+    activeWinId: initialActiveWinId,
     setOpenWindows,
     setActiveWinId,
     allocateZ,

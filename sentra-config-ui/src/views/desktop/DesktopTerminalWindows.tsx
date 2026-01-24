@@ -88,12 +88,20 @@ export function DesktopTerminalWindows(props: DesktopTerminalWindowsProps) {
                 sessionId={terminal.processId}
                 theme={terminal.theme}
                 headerText={terminal.headerText}
+                onSessionNotFound={() => {
+                  handleWindowMaximize(terminal.id, false);
+                  handleCloseTerminal(terminal.id);
+                }}
               />
             ) : (
               <TerminalWindow
                 processId={terminal.processId}
                 theme={terminal.theme}
                 headerText={terminal.headerText}
+                onProcessNotFound={() => {
+                  handleWindowMaximize(terminal.id, false);
+                  handleCloseTerminal(terminal.id);
+                }}
               />
             )}
           </Suspense>

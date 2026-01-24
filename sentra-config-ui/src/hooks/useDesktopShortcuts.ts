@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import type { AppFolder, DesktopIcon } from '../types/ui';
 import { buildDesktopFolders, buildDesktopIcons } from '../utils/buildDesktopIcons';
 import { useTerminals } from './useTerminals';
 import { useUIStore } from '../store/uiStore';
 import { useWindowsStore } from '../store/windowsStore';
+import { MacAlert } from '../components/MacAlert';
 
 type UseDesktopShortcutsParams = {
   recordUsage: (key: string) => void;
@@ -99,6 +100,40 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     handleRunSentiment,
   } = useTerminals({ addToast, allocateZ });
 
+  const [pendingUpdate, setPendingUpdate] = useState<'update' | 'force' | null>(null);
+
+  const requestUpdateConfirm = useCallback(() => {
+    setPendingUpdate('update');
+  }, []);
+
+  const requestForceUpdateConfirm = useCallback(() => {
+    setPendingUpdate('force');
+  }, []);
+
+  const handleConfirmUpdate = useCallback(() => {
+    if (pendingUpdate === 'force') {
+      handleRunForceUpdate();
+      return;
+    }
+    if (pendingUpdate === 'update') {
+      handleRunUpdate();
+    }
+  }, [handleRunForceUpdate, handleRunUpdate, pendingUpdate]);
+
+  const updateConfirmDialog = React.createElement(MacAlert, {
+    isOpen: pendingUpdate != null,
+    title: pendingUpdate === 'force' ? '强制更新' : '更新',
+    message:
+      pendingUpdate === 'force'
+        ? '强制更新会丢弃本地改动并执行更激进的同步策略，可能导致依赖重装或冲突修复。确定继续吗？'
+        : '将拉取最新代码并更新项目依赖。确定要开始更新吗？',
+    onClose: () => setPendingUpdate(null),
+    onConfirm: handleConfirmUpdate,
+    confirmText: pendingUpdate === 'force' ? '强制更新' : '更新',
+    cancelText: '取消',
+    isDanger: pendingUpdate === 'force',
+  });
+
   const desktopIcons: DesktopIcon[] = useMemo(() => {
     return buildDesktopIcons(
       recordUsage,
@@ -106,8 +141,8 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       handleRunStart,
       handleRunNapcatBuild,
       handleRunNapcatStart,
-      handleRunUpdate,
-      handleRunForceUpdate,
+      requestUpdateConfirm,
+      requestForceUpdateConfirm,
       handleRunSentiment,
       handleOpenPresets,
       handleOpenFileManager,
@@ -133,7 +168,8 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     handleRunNapcatStart,
     handleRunSentiment,
     handleRunStart,
-    handleRunUpdate,
+    requestUpdateConfirm,
+    requestForceUpdateConfirm,
     recordUsage,
   ]);
 
@@ -144,20 +180,20 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       handleRunStart,
       handleRunNapcatBuild,
       handleRunNapcatStart,
-      handleRunUpdate,
-      handleRunForceUpdate,
+      requestUpdateConfirm,
+      requestForceUpdateConfirm,
       handleRunSentiment,
     );
   }, [
     handleRunBootstrap,
-    handleRunForceUpdate,
     handleRunNapcatBuild,
     handleRunNapcatStart,
     handleRunSentiment,
     handleRunStart,
-    handleRunUpdate,
+    requestForceUpdateConfirm,
+    requestUpdateConfirm,
     recordUsage,
   ]);
 
-  return { desktopIcons, desktopFolders } as const;
+  return { desktopIcons, desktopFolders, updateConfirmDialog } as const;
 }

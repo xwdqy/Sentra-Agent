@@ -20,6 +20,7 @@ import { AppFolderModal } from '../components/AppFolderModal';
 import { storage } from '../utils/storage';
 import { useUIStore } from '../store/uiStore';
 import { useWindowsStore } from '../store/windowsStore';
+import { useTerminalStore } from '../store/terminalStore';
 import { useDesktopWindows } from '../hooks/useDesktopWindows';
 import { useOpenWindowWithRefresh } from '../hooks/useOpenWindowWithRefresh';
 import { useTerminals } from '../hooks/useTerminals';
@@ -86,6 +87,8 @@ export const DesktopView = (props: DesktopViewProps) => {
   const bringToFront = useWindowsStore(s => s.bringToFront);
   const allocateZ = useWindowsStore(s => s.allocateZ);
   const closeWindow = useWindowsStore(s => s.closeWindow);
+
+  const setActiveTerminalId = useTerminalStore(s => s.setActiveTerminalId);
 
   const openWindowWithRefresh = useOpenWindowWithRefresh(loadConfigs);
 
@@ -172,9 +175,25 @@ export const DesktopView = (props: DesktopViewProps) => {
     id: string;
     anchorRect?: { left: number; top: number; width: number; height: number };
   } | null>(null);
-  const [activeUtilityId, setActiveUtilityId] = useState<string | null>(null);
+
+  const UTILITY_ACTIVE_KEY = 'sentra_active_utility_id_v1';
+  const UTILITY_ZMAP_KEY = 'sentra_utility_z_map_v1';
+
+  const [activeUtilityId, setActiveUtilityId] = useState<string | null>(() => {
+    return storage.getString(UTILITY_ACTIVE_KEY, { backend: 'session', fallback: '' }) || null;
+  });
   const [maximizedWindowIds, setMaximizedWindowIds] = useState<string[]>([]);
-  const [utilityZMap, setUtilityZMap] = useState<Record<string, number>>({});
+  const [utilityZMap, setUtilityZMap] = useState<Record<string, number>>(() => {
+    return storage.getJson<Record<string, number>>(UTILITY_ZMAP_KEY, { backend: 'session', fallback: {} }) || {};
+  });
+
+  useEffect(() => {
+    storage.setJson(UTILITY_ZMAP_KEY, utilityZMap, 'session');
+  }, [utilityZMap]);
+
+  useEffect(() => {
+    storage.setString(UTILITY_ACTIVE_KEY, activeUtilityId || '', 'session');
+  }, [activeUtilityId]);
 
   const [sideTabsCollapsed, setSideTabsCollapsed] = useState(() => {
     return storage.getBool('sentra_side_tabs_collapsed', { fallback: true });
@@ -291,15 +310,62 @@ export const DesktopView = (props: DesktopViewProps) => {
     }
   }, [performanceMode]);
 
-  const handleActivateWindowFromSide = useCallback((id: string) => {
+  const bringAppToFrontExclusive = useCallback((id: string) => {
     bringToFront(id);
     setActiveUtilityId(null);
-  }, [bringToFront]);
+    setActiveTerminalId(null);
+  }, [bringToFront, setActiveTerminalId]);
 
-  const handleActivateTerminalFromSide = useCallback((id: string) => {
+  const handleActivateWindowFromSide = useCallback((id: string) => {
+    bringAppToFrontExclusive(id);
+  }, [bringAppToFrontExclusive]);
+
+  const bringTerminalToFrontExclusive = useCallback((id: string) => {
     bringTerminalToFront(id);
     setActiveUtilityId(null);
-  }, [bringTerminalToFront]);
+    setActiveWinId(null);
+  }, [bringTerminalToFront, setActiveWinId]);
+
+  useEffect(() => {
+    const hasApp = !!activeWinId;
+    const hasTerm = !!activeTerminalId;
+    const hasUtil = !!activeUtilityId;
+    const count = Number(hasApp) + Number(hasTerm) + Number(hasUtil);
+    if (count <= 1) return;
+
+    const appZ = hasApp ? Number(openWindows.find(w => w.id === activeWinId)?.z || 0) : -1;
+    const termZ = hasTerm ? Number(terminalWindows.find(t => t.id === activeTerminalId)?.z || 0) : -1;
+    const utilZ = hasUtil ? Number(utilityZMap[String(activeUtilityId)] || 0) : -1;
+    const maxZ = Math.max(appZ, termZ, utilZ);
+
+    if (maxZ === appZ) {
+      if (hasTerm) setActiveTerminalId(null);
+      if (hasUtil) setActiveUtilityId(null);
+      return;
+    }
+
+    if (maxZ === termZ) {
+      if (hasApp) setActiveWinId(null);
+      if (hasUtil) setActiveUtilityId(null);
+      return;
+    }
+
+    if (hasApp) setActiveWinId(null);
+    if (hasTerm) setActiveTerminalId(null);
+  }, [
+    activeTerminalId,
+    activeUtilityId,
+    activeWinId,
+    openWindows,
+    setActiveTerminalId,
+    setActiveWinId,
+    terminalWindows,
+    utilityZMap,
+  ]);
+
+  const handleActivateTerminalFromSide = useCallback((id: string) => {
+    bringTerminalToFrontExclusive(id);
+  }, [bringTerminalToFrontExclusive]);
 
   const handleCloseWindowFromSide = useCallback((id: string) => {
     handleWindowMaximize(id, false);
@@ -316,7 +382,14 @@ export const DesktopView = (props: DesktopViewProps) => {
     setUtilityZMap(prev => ({ ...prev, [id]: next }));
     setActiveUtilityId(id);
     setActiveWinId(null);
-  }, [allocateZ, setActiveWinId]);
+    setActiveTerminalId(null);
+  }, [allocateZ, setActiveTerminalId, setActiveWinId]);
+
+  const ensureUtilityZ = useCallback((id: string) => {
+    if (utilityZMap[id] != null) return;
+    const next = allocateZ();
+    setUtilityZMap(prev => ({ ...prev, [id]: next }));
+  }, [allocateZ, utilityZMap]);
 
   useEffect(() => {
     const id = utilityFocusRequestId;
@@ -386,58 +459,58 @@ export const DesktopView = (props: DesktopViewProps) => {
 
   // Ensure utility windows always get a global zIndex on open (unified with desktop windows)
   useEffect(() => {
-    if (devCenterOpen && utilityZMap['dev-center'] == null) {
-      bringUtilityToFront('dev-center');
+    if (devCenterOpen) {
+      ensureUtilityZ('dev-center');
     }
-  }, [devCenterOpen, utilityZMap, bringUtilityToFront]);
+  }, [devCenterOpen, ensureUtilityZ]);
 
   useEffect(() => {
-    if (deepWikiOpen && utilityZMap['deepwiki'] == null) {
-      bringUtilityToFront('deepwiki');
+    if (deepWikiOpen) {
+      ensureUtilityZ('deepwiki');
     }
-  }, [deepWikiOpen, utilityZMap, bringUtilityToFront]);
+  }, [deepWikiOpen, ensureUtilityZ]);
 
   useEffect(() => {
-    if (redisAdminOpen && utilityZMap['redis-admin'] == null) {
-      bringUtilityToFront('redis-admin');
+    if (redisAdminOpen) {
+      ensureUtilityZ('redis-admin');
     }
-  }, [redisAdminOpen, utilityZMap, bringUtilityToFront]);
+  }, [redisAdminOpen, ensureUtilityZ]);
 
   useEffect(() => {
-    if (modelProvidersManagerOpen && utilityZMap['model-providers-manager'] == null) {
-      bringUtilityToFront('model-providers-manager');
+    if (modelProvidersManagerOpen) {
+      ensureUtilityZ('model-providers-manager');
     }
-  }, [modelProvidersManagerOpen, utilityZMap, bringUtilityToFront]);
+  }, [modelProvidersManagerOpen, ensureUtilityZ]);
 
   useEffect(() => {
-    if (emojiStickersManagerOpen && utilityZMap['emoji-stickers-manager'] == null) {
-      bringUtilityToFront('emoji-stickers-manager');
+    if (emojiStickersManagerOpen) {
+      ensureUtilityZ('emoji-stickers-manager');
     }
-  }, [emojiStickersManagerOpen, utilityZMap, bringUtilityToFront]);
+  }, [emojiStickersManagerOpen, ensureUtilityZ]);
 
   useEffect(() => {
-    if (presetsEditorOpen && utilityZMap['presets-editor'] == null) {
-      bringUtilityToFront('presets-editor');
+    if (presetsEditorOpen) {
+      ensureUtilityZ('presets-editor');
     }
-  }, [presetsEditorOpen, utilityZMap, bringUtilityToFront]);
+  }, [presetsEditorOpen, ensureUtilityZ]);
 
   useEffect(() => {
-    if (presetImporterOpen && utilityZMap['preset-importer'] == null) {
-      bringUtilityToFront('preset-importer');
+    if (presetImporterOpen) {
+      ensureUtilityZ('preset-importer');
     }
-  }, [presetImporterOpen, utilityZMap, bringUtilityToFront]);
+  }, [presetImporterOpen, ensureUtilityZ]);
 
   useEffect(() => {
-    if (fileManagerOpen && utilityZMap['file-manager'] == null) {
-      bringUtilityToFront('file-manager');
+    if (fileManagerOpen) {
+      ensureUtilityZ('file-manager');
     }
-  }, [fileManagerOpen, utilityZMap, bringUtilityToFront]);
+  }, [fileManagerOpen, ensureUtilityZ]);
 
   useEffect(() => {
-    if (terminalManagerOpen && utilityZMap['terminal-manager'] == null) {
-      bringUtilityToFront('terminal-manager');
+    if (terminalManagerOpen) {
+      ensureUtilityZ('terminal-manager');
     }
-  }, [terminalManagerOpen, utilityZMap, bringUtilityToFront]);
+  }, [terminalManagerOpen, ensureUtilityZ]);
 
   const renderTopTile = useCallback((key: string, label: string, icon: ReactNode, onClick: (e: React.MouseEvent) => void) => {
     return (
@@ -935,7 +1008,7 @@ export const DesktopView = (props: DesktopViewProps) => {
           saving={saving}
           performanceMode={performanceMode}
           activeWinId={activeWinId}
-          bringToFront={bringToFront}
+          bringToFront={bringAppToFrontExclusive}
           setActiveWinId={setActiveWinId}
           setActiveUtilityId={setActiveUtilityId}
           setOpenWindows={setOpenWindows}
@@ -972,7 +1045,7 @@ export const DesktopView = (props: DesktopViewProps) => {
         <DesktopTerminalWindows
           terminalWindows={terminalWindows}
           activeTerminalId={activeTerminalId}
-          bringTerminalToFront={bringTerminalToFront}
+          bringTerminalToFront={bringTerminalToFrontExclusive}
           handleCloseTerminal={handleCloseTerminal}
           handleMinimizeTerminal={handleMinimizeTerminal}
           setTerminalWindows={setTerminalWindows}

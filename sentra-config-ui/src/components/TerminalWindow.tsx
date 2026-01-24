@@ -10,6 +10,7 @@ import { fontFiles } from 'virtual:sentra-fonts';
 
 const TERMINAL_FONT_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Mono", "Courier New", monospace';
 const TERMINAL_PERSIST_TTL_MS = 1000 * 60 * 60 * 24;
+const SENTRA_TERMINAL_FONT_FAMILY = 'SentraTerminal';
 
 interface TerminalWindowProps {
     processId: string;
@@ -106,7 +107,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         const term = new Terminal({
             cursorBlink: true,
             fontSize: 14,
-            fontFamily: TERMINAL_FONT_FALLBACK,
+            fontFamily: `"${SENTRA_TERMINAL_FONT_FAMILY}", ${TERMINAL_FONT_FALLBACK}`,
             theme: theme || fallbackTheme,
             allowProposedApi: true,
             convertEol: false,
@@ -115,85 +116,34 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
 
         const pickSentraTermFontFile = () => {
             const files = Array.isArray(fontFiles) ? [...fontFiles] : [];
-            const hit = files.find((f) => /^均衡\.(ttf|otf|woff2?|ttc)$/i.test(String(f || '')));
+            const toBase = (v: string) => {
+                const s = String(v || '');
+                const parts = s.split(/[/\\]/);
+                return parts[parts.length - 1] || s;
+            };
+            const candidates = files.map((f) => String(f || '')).filter(Boolean);
+            const hit = candidates.find((f) => /^均衡.*\.(ttf|otf|woff2?|ttc)$/i.test(toBase(f)));
             return hit ? String(hit) : '';
         };
 
-        const autoPickTerminalFontFile = () => {
-            const files = Array.isArray(fontFiles) ? [...fontFiles] : [];
-            const candidates = files
-                .filter((f) => /\.(ttf|otf|woff2?|ttc)$/i.test(String(f || '')))
-                .map((f) => String(f));
-            if (!candidates.length) return '';
-
-            const score = (name: string) => {
-                const n = name.toLowerCase();
-                let s = 0;
-                if (n.includes('jetbrainsmono')) s += 100;
-                if (n.includes('caskaydiacove') || n.includes('cascadiacove')) s += 90;
-                if (n.includes('firacode')) s += 80;
-                if (n.includes('cascadiacode')) s += 70;
-                if (n.includes('nerd')) s += 30;
-                if (n.includes('mono')) s += 15;
-                if (n.includes('regular')) s += 5;
-                if (n.includes('bold')) s -= 4;
-                if (n.includes('italic')) s -= 4;
-                return s;
-            };
-
-            return candidates.sort((a, b) => score(b) - score(a))[0] || '';
-        };
-
-        const forcedFile = pickSentraTermFontFile();
-        const pickedFile = forcedFile || autoPickTerminalFontFile();
+        const pickedFile = pickSentraTermFontFile();
 
         if (pickedFile) {
-            const baseName = String(pickedFile).replace(/\.[^/.]+$/, '');
-            const family = `SentraFont_${baseName.replace(/[^a-zA-Z0-9_-]+/g, '_')}`;
             void (async () => {
                 try {
-                    const face = new FontFace(family, `url(/fonts/${encodeURIComponent(pickedFile)})`);
+                    const face = new FontFace(SENTRA_TERMINAL_FONT_FAMILY, `url(/fonts/${encodeURIComponent(pickedFile)})`);
                     await face.load();
                     document.fonts.add(face);
-
-                    if (forcedFile) {
-                        const next = `"${family}", ${TERMINAL_FONT_FALLBACK}`;
-                        term.options.fontFamily = next;
-                        if (!disposed) setUiFontFamily(next);
-                        try {
-                            fitAddonRef.current?.fit();
-                            term.refresh(0, term.rows - 1);
-                            requestAnimationFrame(() => {
-                                try { term.refresh(0, term.rows - 1); } catch { }
-                            });
-                        } catch { }
-                        return;
-                    }
-
-                    let isMono = false;
+                    const next = `"${SENTRA_TERMINAL_FONT_FAMILY}", ${TERMINAL_FONT_FALLBACK}`;
+                    term.options.fontFamily = next;
+                    if (!disposed) setUiFontFamily(next);
                     try {
-                        const canvas = document.createElement('canvas');
-                        const ctx = canvas.getContext('2d');
-                        if (ctx) {
-                            ctx.font = `16px "${family}", monospace`;
-                            const w1 = ctx.measureText('iiiiiiiiii').width;
-                            const w2 = ctx.measureText('WWWWWWWWWW').width;
-                            isMono = Number.isFinite(w1) && Number.isFinite(w2) && Math.abs(w1 - w2) < 0.5;
-                        }
+                        fitAddonRef.current?.fit();
+                        term.refresh(0, term.rows - 1);
+                        requestAnimationFrame(() => {
+                            try { term.refresh(0, term.rows - 1); } catch { }
+                        });
                     } catch { }
-
-                    if (isMono) {
-                        const next = `"${family}", ${TERMINAL_FONT_FALLBACK}`;
-                        term.options.fontFamily = next;
-                        if (!disposed) setUiFontFamily(next);
-                        try {
-                            fitAddonRef.current?.fit();
-                            term.refresh(0, term.rows - 1);
-                            requestAnimationFrame(() => {
-                                try { term.refresh(0, term.rows - 1); } catch { }
-                            });
-                        } catch { }
-                    }
                 } catch { }
             })();
         }
