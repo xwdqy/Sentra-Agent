@@ -397,6 +397,7 @@ const SentraResponseSchema = z.object({
   group_id: z.string().optional(),
   user_id: z.string().optional(),
   replyMode: z.enum(['none', 'first', 'always']).optional().default('none'),
+  replyToMessageId: z.string().optional(),
   mentionsBySegment: z.record(z.string(), z.array(z.union([z.string(), z.number()]))).optional().default({})
 });
 
@@ -699,11 +700,15 @@ export function parseSentraResponse(response) {
     } catch {}
 
     let replyMode = 'none';
+    let replyToMessageId = null;
     let mentionsBySegment = {};
     try {
       const send = parsed.send;
       const rm = String(getTextNode(send?.reply_mode) || '').trim().toLowerCase();
       if (rm === 'first' || rm === 'always') replyMode = rm;
+
+      const rid = unescapeXml(String(getTextNode(send?.reply_to_message_id) || '').trim());
+      if (rid && /^\d+$/.test(rid)) replyToMessageId = rid;
 
       const mbs = send?.mentions_by_segment;
       const segs = mbs ? normalizeToArray(mbs.segment) : [];
@@ -739,6 +744,7 @@ export function parseSentraResponse(response) {
         group_id: targetGroupId || undefined,
         user_id: targetUserId || undefined,
         replyMode,
+        replyToMessageId: replyToMessageId || undefined,
         mentionsBySegment
       });
       if (emoji) validated.emoji = emoji;
@@ -752,7 +758,7 @@ export function parseSentraResponse(response) {
       }
       return validated;
     } catch {
-      const fallback = { textSegments, resources: [], replyMode, mentionsBySegment };
+      const fallback = { textSegments, resources: [], replyMode, replyToMessageId: replyToMessageId || undefined, mentionsBySegment };
       if (emoji) fallback.emoji = emoji;
       if (textSegments.length === 0) fallback.shouldSkip = true;
       return fallback;
@@ -850,11 +856,16 @@ export function parseSentraResponse(response) {
   // 提取 <send> 指令（回复/艾特控制）
   const sendBlock = extractXMLTag(responseContent, 'send');
   let replyMode = 'none';
+  let replyToMessageId = null;
   let mentionsBySegment = {};
   try {
     if (sendBlock && sendBlock.trim()) {
       const rm = (extractXMLTag(sendBlock, 'reply_mode') || '').trim().toLowerCase();
       if (rm === 'first' || rm === 'always') replyMode = rm; // 默认为 none
+
+      const rid = unescapeXml((extractXMLTag(sendBlock, 'reply_to_message_id') || '').trim());
+      if (rid && /^\d+$/.test(rid)) replyToMessageId = rid;
+
       const mbsBlock = extractXMLTag(sendBlock, 'mentions_by_segment');
       if (mbsBlock) {
         const segFull = extractAllFullXMLTags(mbsBlock, 'segment') || [];
@@ -903,6 +914,7 @@ export function parseSentraResponse(response) {
       group_id: targetGroupId || undefined,
       user_id: targetUserId || undefined,
       replyMode,
+      replyToMessageId: replyToMessageId || undefined,
       mentionsBySegment
     });
     //logger.success('协议验证通过');
@@ -936,10 +948,10 @@ export function parseSentraResponse(response) {
       } else {
         logger.warn('协议验证失败且缺少 <sentra-response>，将跳过发送');
       }
-      fallback = { textSegments: [], resources: [], replyMode, mentionsBySegment, shouldSkip: true };
+      fallback = { textSegments: [], resources: [], replyMode, replyToMessageId: replyToMessageId || undefined, mentionsBySegment, shouldSkip: true };
     } else {
       // 保留已提取的文本段落，但不回退为“原文整段发送”
-      fallback = { textSegments, resources: [], replyMode, mentionsBySegment };
+      fallback = { textSegments, resources: [], replyMode, replyToMessageId: replyToMessageId || undefined, mentionsBySegment };
     }
 
     if (emoji) fallback.emoji = emoji;  // 即使验证失败也保留 emoji

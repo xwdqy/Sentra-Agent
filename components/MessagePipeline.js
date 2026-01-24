@@ -31,7 +31,8 @@ function ensureRagEnvLoaded() {
 
 function getToolPreReplyRuntimeConfig() {
   return {
-    enabled: getEnvBool('ENABLE_TOOL_PREREPLY', true)
+    enabled: getEnvBool('ENABLE_TOOL_PREREPLY', true),
+    waitToolResultMs: getEnvInt('TOOL_PREREPLY_WAIT_TOOL_RESULT_MS', 45000)
   };
 }
 
@@ -533,6 +534,9 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
   const toolTurnInvocationSet = new Set();
   const toolTurnInvocations = [];
   const toolTurnResultEvents = [];
+  let toolResultArrived = false;
+  const toolResultWaiters = new Set();
+  let toolPreReplyJobStarted = false;
 
   // 从主动 root 指令 XML 中提取 <objective> 文本，用于 MCP 的 objective
   const extractObjectiveFromRoot = (xml) => {
@@ -1105,6 +1109,29 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
       );
     };
 
+    const waitForToolResultOrTimeout = (timeoutMs) => {
+      const ms = Number(timeoutMs);
+      if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve(false);
+      if (toolResultArrived) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let done = false;
+        const onArrive = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          toolResultWaiters.delete(onArrive);
+          resolve(true);
+        };
+        const timer = setTimeout(() => {
+          if (done) return;
+          done = true;
+          toolResultWaiters.delete(onArrive);
+          resolve(false);
+        }, ms);
+        toolResultWaiters.add(onArrive);
+      });
+    };
+
     let streamAttempt = 0;
     while (streamAttempt < 2) {
       let restartMcp = false;
@@ -1478,12 +1505,24 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
           pairId = null;
           return;
         }
+      }
 
+      if (ev.type === 'judge') {
         try {
           const cfg = getToolPreReplyRuntimeConfig();
-          if (cfg.enabled && !hasToolPreReplied && !isCancelled) {
+          if (
+            cfg.enabled &&
+            !toolPreReplyJobStarted &&
+            !hasToolPreReplied &&
+            !isCancelled
+          ) {
+            toolPreReplyJobStarted = true;
+
             const senderMsgsNow = getAllSenderMessages();
             const latestMsgJudgeNeed = senderMsgsNow[senderMsgsNow.length - 1] || msg;
+
+            const toolNames = Array.isArray(ev.toolNames) ? ev.toolNames.filter(Boolean) : [];
+            const toolCount = toolNames.length;
 
             const baseUserContentNoRoot = (() => {
               if (isProactive && !isProactiveFirst) return '';
@@ -1494,7 +1533,7 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                 : userQuestionXml;
             })();
 
-            const preReplyRaw = await generateToolPreReply({
+            const preReplyPromise = generateToolPreReply({
               chatWithRetry,
               model: MAIN_AI_MODEL,
               groupId,
@@ -1506,18 +1545,44 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               timeoutMs: getEnvInt('TOOL_PREREPLY_TIMEOUT_MS', 6000)
             });
 
-            if (preReplyRaw) {
+            (async () => {
+              const shouldSend = (() => {
+                if (toolCount >= 2) return true;
+                return false;
+              })();
+
+              if (!shouldSend) {
+                const arrived = await waitForToolResultOrTimeout(cfg.waitToolResultMs);
+                if (arrived) return;
+              }
+
+              if (isCancelled || hasToolPreReplied) return;
+
+              const preReplyRaw = await preReplyPromise;
+              if (!preReplyRaw) return;
+              if (isCancelled || hasToolPreReplied) return;
+
               const preReply = ensureSentraResponseHasTarget(preReplyRaw, msg);
 
               hasReplied = true;
               hasToolPreReplied = true;
 
-              await smartSend(latestMsgJudgeNeed, preReply, sendAndWaitWithConv, true, { hasTool: true, immediate: true });
+              await smartSend(
+                latestMsgJudgeNeed,
+                preReply,
+                sendAndWaitWithConv,
+                true,
+                { hasTool: true, immediate: true }
+              );
 
               try {
                 const preReplyPairId = await historyManager.startAssistantMessage(groupId);
                 const preReplyForHistory = normalizeAssistantContentForHistory(preReply);
-                await historyManager.appendToAssistantMessage(groupId, preReplyForHistory, preReplyPairId);
+                await historyManager.appendToAssistantMessage(
+                  groupId,
+                  preReplyForHistory,
+                  preReplyPairId
+                );
 
                 const savedPreReply = await historyManager.finishConversationPair(
                   groupId,
@@ -1546,27 +1611,13 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                   }).catch((e) => {
                     logger.debug(`PresetTeaching: 异步教导触发失败 ${groupId}`, { err: String(e) });
                   });
-
-                  try {
-                    const refreshed = historyManager.getConversationHistoryForContext(groupId, {
-                      recentPairs: contextPairsLimit,
-                      maxTokens: contextTokensLimit
-                    });
-                    if (Array.isArray(refreshed)) {
-                      historyConversations = refreshed;
-                      conversations = [{ role: 'system', content: systemContent }, ...historyConversations];
-                      logger.info(
-                        `ToolPreReply: 已写入历史并刷新上下文快照: ${groupId} history=${historyConversations.length} conv=${conversations.length}`
-                      );
-                    }
-                  } catch (e) {
-                    logger.debug(`ToolPreReply: 刷新上下文快照失败 ${groupId}`, { err: String(e) });
-                  }
                 }
               } catch (e) {
                 logger.debug('ToolPreReply: 保存预回复对话对失败', { err: String(e) });
               }
-            }
+            })().catch((e) => {
+              logger.debug('ToolPreReply: failed', { err: String(e) });
+            });
           }
         } catch (e) {
           logger.debug('ToolPreReply: failed', { err: String(e) });
@@ -1837,7 +1888,10 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                 try {
                   const parsedForced = parseSentraResponse(forced);
                   if (parsedForced && !parsedForced.shouldSkip) {
-                    await smartSend(msg, forced, sendAndWaitWithConv, true, { hasTool: true });
+                    const latestSenderMessages = getAllSenderMessages();
+                    const finalMsgProgress =
+                      latestSenderMessages[latestSenderMessages.length - 1] || msg;
+                    await smartSend(finalMsgProgress, forced, sendAndWaitWithConv, true, { hasTool: true });
                     hasReplied = true;
                   }
                 } catch {}
@@ -1868,7 +1922,10 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               try {
                 const parsedPromised = parseSentraResponse(promised);
                 if (parsedPromised && !parsedPromised.shouldSkip) {
-                  await smartSend(msg, promised, sendAndWaitWithConv, true, { hasTool: true });
+                  const latestSenderMessages = getAllSenderMessages();
+                  const finalMsgProgress =
+                    latestSenderMessages[latestSenderMessages.length - 1] || msg;
+                  await smartSend(finalMsgProgress, promised, sendAndWaitWithConv, true, { hasTool: true });
                   hasReplied = true;
                 }
               } catch {}
@@ -1959,6 +2016,16 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
       }
 
       if (ev.type === 'tool_result' || ev.type === 'tool_result_group') {
+        if (!toolResultArrived) {
+          toolResultArrived = true;
+          for (const waiter of toolResultWaiters) {
+            try {
+              waiter();
+            } catch {}
+          }
+          toolResultWaiters.clear();
+        }
+
         if (!pairId) {
           pairId = await historyManager.startAssistantMessage(groupId);
           logger.debug(`创建pairId-ToolResult: ${groupId} pairId ${pairId?.substring(0, 8)}`);
@@ -2125,7 +2192,10 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                     try {
                       const parsedForced = parseSentraResponse(forced);
                       if (parsedForced && !parsedForced.shouldSkip) {
-                        await smartSend(msg, forced, sendAndWaitWithConv, true, { hasTool: true });
+                        const latestSenderMessagesForSend = getAllSenderMessages();
+                        const finalMsgTool =
+                          latestSenderMessagesForSend[latestSenderMessagesForSend.length - 1] || msg;
+                        await smartSend(finalMsgTool, forced, sendAndWaitWithConv, true, { hasTool: true });
                         hasReplied = true;
                       }
                     } catch {}
@@ -2170,7 +2240,10 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                     try {
                       const parsedPromised = parseSentraResponse(promised);
                       if (parsedPromised && !parsedPromised.shouldSkip) {
-                        await smartSend(msg, promised, sendAndWaitWithConv, true, { hasTool: true });
+                        const latestSenderMessagesForSend = getAllSenderMessages();
+                        const finalMsgTool =
+                          latestSenderMessagesForSend[latestSenderMessagesForSend.length - 1] || msg;
+                        await smartSend(finalMsgTool, promised, sendAndWaitWithConv, true, { hasTool: true });
                         hasReplied = true;
                       }
                     } catch {}

@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IoCheckmarkCircle, IoAlertCircle, IoInformationCircle } from 'react-icons/io5';
+import { Tooltip } from 'antd';
 import styles from './Toast.module.css';
 
 export type ToastType = 'success' | 'error' | 'info';
@@ -128,7 +129,11 @@ const ToastItem: React.FC<{ toast: ToastMessage; onRemove: (id: string) => void 
       {getIcon()}
       <div className={styles.content}>
         <div className={styles.title}>{toast.title}</div>
-        {displayMessage ? <div className={styles.message} title={fullMessage}>{displayMessage}</div> : null}
+        {displayMessage ? (
+          <Tooltip title={fullMessage}>
+            <div className={styles.message}>{displayMessage}</div>
+          </Tooltip>
+        ) : null}
       </div>
     </motion.div>
   );

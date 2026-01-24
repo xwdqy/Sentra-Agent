@@ -21,17 +21,6 @@ function ensureLegacyCleanup() {
   } catch {
     // ignore
   }
-
-  try {
-    const cleared = storage.getBool('sentra_terminal_cleared_this_session', { backend: 'session', fallback: false });
-    if (!cleared) {
-      storage.setBool('sentra_terminal_cleared_this_session', true, 'session');
-      storage.remove('sentra_terminal_windows_v2');
-      storage.remove('sentra_active_terminal_id_v2');
-    }
-  } catch {
-    // ignore
-  }
 }
 
 const TERMINAL_WINDOWS_KEY = 'sentra_terminal_windows_v2';
@@ -41,24 +30,24 @@ let persistTimer: number | null = null;
 let persisted = false;
 
 function schedulePersist() {
-  if (persistTimer != null) {
-    window.clearTimeout(persistTimer);
-  }
-  persistTimer = window.setTimeout(() => {
-    const st = useTerminalStore.getState();
-    storage.setJson(TERMINAL_WINDOWS_KEY, st.terminalWindows);
-    storage.setString(ACTIVE_TERMINAL_ID_KEY, st.activeTerminalId || '');
-  }, 800);
+  if (persistTimer != null) return;
+  // Batch multiple state changes within the same frame (drag/move/resize) without a fixed delay.
+  persistTimer = window.requestAnimationFrame(() => {
+    persistTimer = null;
+    flushPersist();
+  });
 }
 
 function flushPersist() {
   if (persistTimer != null) {
-    window.clearTimeout(persistTimer);
+    window.cancelAnimationFrame(persistTimer);
     persistTimer = null;
   }
   const st = useTerminalStore.getState();
-  storage.setJson(TERMINAL_WINDOWS_KEY, st.terminalWindows);
-  storage.setString(ACTIVE_TERMINAL_ID_KEY, st.activeTerminalId || '');
+  storage.setJson(TERMINAL_WINDOWS_KEY, st.terminalWindows, 'session');
+  storage.setString(ACTIVE_TERMINAL_ID_KEY, st.activeTerminalId || '', 'session');
+  storage.setJson(TERMINAL_WINDOWS_KEY, st.terminalWindows, 'local');
+  storage.setString(ACTIVE_TERMINAL_ID_KEY, st.activeTerminalId || '', 'local');
 }
 
 function ensurePersistenceHooks() {
@@ -68,6 +57,8 @@ function ensurePersistenceHooks() {
     if (document.visibilityState === 'hidden') flushPersist();
   };
   window.addEventListener('pagehide', flushPersist);
+  window.addEventListener('beforeunload', flushPersist);
+  window.addEventListener('unload', flushPersist);
   document.addEventListener('visibilitychange', onVis);
 }
 
@@ -111,8 +102,15 @@ export const useTerminalStore = create<TerminalStore>((set) => {
   ensureLegacyCleanup();
   ensurePersistenceHooks();
 
-  const terminalWindows = normalizePersistedTerminals(storage.getJson<any>(TERMINAL_WINDOWS_KEY, { fallback: [] }));
-  const savedActive = storage.getString(ACTIVE_TERMINAL_ID_KEY, { fallback: '' });
+  const persistedWindowsSession = storage.getJson<any>(TERMINAL_WINDOWS_KEY, { backend: 'session', fallback: [] });
+  const persistedWindowsLocal = storage.getJson<any>(TERMINAL_WINDOWS_KEY, { backend: 'local', fallback: [] });
+  const terminalWindows = normalizePersistedTerminals(
+    Array.isArray(persistedWindowsSession) && persistedWindowsSession.length ? persistedWindowsSession : persistedWindowsLocal
+  );
+
+  const savedActiveSession = storage.getString(ACTIVE_TERMINAL_ID_KEY, { backend: 'session', fallback: '' });
+  const savedActiveLocal = storage.getString(ACTIVE_TERMINAL_ID_KEY, { backend: 'local', fallback: '' });
+  const savedActive = savedActiveSession || savedActiveLocal;
   const activeTerminalId = savedActive ? savedActive : null;
 
   const setTerminalWindows: SetTerminalWindows = (next) => {

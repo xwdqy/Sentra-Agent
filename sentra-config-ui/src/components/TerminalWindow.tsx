@@ -49,7 +49,8 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
 
     // Initialize terminal
     useEffect(() => {
-        if (!terminalRef.current) return;
+        const terminalEl = terminalRef.current;
+        if (!terminalEl) return;
 
         let disposed = false;
         let openRaf: number | null = null;
@@ -108,13 +109,13 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             fontFamily: TERMINAL_FONT_FALLBACK,
             theme: theme || fallbackTheme,
             allowProposedApi: true,
-            convertEol: true,
+            convertEol: false,
             scrollback: 50000,
         });
 
         const pickSentraTermFontFile = () => {
             const files = Array.isArray(fontFiles) ? [...fontFiles] : [];
-            const hit = files.find((f) => /^sentraterm\.(ttf|otf|woff2?|ttc)$/i.test(String(f || '')));
+            const hit = files.find((f) => /^均衡\.(ttf|otf|woff2?|ttc)$/i.test(String(f || '')));
             return hit ? String(hit) : '';
         };
 
@@ -230,7 +231,10 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         const safeWrite = (data: string) => {
             if (disposed || stoppedRef.current) return;
             try {
-                term.write(data);
+                const normalized = String(data)
+                    .replace(/\r?\n/g, '\r\n')
+                    .replace(/\r\r\n/g, '\r\n');
+                term.write(normalized);
             } catch (e) {
                 // Avoid crashing the whole app if xterm renderer is not ready / already disposed
                 try { console.error('xterm write failed', e); } catch { }
@@ -242,7 +246,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         }
 
         const canFitNow = () => {
-            const el = terminalRef.current;
+            const el = terminalEl;
             if (!el) return false;
             const rect = el.getBoundingClientRect();
             if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height)) return false;
@@ -251,7 +255,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
 
         const tryOpen = () => {
             if (disposed || stoppedRef.current) return;
-            const el = terminalRef.current;
+            const el = terminalEl;
             if (!el) return;
 
             // Wait until layout is settled; prevents xterm internal timers running after
@@ -331,7 +335,6 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         const originalWrite = term.write.bind(term);
         term.write = (data: string | Uint8Array, callback?: () => void) => {
             originalWrite(data, () => {
-                // Auto-scroll to bottom after write if user hasn't scrolled up
                 if (autoScrollRef.current && !userScrolledRef.current) {
                     requestAnimationFrame(() => {
                         safeScrollToBottom();
@@ -383,9 +386,19 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             }, 8);
         });
 
+        const handlePasteCapture = (e: ClipboardEvent) => {
+            try {
+                const text = e.clipboardData?.getData('text');
+                if (!text) return;
+                e.preventDefault();
+                term.paste(text);
+            } catch {
+                // ignore
+            }
+        };
+
         // Enhanced keyboard handling
         term.attachCustomKeyEventHandler((event) => {
-            // Handle Ctrl+C for copy (when text is selected)
             if ((event.ctrlKey || event.metaKey) && event.key === 'c') {
                 const selection = term.getSelection();
                 if (selection) {
@@ -397,25 +410,11 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
                 return true;
             }
 
-            // Handle Ctrl+V for paste
-            if ((event.ctrlKey || event.metaKey) && event.key === 'v') {
-                navigator.clipboard.readText().then(text => {
-                    if (text) {
-                        term.paste(text);
-                    }
-                }).catch(err => {
-                    console.error('Failed to paste from clipboard:', err);
-                });
-                return false;
-            }
-
-            // Handle Ctrl+A for select all
             if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
                 term.selectAll();
                 return false;
             }
 
-            // Handle End key to jump to bottom and re-enable auto-scroll
             if (event.key === 'End') {
                 safeScrollToBottom();
                 userScrolledRef.current = false;
@@ -426,34 +425,40 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             return true;
         });
 
-        // Right-click context menu for copy/paste
         const handleContextMenu = (e: MouseEvent) => {
-            e.preventDefault();
-            e.stopPropagation(); // Prevent desktop context menu
             const selection = term.getSelection();
-
             if (selection) {
+                e.preventDefault();
+                e.stopPropagation();
                 navigator.clipboard.writeText(selection).catch(err => {
                     console.error('Failed to copy:', err);
                 });
-            } else {
-                navigator.clipboard.readText().then(text => {
+                return;
+            }
+
+            const readText = (navigator as any)?.clipboard?.readText;
+            if (typeof readText === 'function') {
+                e.preventDefault();
+                e.stopPropagation();
+                (navigator as any).clipboard.readText().then((text: string) => {
                     if (text) {
                         term.paste(text);
                     }
-                }).catch(err => {
+                }).catch((err: unknown) => {
                     console.error('Failed to paste:', err);
                 });
             }
+
         };
 
-        terminalRef.current.addEventListener('contextmenu', handleContextMenu);
+        terminalEl.addEventListener('contextmenu', handleContextMenu);
+        terminalEl.addEventListener('paste', handlePasteCapture as any, true);
 
         // Handle resize
         const handleResize = () => {
             try {
                 if (!disposed && openedRef.current && canFitNow()) fitAddon.fit();
-            } catch (e) {
+            } catch {
                 // Ignore resize errors if terminal is hidden
             }
         };
@@ -482,7 +487,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             reconnectTimerRef.current = window.setTimeout(() => {
                 reconnectTimerRef.current = null;
                 if (stoppedRef.current) return;
-                connectEventSource(reason);
+                void connectEventSource(reason);
             }, finalDelay);
         };
 
@@ -523,6 +528,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
                 try { onProcessNotFound?.(); } catch { }
                 return;
             }
+
             cleanupEventSource();
             const token =
                 storage.getString('sentra_auth_token', { backend: 'session', fallback: '' }) ||
@@ -624,7 +630,8 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             window.removeEventListener('online', handleOnline);
             document.removeEventListener('visibilitychange', handleVisibility);
             window.removeEventListener('resize', handleResize);
-            terminalRef.current?.removeEventListener('contextmenu', handleContextMenu);
+            terminalEl.removeEventListener('contextmenu', handleContextMenu);
+            terminalEl.removeEventListener('paste', handlePasteCapture as any, true);
             term.dispose();
             cleanupEventSource();
         };

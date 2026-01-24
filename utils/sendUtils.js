@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import mimeTypes from 'mime-types';
 import { parseSentraResponse } from './protocolUtils.js';
 import { parseTextSegments, buildSegmentMessage } from './messageUtils.js';
-import { getReplyableMessageId, updateConversationHistory } from './conversationUtils.js';
+import { updateConversationHistory } from './conversationUtils.js';
 import { createLogger } from './logger.js';
 import { replySendQueue } from './replySendQueue.js';
 import { getEnv, getEnvBool, getEnvInt, onEnvReload } from './envHotReloader.js';
@@ -422,11 +422,14 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
   const userAtSelf = isGroupChat && Array.isArray(msg?.at_users) && typeof selfId === 'number' && msg.at_users.includes(selfId);
   const finalReplyMode = hasSendDirective ? replyMode : 'none';
   
-  // 获取要引用的消息ID（仅当允许引用时）
-  const replyMessageId = allowReply ? await getReplyableMessageId(msg) : null;
+  // Model-controlled quoting: only quote when <send> is present AND a valid <reply_to_message_id> is provided.
+  // If parsing fails or id is missing/invalid, we MUST NOT quote.
+  const replyMessageId = (allowReply && hasSendDirective && parsed?.replyToMessageId)
+    ? String(parsed.replyToMessageId)
+    : null;
   let usedReply = false;
   
-  logger.debug(`发送策略: 段落=${segments.length}, replyMode=${finalReplyMode}(${hasSendDirective ? 'by_send' : 'fallback'}), allowReply=${allowReply}, replyId=${replyMessageId}`);
+  logger.debug(`发送策略: 段落=${segments.length}, replyMode=${finalReplyMode}(${hasSendDirective ? 'by_send' : 'fallback'}), allowReply=${allowReply}, replyTo=${replyMessageId || '(none)'}`);
 
   let skippedCrossRouteCount = 0;
   let crossOps = 0;

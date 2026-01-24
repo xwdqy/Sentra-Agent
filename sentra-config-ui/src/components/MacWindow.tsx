@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { IoCloseOutline, IoRemoveOutline, IoSquareOutline, IoCopyOutline } from 'react-icons/io5';
+import { Tooltip } from 'antd';
+import { CloseOutlined, CopyOutlined, MinusOutlined, BorderOutlined } from '@ant-design/icons';
 import styles from './MacWindow.module.css';
 
 interface MacWindowProps {
@@ -406,15 +407,33 @@ export const MacWindow: React.FC<MacWindowProps> = ({
           {title}
         </div>
         <div className={`${styles.controls} window-controls`}>
-          <button className={`${styles.btn} ${styles.minimize}`} onClick={(e) => { e.stopPropagation(); onMinimize(); }}>
-            <IoRemoveOutline />
-          </button>
-          <button className={`${styles.btn} ${styles.maximize}`} onClick={(e) => { e.stopPropagation(); handleMaximizeToggle(); }}>
-            {isMaximized ? <IoCopyOutline size={12} /> : <IoSquareOutline size={12} />}
-          </button>
-          <button className={`${styles.btn} ${styles.close}`} onClick={(e) => { e.stopPropagation(); onClose(); }}>
-            <IoCloseOutline size={18} />
-          </button>
+          <Tooltip title="最小化">
+            <button
+              aria-label="最小化"
+              className={`${styles.btn} ${styles.minimize}`}
+              onClick={(e) => { e.stopPropagation(); onMinimize(); }}
+            >
+              <MinusOutlined />
+            </button>
+          </Tooltip>
+          <Tooltip title={isMaximized ? '还原' : '最大化'}>
+            <button
+              aria-label={isMaximized ? '还原' : '最大化'}
+              className={`${styles.btn} ${styles.maximize}`}
+              onClick={(e) => { e.stopPropagation(); handleMaximizeToggle(); }}
+            >
+              {isMaximized ? <CopyOutlined /> : <BorderOutlined />}
+            </button>
+          </Tooltip>
+          <Tooltip title="关闭">
+            <button
+              aria-label="关闭"
+              className={`${styles.btn} ${styles.close}`}
+              onClick={(e) => { e.stopPropagation(); onClose(); }}
+            >
+              <CloseOutlined />
+            </button>
+          </Tooltip>
         </div>
       </div>
       <div className={styles.content}>

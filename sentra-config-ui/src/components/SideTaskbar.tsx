@@ -1,5 +1,6 @@
 import React, { memo, useMemo } from 'react';
-import { IoClose, IoTerminal, IoChevronBackOutline, IoChevronForwardOutline } from 'react-icons/io5';
+import { Tooltip } from 'antd';
+import { CloseOutlined, CodeOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 import type { DeskWindow, TerminalWin } from '../types/ui';
 import { getDisplayName, getIconForType } from '../utils/icons';
 import styles from './SideTaskbar.module.css';
@@ -61,26 +62,27 @@ export const SideTaskbar: React.FC<SideTaskbarProps> = memo(({
           ['--side-taskbar-top' as any]: `${topOffset}px`,
         }}
       >
-        <div
-          className={styles.collapseHandle}
-          role="button"
-          tabIndex={0}
-          aria-label="展开标签栏"
-          onClick={(e) => {
-            e.stopPropagation();
-            onCollapsedChange(false);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
+        <Tooltip title="展开标签栏">
+          <div
+            className={styles.collapseHandle}
+            role="button"
+            tabIndex={0}
+            aria-label="展开标签栏"
+            onClick={(e) => {
               e.stopPropagation();
               onCollapsedChange(false);
-            }
-          }}
-          title="展开标签栏"
-        >
-          <IoChevronForwardOutline size={14} />
-        </div>
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onCollapsedChange(false);
+              }
+            }}
+          >
+            <RightOutlined style={{ fontSize: 14 }} />
+          </div>
+        </Tooltip>
       </div>
     );
   }
@@ -101,7 +103,7 @@ export const SideTaskbar: React.FC<SideTaskbarProps> = memo(({
         title: t.title,
         type: 'terminal' as const,
         isActive: t.id === activeTerminalId,
-        icon: <IoTerminal />,
+        icon: <CodeOutlined />,
         onActivate: () => onActivateTerminal(t.id),
         onClose: () => onCloseTerminal(t.id),
       })),
@@ -125,26 +127,27 @@ export const SideTaskbar: React.FC<SideTaskbarProps> = memo(({
         ['--side-taskbar-width' as any]: `${width}px`,
       }}
     >
-      <div
-        className={styles.collapseHandleEdge}
-        role="button"
-        tabIndex={0}
-        aria-label="收起标签栏"
-        onClick={(e) => {
-          e.stopPropagation();
-          onCollapsedChange(true);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
+      <Tooltip title="收起标签栏">
+        <div
+          className={styles.collapseHandleEdge}
+          role="button"
+          tabIndex={0}
+          aria-label="收起标签栏"
+          onClick={(e) => {
             e.stopPropagation();
             onCollapsedChange(true);
-          }
-        }}
-        title="收起标签栏"
-      >
-        <IoChevronBackOutline size={14} />
-      </div>
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              e.stopPropagation();
+              onCollapsedChange(true);
+            }
+          }}
+        >
+          <LeftOutlined style={{ fontSize: 14 }} />
+        </div>
+      </Tooltip>
 
       <div className={styles.inner}>
         <div className={styles.tabs}>
@@ -159,16 +162,18 @@ export const SideTaskbar: React.FC<SideTaskbarProps> = memo(({
             >
               <div className={styles.icon}>{tab.icon}</div>
               <div className={styles.title}>{tab.title}</div>
-              <div
-                className={styles.close}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  tab.onClose();
-                }}
-                title="关闭"
-              >
-                <IoClose size={12} />
-              </div>
+              <Tooltip title="关闭">
+                <div
+                  className={styles.close}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    tab.onClose();
+                  }}
+                  aria-label="关闭"
+                >
+                  <CloseOutlined style={{ fontSize: 12 }} />
+                </div>
+              </Tooltip>
             </div>
           ))}
         </div>

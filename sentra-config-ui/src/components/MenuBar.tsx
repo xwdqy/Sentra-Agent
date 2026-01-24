@@ -2,23 +2,25 @@ import React, { useRef, useState, useEffect } from 'react';
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { SentraIcon } from './SentraIcon';
-import {
-  IoLogoApple,
-  IoSearch,
-  IoWifi,
-  IoBluetooth,
-  IoVolumeHigh,
-  IoSunny,
-  IoApps,
-  IoReload,
-  IoBookOutline,
-  IoChevronDown,
-} from 'react-icons/io5';
-import { BsController } from 'react-icons/bs';
+import { Tooltip } from 'antd';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MacAlert } from './MacAlert';
 import styles from './MenuBar.module.css';
-import { CheckOutlined, FontSizeOutlined } from '@ant-design/icons';
+import {
+  AppstoreOutlined,
+  AppleOutlined,
+  BookOutlined,
+  BulbOutlined,
+  CheckOutlined,
+  ControlOutlined,
+  DownOutlined,
+  FontSizeOutlined,
+  LinkOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+  SoundOutlined,
+  WifiOutlined,
+} from '@ant-design/icons';
 import { fontFiles } from 'virtual:sentra-fonts';
 import { storage } from '../utils/storage';
 
@@ -269,103 +271,121 @@ export const MenuBar: React.FC<MenuBarProps> = ({
           ))}
         </div>
         <div className={styles.right}>
-          <div
-            className={styles.menuItem}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleDock();
-            }}
-            title={showDock ? '隐藏常用应用' : '显示常用应用'}
-            style={{ opacity: showDock ? 1 : 0.5 }}
-          >
-            <IoApps size={18} />
-          </div>
-          <div
-            className={`${styles.menuItem} ${styles.accentMenuItem} ${showAccentPicker ? styles.active : ''}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              setActiveMenu(null);
-              setShowControlCenter(false);
-              setShowSpotlight(false);
-              setShowFontPicker(false);
-              if (showAccentPicker) {
-                setShowAccentPicker(false);
-              } else {
-                computeAccentPickerPos();
-                setShowAccentPicker(true);
-              }
-            }}
-            title="切换应用主题颜色（Accent）"
-            ref={accentButtonRef}
-          >
-            <div className={styles.accentButton}>
-              <span className={styles.accentDot} />
-              <IoChevronDown className={styles.accentChevron} size={14} />
+          <Tooltip title={showDock ? '隐藏常用应用' : '显示常用应用'}>
+            <div
+              className={styles.menuItem}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleDock();
+              }}
+              aria-label={showDock ? '隐藏常用应用' : '显示常用应用'}
+              style={{ opacity: showDock ? 1 : 0.5 }}
+            >
+              <AppstoreOutlined style={{ fontSize: 18 }} />
             </div>
-          </div>
-
-          <div
-            className={`${styles.menuItem} ${styles.fontMenuItem} ${showFontPicker ? styles.active : ''}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              setActiveMenu(null);
-              setShowControlCenter(false);
-              setShowAccentPicker(false);
-              setShowSpotlight(false);
-              if (showFontPicker) {
+          </Tooltip>
+          <Tooltip title="切换应用主题颜色（Accent）">
+            <div
+              className={`${styles.menuItem} ${styles.accentMenuItem} ${showAccentPicker ? styles.active : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveMenu(null);
+                setShowControlCenter(false);
+                setShowSpotlight(false);
                 setShowFontPicker(false);
-              } else {
-                computeFontPickerPos();
-                setShowFontPicker(true);
-              }
-            }}
-            title="切换字体"
-            ref={fontButtonRef}
-          >
-            <div className={styles.fontButton}>
-              <FontSizeOutlined style={{ fontSize: 14, opacity: 0.85 }} />
-              <IoChevronDown className={styles.fontChevron} size={14} />
+                if (showAccentPicker) {
+                  setShowAccentPicker(false);
+                } else {
+                  computeAccentPickerPos();
+                  setShowAccentPicker(true);
+                }
+              }}
+              aria-label="切换应用主题颜色（Accent）"
+              ref={accentButtonRef}
+            >
+              <div className={styles.accentButton}>
+                <span className={styles.accentDot} />
+                <DownOutlined className={styles.accentChevron} style={{ fontSize: 14 }} />
+              </div>
             </div>
-          </div>
-          <div className={styles.menuItem}>
-            <IoWifi size={18} />
-          </div>
-          <div
-            className={styles.menuItem}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowControlCenter(false);
-              setShowAccentPicker(false);
-              setShowSpotlight(v => !v);
-            }}
-          >
-            <IoSearch size={18} />
-          </div>
-          <div
-            className={styles.menuItem}
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowSpotlight(false);
-              setShowAccentPicker(false);
-              setShowControlCenter(v => !v);
-            }}
-          >
-            <BsController size={18} />
-          </div>
-          <div
-            className={styles.menuItem}
-            onClick={(e) => { e.stopPropagation(); onOpenDeepWiki(); }}
-            title="打开 DeepWiki · Sentra Agent 文档与助手"
-          >
-            <IoBookOutline size={18} />
-          </div>
-          <div
-            className={styles.menuItem}
-            onClick={() => setShowRestartAlert(true)}
-            title="重启系统"
-          >
-            <IoReload size={18} />
-          </div>
+          </Tooltip>
+
+          <Tooltip title="切换字体">
+            <div
+              className={`${styles.menuItem} ${styles.fontMenuItem} ${showFontPicker ? styles.active : ''}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setActiveMenu(null);
+                setShowControlCenter(false);
+                setShowAccentPicker(false);
+                setShowSpotlight(false);
+                if (showFontPicker) {
+                  setShowFontPicker(false);
+                } else {
+                  computeFontPickerPos();
+                  setShowFontPicker(true);
+                }
+              }}
+              aria-label="切换字体"
+              ref={fontButtonRef}
+            >
+              <div className={styles.fontButton}>
+                <FontSizeOutlined style={{ fontSize: 14, opacity: 0.85 }} />
+                <DownOutlined className={styles.fontChevron} style={{ fontSize: 14 }} />
+              </div>
+            </div>
+          </Tooltip>
+          <Tooltip title="网络">
+            <div className={styles.menuItem} aria-label="网络">
+              <WifiOutlined style={{ fontSize: 18 }} />
+            </div>
+          </Tooltip>
+          <Tooltip title="搜索">
+            <div
+              className={styles.menuItem}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowControlCenter(false);
+                setShowAccentPicker(false);
+                setShowSpotlight(v => !v);
+              }}
+              aria-label="搜索"
+            >
+              <SearchOutlined style={{ fontSize: 18 }} />
+            </div>
+          </Tooltip>
+          <Tooltip title="控制中心">
+            <div
+              className={styles.menuItem}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowSpotlight(false);
+                setShowAccentPicker(false);
+                setShowControlCenter(v => !v);
+              }}
+              aria-label="控制中心"
+            >
+              <ControlOutlined style={{ fontSize: 18 }} />
+            </div>
+          </Tooltip>
+          <Tooltip title="打开 DeepWiki · Sentra Agent 文档与助手">
+            <div
+              className={styles.menuItem}
+              onClick={(e) => { e.stopPropagation(); onOpenDeepWiki(); }}
+              aria-label="打开 DeepWiki · Sentra Agent 文档与助手"
+            >
+              <BookOutlined style={{ fontSize: 18 }} />
+            </div>
+          </Tooltip>
+          <Tooltip title="重启系统">
+            <div
+              className={styles.menuItem}
+              onClick={() => setShowRestartAlert(true)}
+              aria-label="重启系统"
+            >
+              <ReloadOutlined style={{ fontSize: 18 }} />
+            </div>
+          </Tooltip>
           <Clock />
         </div>
       </div>
@@ -431,7 +451,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             onClick={e => e.stopPropagation()}
           >
             <div className={styles.spotlightBar}>
-              <IoSearch size={24} color="var(--sentra-muted-fg)" />
+              <SearchOutlined style={{ fontSize: 24, color: 'var(--sentra-muted-fg)' }} />
               <form onSubmit={handleSpotlightSearch} style={{ width: '100%' }}>
                 <input
                   type="text"
@@ -471,21 +491,21 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             <div className={styles.ccGrid}>
               <div className={styles.ccModule}>
                 <div className={styles.ccRow}>
-                  <div className={`${styles.ccIcon} ${styles.active}`}><IoWifi /></div>
+                  <div className={`${styles.ccIcon} ${styles.active}`}><WifiOutlined /></div>
                   <div className={styles.ccText}>Wi-Fi</div>
                 </div>
                 <div className={styles.ccRow}>
-                  <div className={`${styles.ccIcon} ${styles.active}`}><IoBluetooth /></div>
+                  <div className={`${styles.ccIcon} ${styles.active}`}><LinkOutlined /></div>
                   <div className={styles.ccText}>蓝牙</div>
                 </div>
                 <div className={styles.ccRow}>
-                  <div className={`${styles.ccIcon} ${styles.active}`}><IoLogoApple /></div>
+                  <div className={`${styles.ccIcon} ${styles.active}`}><AppleOutlined /></div>
                   <div className={styles.ccText}>AirDrop</div>
                 </div>
               </div>
               <div className={styles.ccModule}>
                 <div className={styles.ccRow}>
-                  <div className={styles.ccIcon}><IoSunny /></div>
+                  <div className={styles.ccIcon}><BulbOutlined /></div>
                   <div className={styles.ccSlider}>
                     <div className={styles.ccSliderFill} style={{ width: `${brightness}%` }} />
                     <input
@@ -501,7 +521,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               </div>
               <div className={styles.ccModule}>
                 <div className={styles.ccRow}>
-                  <div className={styles.ccIcon}><IoVolumeHigh /></div>
+                  <div className={styles.ccIcon}><SoundOutlined /></div>
                   <div className={styles.ccSlider}><div className={styles.ccSliderFill} style={{ width: '50%' }} /></div>
                 </div>
               </div>
@@ -533,16 +553,17 @@ export const MenuBar: React.FC<MenuBarProps> = ({
               {accentPresets.map((c) => {
                 const isActive = String(accentColor || '').toUpperCase() === c;
                 return (
-                  <div
-                    key={c}
-                    className={`${styles.swatch} ${isActive ? styles.swatchActive : ''}`}
-                    style={{ background: c }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setAccentColor(c);
-                    }}
-                    title={c}
-                  />
+                  <Tooltip key={c} title={c}>
+                    <div
+                      className={`${styles.swatch} ${isActive ? styles.swatchActive : ''}`}
+                      style={{ background: c }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAccentColor(c);
+                      }}
+                      aria-label={c}
+                    />
+                  </Tooltip>
                 );
               })}
             </div>
@@ -550,24 +571,28 @@ export const MenuBar: React.FC<MenuBarProps> = ({
             <div className={styles.customRow}>
               <div className={styles.customLabel}>自定义</div>
               <div className={styles.customControls}>
-                <input
-                  className={styles.colorInput}
-                  type="color"
-                  value={String(accentColor || '#007AFF')}
-                  onChange={(e) => setAccentColor(e.target.value)}
-                  title="打开系统调色盘"
-                />
-                <button
-                  className={styles.resetBtn}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setAccentColor('#007AFF');
-                  }}
-                  type="button"
-                  title="重置为默认"
-                >
-                  重置
-                </button>
+                <Tooltip title="打开系统调色盘">
+                  <input
+                    className={styles.colorInput}
+                    type="color"
+                    value={String(accentColor || '#007AFF')}
+                    onChange={(e) => setAccentColor(e.target.value)}
+                    aria-label="打开系统调色盘"
+                  />
+                </Tooltip>
+                <Tooltip title="重置为默认">
+                  <button
+                    className={styles.resetBtn}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setAccentColor('#007AFF');
+                    }}
+                    type="button"
+                    aria-label="重置为默认"
+                  >
+                    重置
+                  </button>
+                </Tooltip>
               </div>
             </div>
           </motion.div>

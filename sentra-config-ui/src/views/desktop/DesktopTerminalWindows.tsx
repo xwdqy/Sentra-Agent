@@ -1,11 +1,13 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { IoCubeOutline, IoTerminalOutline } from 'react-icons/io5';
 import { MacWindow } from '../../components/MacWindow';
 import { SentraLoading } from '../../components/SentraLoading';
 import type { TerminalWin } from '../../types/ui';
 
-const TerminalWindow = lazy(() => import('../../components/TerminalWindow').then(module => ({ default: module.TerminalWindow })));
-const TerminalExecutorWindow = lazy(() => import('../../components/TerminalExecutorWindow').then(module => ({ default: module.TerminalExecutorWindow })));
+const loadTerminalWindow = () => import('../../components/TerminalWindow');
+const loadTerminalExecutorWindow = () => import('../../components/TerminalExecutorWindow');
+const TerminalWindow = lazy(() => loadTerminalWindow().then(module => ({ default: module.TerminalWindow })));
+const TerminalExecutorWindow = lazy(() => loadTerminalExecutorWindow().then(module => ({ default: module.TerminalExecutorWindow })));
 
 type DesktopTerminalWindowsProps = {
   terminalWindows: TerminalWin[];
@@ -31,6 +33,13 @@ export function DesktopTerminalWindows(props: DesktopTerminalWindowsProps) {
     desktopSafeArea,
     performanceMode,
   } = props;
+
+  useEffect(() => {
+    if (!terminalWindows.length) return;
+    // Warm up the chunks so refresh doesn't show a long Suspense fallback.
+    void loadTerminalWindow().catch(() => undefined);
+    void loadTerminalExecutorWindow().catch(() => undefined);
+  }, [terminalWindows.length]);
 
   return (
     <>
@@ -79,14 +88,12 @@ export function DesktopTerminalWindows(props: DesktopTerminalWindowsProps) {
                 sessionId={terminal.processId}
                 theme={terminal.theme}
                 headerText={terminal.headerText}
-                onSessionNotFound={() => handleCloseTerminal(terminal.id)}
               />
             ) : (
               <TerminalWindow
                 processId={terminal.processId}
                 theme={terminal.theme}
                 headerText={terminal.headerText}
-                onProcessNotFound={() => handleCloseTerminal(terminal.id)}
               />
             )}
           </Suspense>

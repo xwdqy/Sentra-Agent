@@ -2163,71 +2163,83 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                   </Button>
 
                   {(String(llmTab) !== 'mcp-plugins' && llmHasAdvancedItems) ? (
-                    <Button
-                      size="small"
-                      icon={<SlidersOutlined />}
-                      type={showAdvancedLlm ? 'primary' : 'default'}
-                      onClick={() => setShowAdvancedLlm(s => !s)}
-                      disabled={llmSaving}
-                      title="显示/隐藏 JSON 映射中标记为 advanced 的参数"
-                    >
-                      {showAdvancedLlm ? '隐藏高级参数' : '高级参数'}
-                    </Button>
+                    <Tooltip title="显示/隐藏 JSON 映射中标记为 advanced 的参数">
+                      <Button
+                        size="small"
+                        icon={<SlidersOutlined />}
+                        type={showAdvancedLlm ? 'primary' : 'default'}
+                        onClick={() => setShowAdvancedLlm(s => !s)}
+                        disabled={llmSaving}
+                        aria-label="高级参数"
+                      >
+                        {showAdvancedLlm ? '隐藏高级参数' : '高级参数'}
+                      </Button>
+                    </Tooltip>
                   ) : null}
 
                   {llmTab === 'mcp-plugins' ? (
                     <>
-                      <Button
-                        size="small"
-                        onClick={collapseAllMcpPluginGroups}
-                        disabled={!mcpPluginName || mcpPluginSaving}
-                        title="收起全部分组"
-                      >
-                        全部收起
-                      </Button>
-                      <Button
-                        size="small"
-                        onClick={expandAllMcpPluginGroups}
-                        disabled={!mcpPluginName || mcpPluginSaving}
-                        title="展开全部分组"
-                      >
-                        全部展开
-                      </Button>
+                      <Tooltip title="收起全部分组">
+                        <Button
+                          size="small"
+                          onClick={collapseAllMcpPluginGroups}
+                          disabled={!mcpPluginName || mcpPluginSaving}
+                          aria-label="收起全部分组"
+                        >
+                          全部收起
+                        </Button>
+                      </Tooltip>
+                      <Tooltip title="展开全部分组">
+                        <Button
+                          size="small"
+                          onClick={expandAllMcpPluginGroups}
+                          disabled={!mcpPluginName || mcpPluginSaving}
+                          aria-label="展开全部分组"
+                        >
+                          全部展开
+                        </Button>
+                      </Tooltip>
                     </>
                   ) : (
                     <>
-                      <Button
-                        size="small"
-                        onClick={collapseAllLlmGroups}
-                        disabled={llmSaving || configLoading}
-                        title="收起全部分组"
-                      >
-                        全部收起
-                      </Button>
-                      <Button
-                        size="small"
-                        onClick={expandAllLlmGroups}
-                        disabled={llmSaving || configLoading}
-                        title="展开全部分组"
-                      >
-                        全部展开
-                      </Button>
+                      <Tooltip title="收起全部分组">
+                        <Button
+                          size="small"
+                          onClick={collapseAllLlmGroups}
+                          disabled={llmSaving || configLoading}
+                          aria-label="收起全部分组"
+                        >
+                          全部收起
+                        </Button>
+                      </Tooltip>
+                      <Tooltip title="展开全部分组">
+                        <Button
+                          size="small"
+                          onClick={expandAllLlmGroups}
+                          disabled={llmSaving || configLoading}
+                          aria-label="展开全部分组"
+                        >
+                          全部展开
+                        </Button>
+                      </Tooltip>
                     </>
                   )}
                 </div>
-                <Button
-                  type="primary"
-                  size="small"
-                  icon={<SaveOutlined />}
-                  onClick={llmTab === 'mcp-plugins' ? saveMcpPlugin : saveLlmModule}
-                  loading={llmTab === 'mcp-plugins' ? mcpPluginSaving : llmSaving}
-                  disabled={llmTab === 'mcp-plugins'
-                    ? (!mcpPluginName || !mcpPluginDirty[mcpPluginName])
-                    : (configLoading || !llmDirty[llmModule])}
-                  title={llmTab === 'mcp-plugins' ? (mcpPluginName ? '保存' : '请选择插件') : '写入该模块 .env'}
-                >
-                  保存
-                </Button>
+                <Tooltip title={llmTab === 'mcp-plugins' ? (mcpPluginName ? '保存' : '请选择插件') : '写入该模块 .env'}>
+                  <Button
+                    type="primary"
+                    size="small"
+                    icon={<SaveOutlined />}
+                    onClick={llmTab === 'mcp-plugins' ? saveMcpPlugin : saveLlmModule}
+                    loading={llmTab === 'mcp-plugins' ? mcpPluginSaving : llmSaving}
+                    disabled={llmTab === 'mcp-plugins'
+                      ? (!mcpPluginName || !mcpPluginDirty[mcpPluginName])
+                      : (configLoading || !llmDirty[llmModule])}
+                    aria-label="保存"
+                  >
+                    保存
+                  </Button>
+                </Tooltip>
               </div>
 
               {llmTab === 'mcp-plugins' ? (
@@ -2737,15 +2749,15 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                                           <div className={styles.modelTitle}>{title}</div>
                                           <div className={styles.modelCaps}>
                                             {caps.map((cap: any) => (
-                                              <span
-                                                key={cap.key}
-                                                className={styles.modelCapIcon}
-                                                style={capStyleVars(cap.key)}
-                                                title={cap.label}
-                                                aria-label={cap.key}
-                                              >
-                                                <CapabilityIcon capKey={cap.key} />
-                                              </span>
+                                              <Tooltip key={cap.key} title={cap.label}>
+                                                <span
+                                                  className={styles.modelCapIcon}
+                                                  style={capStyleVars(cap.key)}
+                                                  aria-label={cap.key}
+                                                >
+                                                  <CapabilityIcon capKey={cap.key} />
+                                                </span>
+                                              </Tooltip>
                                             ))}
                                           </div>
                                         </div>

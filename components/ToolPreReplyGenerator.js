@@ -29,7 +29,7 @@ function buildToolPreReplyRootDirectiveXml({
     '  <type>tool_prereply</type>',
     `  <scope>${scope}</scope>`,
     '  <phase>ToolPreReply</phase>',
-    '  <objective>你已被系统判定需要执行一段较长的后台流程（将使用工具/外部信息）。你要先生成一段“承上启下”的短回复，让用户感知你正在处理，并说明你下一步会去核实/查询/分析哪些方向。注意：你对用户可见的文本中不要提及“工具/MCP/调用工具/系统提示/协议/流程”等内部细节。</objective>',
+    '  <objective>你的任务是：在“确实有必要打断用户”的情况下，先生成一段很短的承上启下回复，让用户感知你正在处理，并说明你下一步会先核实/查询/分析哪些方向。注意：对用户可见文本中不要提及“工具/MCP/调用工具/系统提示/协议/流程”等内部细节。若当前输入信息不足（例如只有图片/表情/动画表情且没有明确诉求）、或任务非常轻量无需打断，请输出空的 <sentra-response></sentra-response> 以保持沉默。</objective>',
     '  <allow_tools>false</allow_tools>',
     `  <judge_reason>${escapeXml(summary)}</judge_reason>`,
     (toolsLine
@@ -44,7 +44,8 @@ function buildToolPreReplyRootDirectiveXml({
       : ''),
     '  <constraints>',
     '    <item>你必须且只能输出一个顶层块：<sentra-response>...</sentra-response>；除此之外不要输出任何字符、解释、前后缀。</item>',
-    '    <item>最终输出的 `<sentra-response>` 必须包含至少一个非空的 `<text1>`。</item>',
+    '    <item>当你判断“不需要插嘴/信息不足/会打扰用户”时：输出空的 `<sentra-response></sentra-response>`（不要包含 text/resources/send/emoji 等任何内容）。</item>',
+    '    <item>当你判断“需要预回复”时：最终输出的 `<sentra-response>` 必须包含至少一个非空的 `<text1>`。</item>',
     '    <item>强烈建议拆成多段 `<textN>`：优先使用 `<text1>` + `<text2>`（必要时可加 `<text3>`），每段表达一个语义块，避免把所有内容塞进一个很长的 `<text1>`。</item>',
     '    <item>推荐结构：<text1>承接/确认用户诉求（1句）</text1>；<text2>你接下来会先核实/查询/分析哪些方向，以及你稍后会给出什么结果（1句）</text2>；如需补充再用 <text3>。</item>',
     '    <item>语言要自然、像真人聊天。整体尽量短（建议 2-3 句），不要客套堆砌。</item>',

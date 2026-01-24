@@ -1045,7 +1045,9 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
         sorter: true,
         sortOrder: sortOrderFor('key'),
         render: (k: any) => (
-          <div className={styles.keyCell} title={String(k || '')}>{String(k || '')}</div>
+          <Tooltip title={String(k || '')}>
+            <div className={styles.keyCell}>{String(k || '')}</div>
+          </Tooltip>
         ),
       },
       {
@@ -2017,7 +2019,6 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                       <div
                                         key={r.pairId}
                                         className={`${styles.pairRow} ${isActive ? styles.pairRowActive : ''}`}
-                                        title={r.pairId}
                                         onClick={() => {
                                           setPairSelectedId(r.pairId);
                                           if (pairExpandAll) return;
@@ -2032,8 +2033,8 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                             <label
                                               className={styles.pairCheck}
                                               onClick={(e) => e.stopPropagation()}
-                                              title={isChecked ? '取消选择' : '选择'}
                                             >
+                                              <Tooltip title={isChecked ? '取消选择' : '选择'}>
                                               <Checkbox
                                                 checked={isChecked}
                                                 onChange={(e) => {
@@ -2044,9 +2045,12 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                                   }));
                                                 }}
                                               />
+                                              </Tooltip>
                                             </label>
                                             <div>
-                                              <div className={styles.pairId}>{shortId}</div>
+                                              <Tooltip title={r.pairId}>
+                                                <div className={styles.pairId}>{shortId}</div>
+                                              </Tooltip>
                                               <div className={styles.pairMeta}>messages={r.count}{r.ts ? ` · ${new Date(r.ts).toLocaleString()}` : ''}</div>
                                             </div>
                                           </div>

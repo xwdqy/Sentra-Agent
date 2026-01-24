@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import styles from './DeepWikiChat.module.css';
 import { getAuthHeaders } from '../services/api';
 import { createFile, fetchFileContent, fetchFileTree, grepFiles, searchSymbols, type FileNode, type GrepMatch, type SymbolMatch } from '../services/fileApi';
+import { Tooltip } from 'antd';
+import { ClearOutlined, DeleteOutlined, FileSearchOutlined } from '@ant-design/icons';
 import { IoAttachOutline, IoChevronDown, IoChevronForward, IoClose, IoDocumentText, IoFolder, IoFolderOpen, IoSearch } from 'react-icons/io5';
 import { SentraInlineLoading } from './SentraInlineLoading';
 import ReactMarkdown from 'react-markdown';
@@ -1130,20 +1132,22 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
       return (
         <div className={styles.codeLine}>
           <code className={styles.codeLineText}>{raw.trim()}</code>
-          <button
-            type="button"
-            className={styles.codeLineCopy}
-            onClick={async () => {
-              const ok = await copyToClipboard(raw.trim());
-              if (ok) {
-                setCopied(true);
-                window.setTimeout(() => setCopied(false), 900);
-              }
-            }}
-            title="复制"
-          >
-            {copied ? '已复制' : '复制'}
-          </button>
+          <Tooltip title="复制">
+            <button
+              type="button"
+              className={styles.codeLineCopy}
+              onClick={async () => {
+                const ok = await copyToClipboard(raw.trim());
+                if (ok) {
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 900);
+                }
+              }}
+              aria-label="复制"
+            >
+              {copied ? '已复制' : '复制'}
+            </button>
+          </Tooltip>
         </div>
       );
     }
@@ -2003,56 +2007,64 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
             <span className={styles.badgeDot} />
             在线
           </span>
-          <button
-            type="button"
-            className={styles.convButton}
-            onClick={() => setConvModalOpen(true)}
-            disabled={convLoading}
-            title="对话管理"
-          >
-            {activeConversationTitle || conversations.find(c => c.id === activeConversationId)?.title || '对话'}
-          </button>
-          <button
-            type="button"
-            className={styles.headerIconButton}
-            onClick={() => {
-              if (!activeConversationId) return;
-              openConfirm({
-                title: '删除对话',
-                message: '确定删除当前对话吗？该操作不可恢复。',
-                confirmText: '删除',
-                cancelText: '取消',
-                destructive: true,
-                onConfirm: () => {
-                  void handleDeleteConversation(activeConversationId);
-                },
-              });
-            }}
-            title="删除当前对话"
-            disabled={!activeConversationId || convLoading}
-          >
-            ✕
-          </button>
-          <button
-            type="button"
-            className={styles.headerIconButton}
-            onClick={clearCurrentConversation}
-            title="清空当前对话"
-            disabled={!activeConversationId || convLoading}
-          >
-            ⌫
-          </button>
+          <Tooltip title="对话管理">
+            <button
+              type="button"
+              className={styles.convButton}
+              onClick={() => setConvModalOpen(true)}
+              disabled={convLoading}
+              aria-label="对话管理"
+            >
+              {activeConversationTitle || conversations.find(c => c.id === activeConversationId)?.title || '对话'}
+            </button>
+          </Tooltip>
+          <Tooltip title="删除当前对话">
+            <button
+              type="button"
+              className={styles.headerIconButton}
+              onClick={() => {
+                if (!activeConversationId) return;
+                openConfirm({
+                  title: '删除对话',
+                  message: '确定删除当前对话吗？该操作不可恢复。',
+                  confirmText: '删除',
+                  cancelText: '取消',
+                  destructive: true,
+                  onConfirm: () => {
+                    void handleDeleteConversation(activeConversationId);
+                  },
+                });
+              }}
+              aria-label="删除当前对话"
+              disabled={!activeConversationId || convLoading}
+            >
+              <DeleteOutlined />
+            </button>
+          </Tooltip>
+          <Tooltip title="清空当前对话">
+            <button
+              type="button"
+              className={styles.headerIconButton}
+              onClick={clearCurrentConversation}
+              aria-label="清空当前对话"
+              disabled={!activeConversationId || convLoading}
+            >
+              <ClearOutlined />
+            </button>
+          </Tooltip>
         </div>
         <div className={styles.headerRight}>
-          <button
-            type="button"
-            className={styles.headerIconButton}
-            onClick={() => openTrace(lastAgentTraceMsgId)}
-            title="查看 Agent 执行日志"
-            disabled={!lastAgentTraceMsgId}
-          >
-            ≡
-          </button>
+          <Tooltip title="查看 Agent 执行日志">
+            <button
+              type="button"
+              className={styles.headerIconButton}
+              onClick={() => openTrace(lastAgentTraceMsgId)}
+              aria-label="查看 Agent 执行日志"
+              disabled={!lastAgentTraceMsgId}
+            >
+              <FileSearchOutlined />
+            </button>
+          </Tooltip>
           <button
             type="button"
             className={`${styles.toggleStream} ${streamEnabled ? styles.toggleOn : ''}`}
@@ -2067,9 +2079,11 @@ export const DeepWikiChat: React.FC<DeepWikiChatProps> = ({ theme }) => {
             type="button"
             className={`${styles.toggleStream} ${agentModeEnabled ? styles.toggleOn : ''}`}
             onClick={handleToggleAgentMode}
-            title="启用 DeepWiki Sentra-XML Agent（支持 read_file/write_file 工具链）"
+            aria-label="启用 DeepWiki Sentra-XML Agent（支持 read_file/write_file 工具链）"
           >
-            <span style={{ fontSize: 12 }}>Agent 模式</span>
+            <Tooltip title="启用 DeepWiki Sentra-XML Agent（支持 read_file/write_file 工具链）">
+              <span style={{ fontSize: 12 }}>Agent 模式</span>
+            </Tooltip>
             <span className={styles.toggleDotTrack}>
               <span className={styles.toggleDotThumb} />
             </span>

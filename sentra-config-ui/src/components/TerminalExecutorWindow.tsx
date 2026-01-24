@@ -32,6 +32,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
   const reconnectTimerRef = useRef<number | null>(null);
   const stoppedRef = useRef(false);
   const onSessionNotFoundRef = useRef<TerminalExecutorWindowProps['onSessionNotFound']>(onSessionNotFound);
+  const initSeenRef = useRef(false);
 
   useEffect(() => {
     onSessionNotFoundRef.current = onSessionNotFound;
@@ -98,6 +99,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
 
     stoppedRef.current = false;
     openedRef.current = false;
+    initSeenRef.current = false;
     cursorRef.current = restoredCursor;
     lastSavedCursorRef.current = restoredCursor;
     snapshotRef.current = restoredSnapshot;
@@ -138,7 +140,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
 
     const pickSentraTermFontFile = () => {
       const files = Array.isArray(fontFiles) ? [...fontFiles] : [];
-      const hit = files.find((f) => /^sentraterm\.(ttf|otf|woff2?|ttc)$/i.test(String(f || '')));
+      const hit = files.find((f) => /^均衡\.(ttf|otf|woff2?|ttc)$/i.test(String(f || '')));
       return hit ? String(hit) : '';
     };
 
@@ -185,6 +187,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
             if (!disposed) setUiFontFamily(next);
             try {
               fitAddonRef.current?.fit();
+              sendResizeNow();
               term.refresh(0, term.rows - 1);
               requestAnimationFrame(() => {
                 try { term.refresh(0, term.rows - 1); } catch { }
@@ -211,6 +214,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
             if (!disposed) setUiFontFamily(next);
             try {
               fitAddonRef.current?.fit();
+              sendResizeNow();
               term.refresh(0, term.rows - 1);
               requestAnimationFrame(() => {
                 try { term.refresh(0, term.rows - 1); } catch { }
@@ -268,6 +272,17 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
       }
     };
 
+    const trimOverlap = (prev: string, next: string) => {
+      if (!prev || !next) return next;
+      const max = Math.min(8192, prev.length, next.length);
+      for (let len = max; len > 0; len -= 1) {
+        if (prev.slice(-len) === next.slice(0, len)) {
+          return next.slice(len);
+        }
+      }
+      return next;
+    };
+
     if (restoredSnapshot) {
       safeWrite(restoredSnapshot);
     }
@@ -312,7 +327,13 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
         }
 
         if (msg?.type === 'init' || msg?.type === 'data') {
-          const data = String(msg?.data || '');
+          const rawData = String(msg?.data || '');
+          const data = (msg?.type === 'init' && !initSeenRef.current && snapshotRef.current)
+            ? trimOverlap(String(snapshotRef.current || ''), rawData)
+            : rawData;
+
+          if (msg?.type === 'init') initSeenRef.current = true;
+
           if (data) {
             safeWrite(data);
             const maxChars = 200000;
@@ -325,7 +346,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
           if (Number.isFinite(c)) cursorRef.current = c;
           persistState(false);
           if (msg?.type === 'init') {
-            try { console.debug('[TerminalExecutor] init', { sessionId, len: data.length, cursor: c }); } catch { }
+            try { console.debug('[TerminalExecutor] init', { sessionId, len: rawData.length, cursor: c }); } catch { }
           }
           if (msg?.type === 'init' && msg?.exited) {
             const ec = msg?.exitCode;
@@ -455,8 +476,46 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
         }
         return true;
       }
+
+      if ((event.ctrlKey || event.metaKey) && event.key === 'a') {
+        term.selectAll();
+        return false;
+      }
+
       return true;
     });
+
+    const handlePasteCapture = (e: ClipboardEvent) => {
+      try {
+        const text = e.clipboardData?.getData('text');
+        if (!text) return;
+        e.preventDefault();
+        term.paste(text);
+      } catch {
+        // ignore
+      }
+    };
+
+    const handleContextMenu = (e: MouseEvent) => {
+      const selection = term.getSelection();
+      if (selection) {
+        e.preventDefault();
+        e.stopPropagation();
+        navigator.clipboard.writeText(selection).catch(() => undefined);
+        return;
+      }
+
+      const readText = (navigator as any)?.clipboard?.readText;
+      if (typeof readText === 'function') {
+        e.preventDefault();
+        e.stopPropagation();
+        (navigator as any).clipboard.readText().then((text: string) => {
+          if (text) {
+            term.paste(text);
+          }
+        }).catch(() => undefined);
+      }
+    };
 
     const onResize = () => {
       try {
@@ -478,6 +537,8 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
       }
     };
     terminalRef.current.addEventListener('pointerdown', focusOnPointer);
+    terminalRef.current.addEventListener('paste', handlePasteCapture as any, true);
+    terminalRef.current.addEventListener('contextmenu', handleContextMenu);
 
     return () => {
       disposed = true;
@@ -486,6 +547,8 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
 
       window.removeEventListener('resize', onResize);
       terminalRef.current?.removeEventListener('pointerdown', focusOnPointer);
+      terminalRef.current?.removeEventListener('paste', handlePasteCapture as any, true);
+      terminalRef.current?.removeEventListener('contextmenu', handleContextMenu);
 
       if (openRaf != null) {
         cancelAnimationFrame(openRaf);

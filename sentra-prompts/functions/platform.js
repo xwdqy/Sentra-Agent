@@ -1136,6 +1136,12 @@ export async function getSandboxSystemPrompt() {
       '- `<reply_mode>`: `none` | `first` | `always`.\n' +
       '  - `first`: quote ONLY on the first text segment (recommended for most cases).\n' +
       '  - `always`: quote on every segment (rare; use only when every segment must be tightly anchored).\n' +
+      '- **Model-controlled quoting (recommended)**: If you want to quote/reply to a specific message, you MUST provide a valid target id: `<reply_to_message_id>...` inside `<send>`.\n' +
+      '  - `<reply_to_message_id>` MUST be digits-only (QQ message_id style).\n' +
+      '  - Choose this id ONLY from the conversation context, typically one of:\n' +
+      '    - `<sentra-user-question><message_id>` (the current user message), or\n' +
+      '    - an explicit quoted/replied message id that appears in the input context (e.g. `<reply>...<message_id>...</message_id>...</reply>` if present).\n' +
+      '  - If you are not 100% sure which message should be quoted, OMIT `<reply_to_message_id>` and do NOT quote.\n' +
       '- Mentions are controlled ONLY via `<mentions_by_segment>` (group chats only).\n' +
       '  - Index is 1-based and corresponds to `<text1>`, `<text2>`, ...\n' +
       '  - Put one or more `<id>` values (digits) or `all` inside each `<segment index="N">`.\n' +
@@ -1153,6 +1159,7 @@ export async function getSandboxSystemPrompt() {
       '  <resources></resources>\n' +
       '  <send>\n' +
       '    <reply_mode>first</reply_mode>\n' +
+      '    <reply_to_message_id>1939576837</reply_to_message_id>\n' +
       '    <mentions_by_segment>\n' +
       '      <segment index="1">\n' +
       '        <id>2166683295</id>\n' +

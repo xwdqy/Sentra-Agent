@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Menu, Item, Submenu } from 'react-contexify';
+import { Tooltip } from 'antd';
 import { storage } from '../../utils/storage';
 
 type DesktopContextMenuProps = {
@@ -126,7 +127,9 @@ export function DesktopContextMenu(props: DesktopContextMenuProps) {
                 <span style={{ width: 14, display: 'inline-block', textAlign: 'center' }} aria-hidden="true">
                   {isCurrent ? '✓' : ''}
                 </span>
-                <span style={menuEllipsisStyle} title={name}>{name}</span>
+                <Tooltip title={name}>
+                  <span style={menuEllipsisStyle}>{name}</span>
+                </Tooltip>
               </div>
             </Item>
           );
@@ -139,7 +142,9 @@ export function DesktopContextMenu(props: DesktopContextMenuProps) {
                 <Item key={`recent:${hex}`} onClick={() => selectSolidColor(hex)}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div style={{ width: 12, height: 12, background: hex, border: '1px solid #ddd' }} />
-                    <span style={menuEllipsisStyle} title={hex}>{hex}</span>
+                    <Tooltip title={hex}>
+                      <span style={menuEllipsisStyle}>{hex}</span>
+                    </Tooltip>
                   </div>
                 </Item>
               ))}
@@ -149,7 +154,9 @@ export function DesktopContextMenu(props: DesktopContextMenuProps) {
             <Item key={c.name} onClick={() => selectSolidColor(c.value)}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div style={{ width: 12, height: 12, background: c.value, border: '1px solid #ddd' }} />
-                <span style={menuEllipsisStyle} title={c.name}>{c.name}</span>
+                <Tooltip title={c.name}>
+                  <span style={menuEllipsisStyle}>{c.name}</span>
+                </Tooltip>
               </div>
             </Item>
           ))}
