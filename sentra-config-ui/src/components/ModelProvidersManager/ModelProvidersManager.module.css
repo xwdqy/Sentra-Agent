@@ -919,6 +919,35 @@
   background: var(--mpm-surface-2);
 }
 
+.mobileSectionSegmented {
+  width: 100%;
+}
+
+.mobileSectionSegmented :global(.ant-segmented) {
+  width: 100% !important;
+  border-radius: 14px;
+  padding: 4px;
+}
+
+.mobileSectionSegmented :global(.ant-segmented-item) {
+  flex: 1 1 0;
+}
+
+.mobileSectionSegmented :global(.ant-segmented-item-label) {
+  padding: 8px 6px;
+}
+
+.mobileSectionLabel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 850;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .mobileProviderActions {
   display: flex;
   align-items: center;
@@ -1247,6 +1276,13 @@
   max-width: 100%;
 }
 
+.modelsHeaderActionsMobile {
+  width: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
 .modelsBodyScroll {
   height: 320px;
   overflow: auto;
@@ -1254,8 +1290,9 @@
 }
 
 .modelsSearch {
+  width: 100%;
   flex: 1;
-  max-width: 360px;
+  max-width: 100%;
 }
 
 .modelGroup {

@@ -153,3 +153,43 @@ export async function deleteRedisAdminGroupStatePairs(params: {
   });
   return readJsonOrThrow(res);
 }
+
+export async function setRedisAdminStringValue(params: {
+  profile?: 'main' | 'mcp';
+  key: string;
+  value: string;
+}): Promise<any> {
+  const res = await fetch('/api/redis-admin/string/set', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      profile: params.profile,
+      key: params.key,
+      value: params.value,
+    }),
+  });
+  return readJsonOrThrow(res);
+}
+
+export async function updateRedisAdminGroupStatePairMessage(params: {
+  profile?: 'main' | 'mcp';
+  groupId: string;
+  pairId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: number | null;
+}): Promise<any> {
+  const res = await fetch('/api/redis-admin/groupState/updatePairMessage', {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      profile: params.profile,
+      groupId: params.groupId,
+      pairId: params.pairId,
+      role: params.role,
+      content: params.content,
+      timestamp: params.timestamp ?? null,
+    }),
+  });
+  return readJsonOrThrow(res);
+}

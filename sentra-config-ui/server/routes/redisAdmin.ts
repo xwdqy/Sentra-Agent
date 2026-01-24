@@ -364,6 +364,55 @@ export async function redisAdminRoutes(fastify: FastifyInstance) {
     }
   });
 
+  fastify.post('/api/redis-admin/string/set', async (request, reply) => {
+    try {
+      const body: any = (request as any).body || {};
+      const profile = normalizeProfile(body.profile);
+      const key = String(body.key || '').trim();
+      const value = body.value != null ? String(body.value) : '';
+
+      if (!key) {
+        return reply.code(400).send({ success: false, error: 'Missing key' });
+      }
+
+      const RedisAdmin = await getRedisAdminClass();
+      const admin = new RedisAdmin({ envPath: getEnvPathByProfile(profile) });
+
+      try {
+        const redisType = await admin.redis.type(key);
+        if (!redisType || String(redisType).toLowerCase() === 'none') {
+          return reply.code(404).send({ success: false, error: `Key not found: ${key}` });
+        }
+        if (String(redisType).toLowerCase() !== 'string') {
+          return reply.code(400).send({ success: false, error: `Only string key is supported, got: ${redisType}` });
+        }
+
+        const ttl = await admin.redis.ttl(key);
+
+        if (Number.isFinite(ttl as any) && Number(ttl) > 0) {
+          await admin.redis.set(key, value, 'EX', Number(ttl));
+        } else {
+          await admin.redis.set(key, value);
+        }
+
+        const len = await admin.redis.strlen(key);
+
+        return {
+          success: true,
+          profile,
+          key,
+          redisType: 'string',
+          ttl: Number.isFinite(ttl as any) ? Number(ttl) : null,
+          len: Number.isFinite(len as any) ? Number(len) : null,
+        };
+      } finally {
+        await admin.disconnect();
+      }
+    } catch (e: any) {
+      reply.code(500).send({ success: false, error: e?.message || String(e) });
+    }
+  });
+
   fastify.post('/api/redis-admin/groupState/deletePairs', async (request, reply) => {
     try {
       const body: any = (request as any).body || {};
@@ -450,6 +499,109 @@ export async function redisAdminRoutes(fastify: FastifyInstance) {
             after: { conversations: afterMsgs, activePairs: afterActive },
             deleted: { conversations: deletedMsgs, activePairs: deletedActive },
           },
+        };
+      } finally {
+        await admin.disconnect();
+      }
+    } catch (e: any) {
+      reply.code(500).send({ success: false, error: e?.message || String(e) });
+    }
+  });
+
+  fastify.post('/api/redis-admin/groupState/updatePairMessage', async (request, reply) => {
+    try {
+      const body: any = (request as any).body || {};
+      const profile = normalizeProfile(body.profile);
+      const groupId = String(body.groupId || '').trim();
+      const pairId = String(body.pairId || '').trim();
+      const roleRaw = String(body.role || '').trim().toLowerCase();
+      const content = body.content != null ? String(body.content) : '';
+      const timestamp = body.timestamp != null && body.timestamp !== '' ? Number(body.timestamp) : null;
+
+      if (!groupId) {
+        return reply.code(400).send({ success: false, error: 'Missing groupId' });
+      }
+      if (!pairId) {
+        return reply.code(400).send({ success: false, error: 'Missing pairId' });
+      }
+      if (roleRaw !== 'user' && roleRaw !== 'assistant') {
+        return reply.code(400).send({ success: false, error: 'Invalid role, expected user|assistant' });
+      }
+
+      const RedisAdmin = await getRedisAdminClass();
+      const admin = new RedisAdmin({ envPath: getEnvPathByProfile(profile) });
+
+      try {
+        const key = `${String(admin.prefixes?.groupHistory || 'sentra:group:')}${groupId}`;
+        const ttl = await admin.redis.ttl(key);
+        const raw = await admin.redis.get(key);
+        if (!raw) {
+          return reply.code(404).send({ success: false, error: `Key not found: ${key}` });
+        }
+
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(String(raw));
+        } catch {
+          parsed = null;
+        }
+        if (!parsed || typeof parsed !== 'object') {
+          return reply.code(400).send({ success: false, error: 'Invalid JSON value (not object)' });
+        }
+
+        const conv = Array.isArray(parsed.conversations) ? parsed.conversations : [];
+        const candidates = (conv as any[])
+          .map((m: any, idx: number) => ({ m: m as any, idx }))
+          .filter((it: { m: any; idx: number }) => {
+            const m = it.m;
+            const pid = m && m.pairId != null ? String(m.pairId) : '';
+            const r = String(m?.role || '').toLowerCase();
+            if (!pid || pid !== pairId) return false;
+            if (r !== roleRaw) return false;
+            if (timestamp != null && Number.isFinite(timestamp)) {
+              const ts = typeof m?.timestamp === 'number' ? m.timestamp : null;
+              return ts != null && ts === timestamp;
+            }
+            return true;
+          });
+
+        if (!candidates.length) {
+          return reply.code(404).send({
+            success: false,
+            error: `Pair message not found: groupId=${groupId}, pairId=${pairId}, role=${roleRaw}${timestamp != null ? `, timestamp=${timestamp}` : ''}`,
+          });
+        }
+
+        const updatedIndexes: number[] = [];
+        if (timestamp != null && Number.isFinite(timestamp)) {
+          for (const it of candidates) {
+            (conv[it.idx] as any).content = content;
+            updatedIndexes.push(it.idx);
+          }
+        } else {
+          const first = candidates[0];
+          (conv[first.idx] as any).content = content;
+          updatedIndexes.push(first.idx);
+        }
+
+        parsed.conversations = conv;
+        const encoded = JSON.stringify(parsed);
+        if (Number.isFinite(ttl as any) && Number(ttl) > 0) {
+          await admin.redis.set(key, encoded, 'EX', Number(ttl));
+        } else {
+          await admin.redis.set(key, encoded);
+        }
+
+        return {
+          success: true,
+          profile,
+          key,
+          groupId,
+          pairId,
+          role: roleRaw,
+          timestamp: timestamp != null && Number.isFinite(timestamp) ? timestamp : null,
+          updatedIndexes,
+          updatedCount: updatedIndexes.length,
         };
       } finally {
         await admin.disconnect();

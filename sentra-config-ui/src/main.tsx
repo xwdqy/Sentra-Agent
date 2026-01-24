@@ -20,7 +20,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       theme={{
         token: {
           fontFamily: 'var(--system-font)',
-          zIndexPopupBase: 5000,
+          zIndexPopupBase: 120000,
         },
       }}
     >

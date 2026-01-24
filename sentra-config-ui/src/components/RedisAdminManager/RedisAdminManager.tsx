@@ -3,6 +3,7 @@ import styles from './RedisAdminManager.module.css';
 import { Alert, Button, Checkbox, Descriptions, Divider, Input, List, Modal, Popover, Segmented, Select, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { CopyOutlined, EyeOutlined, SettingOutlined } from '@ant-design/icons';
+import { XMLBuilder, XMLParser } from 'fast-xml-parser';
 import {
   fetchRedisAdminGroups,
   fetchRedisAdminHealth,
@@ -13,6 +14,8 @@ import {
   fetchRedisAdminRelated,
   deleteRedisAdminGroupStatePairs,
   deleteRedisAdminByPattern,
+  setRedisAdminStringValue,
+  updateRedisAdminGroupStatePairMessage,
 } from '../../services/redisAdminApi';
 import { useDevice } from '../../hooks/useDevice';
 import { storage } from '../../utils/storage';
@@ -169,7 +172,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
   const [selectedKey, setSelectedKey] = useState<string>('');
   const [inspect, setInspect] = useState<any>(null);
   const [rightTab, setRightTab] = useState<'detail' | 'overview' | 'related' | 'danger'>('detail');
-  const [detailFocus, setDetailFocus] = useState<'preview' | 'pairs' | 'split'>('preview');
+  const [detailFocus, setDetailFocus] = useState<'preview' | 'pairs'>('preview');
 
   const [categoryFilter, setCategoryFilter] = useState<string>('全部');
   const [keyword, setKeyword] = useState<string>('');
@@ -219,31 +222,67 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
 
   const [pairConfirmOpen, setPairConfirmOpen] = useState(false);
   const [pairConfirmText, setPairConfirmText] = useState('');
+  const [pairConfirmAcknowledge, setPairConfirmAcknowledge] = useState(false);
+  const [pairConfirmTarget, setPairConfirmTarget] = useState<{ groupId: string; pairId: string; shortId: string } | null>(null);
   const [pairSelectedId, setPairSelectedId] = useState<string>('');
   const [pairSectionCollapsed, setPairSectionCollapsed] = useState<boolean>(false);
-  const [pairExpandAll, setPairExpandAll] = useState<boolean>(false);
-  const [pairExpandedMap, setPairExpandedMap] = useState<Record<string, boolean>>({});
   const [pairListLimit, setPairListLimit] = useState<number>(200);
   const [pairSearchText, setPairSearchText] = useState<string>('');
   const [pairSearchMode, setPairSearchMode] = useState<'auto' | 'pairId' | 'keyword'>('auto');
   const [pairSelectedMap, setPairSelectedMap] = useState<Record<string, boolean>>({});
-  const [pairDeletePreview, setPairDeletePreview] = useState<{
+
+  const [pairViewerOpen, setPairViewerOpen] = useState(false);
+  const [pairViewerData, setPairViewerData] = useState<{
     groupId: string;
     pairId: string;
     shortId: string;
-    dryRun: boolean;
-    stats: any;
-    ts: number;
+    count: number;
+    ts: number | null;
+    userText: string;
+    assistantText: string;
+    userTs: number | null;
+    assistantTs: number | null;
   } | null>(null);
+
+  const [pairValuePreviewOpen, setPairValuePreviewOpen] = useState(false);
+  const [pairValuePreviewTitle, setPairValuePreviewTitle] = useState('');
+  const [pairValuePreviewText, setPairValuePreviewText] = useState('');
+  const [pairValuePreviewCtx, setPairValuePreviewCtx] = useState<null | {
+    role: 'user' | 'assistant';
+    basePath: string;
+    messageJson: any;
+    raw: any;
+  }>(null);
+
+  const [pairValueEditorOpen, setPairValueEditorOpen] = useState(false);
+  const [pairValueEditorTitle, setPairValueEditorTitle] = useState('');
+  const [pairValueEditorText, setPairValueEditorText] = useState('');
+  const [pairValueEditorCtx, setPairValueEditorCtx] = useState<null | {
+    groupId: string;
+    pairId: string;
+    role: 'user' | 'assistant';
+    timestamp: number | null;
+    path: string;
+    leafType: string;
+    baselineShapeSig: string;
+    baselineFrozenAttrSig: string;
+    baselineJson: any;
+  }>(null);
+
+  const [valueEditorOpen, setValueEditorOpen] = useState(false);
+  const [valueEditorText, setValueEditorText] = useState('');
+  const [valueEditorBaseline, setValueEditorBaseline] = useState<{
+    isJson: boolean;
+    shapeSig: string;
+    frozenAttrSig: string;
+    keyCount: number;
+    keySamples: string[];
+  } | null>(null);
+
   const [pairBulkConfirmOpen, setPairBulkConfirmOpen] = useState(false);
   const [pairBulkConfirmText, setPairBulkConfirmText] = useState('');
-  const [pairBulkDeletePreview, setPairBulkDeletePreview] = useState<{
-    groupId: string;
-    pairIds: string[];
-    dryRun: boolean;
-    stats: any;
-    ts: number;
-  } | null>(null);
+  const [pairBulkConfirmAcknowledge, setPairBulkConfirmAcknowledge] = useState(false);
+  const [pairBulkConfirmTarget, setPairBulkConfirmTarget] = useState<{ groupId: string; pairIds: string[]; count: number } | null>(null);
 
   const applyDatePreset = useCallback((days: number | null) => {
     if (days == null) {
@@ -259,6 +298,299 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
     setDateFrom(start);
     setDateTo(end);
   }, []);
+
+  const xmlBuilder = useMemo(() => {
+    return new XMLBuilder({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+      format: true,
+      suppressEmptyNode: true,
+      processEntities: true,
+    } as any);
+  }, []);
+
+  const joinJsonPath = useCallback((basePath: string, subPath: string) => {
+    const base = String(basePath || '').trim();
+    const sub = String(subPath || '').trim();
+    if (!base) return sub;
+    if (!sub) return base;
+    if (sub.startsWith('[')) return `${base}${sub}`;
+    return `${base}.${sub}`;
+  }, []);
+
+  const prefixJsonTreeRows = useCallback((rows: any[], basePath: string): any[] => {
+    const prefix = String(basePath || '').trim();
+    if (!prefix) return rows;
+    const walk = (list: any[]): any[] => {
+      return list.map((r) => {
+        const next: any = { ...r };
+        next.path = joinJsonPath(prefix, String(r?.path || ''));
+        next.key = `${String(r?.key || '')}|${prefix}`;
+        if (Array.isArray(r?.children) && r.children.length) {
+          next.children = walk(r.children);
+        }
+        return next;
+      });
+    };
+    return walk(rows);
+  }, [joinJsonPath]);
+
+  const parsePathTokens = useCallback((path: string): Array<string | number> => {
+    const p = String(path || '').trim();
+    if (!p) return [];
+    const out: Array<string | number> = [];
+    let i = 0;
+    while (i < p.length) {
+      const ch = p[i];
+      if (ch === '.') {
+        i += 1;
+        continue;
+      }
+      if (ch === '[') {
+        const end = p.indexOf(']', i);
+        if (end <= i) break;
+        const rawIdx = p.slice(i + 1, end);
+        const n = Number(rawIdx);
+        if (Number.isFinite(n)) out.push(n);
+        i = end + 1;
+        continue;
+      }
+      let j = i;
+      while (j < p.length && p[j] !== '.' && p[j] !== '[') j += 1;
+      const key = p.slice(i, j);
+      if (key) out.push(key);
+      i = j;
+    }
+    return out;
+  }, []);
+
+  const setJsonLeafAtPath = useCallback((root: any, path: string, value: any) => {
+    const tokens = parsePathTokens(path);
+    if (!tokens.length) throw new Error('Empty path');
+    let cur: any = root;
+    for (let i = 0; i < tokens.length - 1; i += 1) {
+      const t = tokens[i];
+      if (typeof t === 'number') {
+        if (!Array.isArray(cur)) throw new Error(`Path expects array at ${tokens.slice(0, i).join('.')}`);
+        cur = cur[t];
+      } else {
+        if (!cur || typeof cur !== 'object') throw new Error(`Path expects object at ${tokens.slice(0, i).join('.')}`);
+        cur = cur[t];
+      }
+    }
+    const last = tokens[tokens.length - 1];
+    if (typeof last === 'number') {
+      if (!Array.isArray(cur)) throw new Error(`Path expects array at ${tokens.slice(0, -1).join('.')}`);
+      cur[last] = value;
+    } else {
+      if (!cur || typeof cur !== 'object') throw new Error(`Path expects object at ${tokens.slice(0, -1).join('.')}`);
+      cur[last] = value;
+    }
+  }, [parsePathTokens]);
+
+  const coerceLeafValue = useCallback((leafType: string, text: string) => {
+    const t = String(leafType || '').toLowerCase();
+    const raw = String(text ?? '');
+    if (t === 'string') return { ok: true as const, value: raw };
+    if (t === 'number') {
+      const n = Number(raw.trim());
+      if (!Number.isFinite(n)) return { ok: false as const, error: '请输入合法 number' };
+      return { ok: true as const, value: n };
+    }
+    if (t === 'boolean') {
+      const v = raw.trim().toLowerCase();
+      if (v !== 'true' && v !== 'false') return { ok: false as const, error: '请输入 true / false' };
+      return { ok: true as const, value: v === 'true' };
+    }
+    if (t === 'null') {
+      const v = raw.trim().toLowerCase();
+      if (v !== '' && v !== 'null') return { ok: false as const, error: '该节点为 null，只能保持为空或输入 null' };
+      return { ok: true as const, value: null };
+    }
+    return { ok: false as const, error: `不支持编辑的类型：${leafType}` };
+  }, []);
+
+  const buildJsonShapeSig = useCallback((input: any) => {
+    const parts: string[] = [];
+    const keySet = new Set<string>();
+    let maxKeySamples = 12;
+
+    const walk = (node: any, path: string) => {
+      const t = node === null ? 'null' : Array.isArray(node) ? 'array' : typeof node;
+      if (t !== 'object' && t !== 'array') {
+        parts.push(`${path}|${t}`);
+        return;
+      }
+      if (t === 'array') {
+        const arr = Array.isArray(node) ? node : [];
+        parts.push(`${path}|array|len=${arr.length}`);
+        for (let i = 0; i < arr.length; i += 1) {
+          walk(arr[i], `${path}[${i}]`);
+        }
+        return;
+      }
+
+      const obj = node && typeof node === 'object' ? node : {};
+      const keys = Object.keys(obj).sort();
+      parts.push(`${path}|object|keys=${keys.join(',')}`);
+      for (const k of keys) {
+        const p = path ? `${path}.${k}` : k;
+        keySet.add(p);
+        walk((obj as any)[k], p);
+      }
+    };
+
+    walk(input, '');
+    const keySamples = Array.from(keySet).slice(0, maxKeySamples);
+    return {
+      shapeSig: parts.join('\n'),
+      keyCount: keySet.size,
+      keySamples,
+    };
+  }, []);
+
+  const buildFrozenAttrSig = useCallback((input: any) => {
+    const parts: string[] = [];
+    const walk = (node: any, path: string) => {
+      if (node == null) return;
+      if (typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i += 1) {
+          walk(node[i], `${path}[${i}]`);
+        }
+        return;
+      }
+      const keys = Object.keys(node);
+      for (const k of keys) {
+        const p = path ? `${path}.${k}` : k;
+        if (k.startsWith('@_')) {
+          parts.push(`${p}=${String((node as any)[k] ?? '')}`);
+        }
+        walk((node as any)[k], p);
+      }
+    };
+    walk(input, '');
+    return parts.sort().join('\n');
+  }, []);
+
+  const openPairLeafEditor = useCallback((args: {
+    role: 'user' | 'assistant';
+    path: string;
+    leafType: string;
+    leafRaw: any;
+    messageJson: any;
+  }) => {
+    if (!pairViewerData) return;
+    const groupId = String(pairViewerData.groupId || '').trim();
+    const pairId = String(pairViewerData.pairId || '').trim();
+    if (!groupId || !pairId) {
+      addToast('error', '无法编辑', '缺少 groupId/pairId');
+      return;
+    }
+    const timestamp = args.role === 'user' ? (pairViewerData.userTs ?? null) : (pairViewerData.assistantTs ?? null);
+
+    const shape = buildJsonShapeSig(args.messageJson);
+    const frozen = buildFrozenAttrSig(args.messageJson);
+
+    const leafType = String(args.leafType || '').toLowerCase();
+    const initialText = leafType === 'string' ? String(args.leafRaw ?? '') : leafType === 'null' ? '' : String(args.leafRaw ?? '');
+    setPairValueEditorTitle(args.path ? `编辑值：${args.path}` : '编辑值');
+    setPairValueEditorText(initialText);
+    setPairValueEditorCtx({
+      groupId,
+      pairId,
+      role: args.role,
+      timestamp,
+      path: String(args.path || ''),
+      leafType: String(args.leafType || ''),
+      baselineShapeSig: shape.shapeSig,
+      baselineFrozenAttrSig: frozen,
+      baselineJson: args.messageJson,
+    });
+    setPairValueEditorOpen(true);
+  }, [addToast, buildFrozenAttrSig, buildJsonShapeSig, pairViewerData]);
+
+  const savePairLeafEditor = useCallback(async () => {
+    if (!pairViewerData) return;
+    if (!pairValueEditorCtx) return;
+
+    const ctx = pairValueEditorCtx;
+    const coerced = coerceLeafValue(ctx.leafType, pairValueEditorText);
+    if (!coerced.ok) {
+      addToast('error', '校验失败', coerced.error);
+      return;
+    }
+
+    let nextJson: any = null;
+    try {
+      nextJson = JSON.parse(JSON.stringify(ctx.baselineJson));
+    } catch {
+      addToast('error', '无法保存', 'JSON 深拷贝失败');
+      return;
+    }
+
+    try {
+      setJsonLeafAtPath(nextJson, ctx.path, coerced.value);
+    } catch (e: any) {
+      addToast('error', '无法保存', String(e?.message || e));
+      return;
+    }
+
+    const shape = buildJsonShapeSig(nextJson);
+    const frozen = buildFrozenAttrSig(nextJson);
+    if (shape.shapeSig !== ctx.baselineShapeSig) {
+      addToast('error', '结构不允许修改', '检测到节点类型/数组长度/键集合变化');
+      return;
+    }
+    if (frozen !== ctx.baselineFrozenAttrSig) {
+      addToast('error', '禁止修改', '检测到 @_xxx 字段变化');
+      return;
+    }
+
+    let nextXml = '';
+    try {
+      nextXml = String(xmlBuilder.build(nextJson) || '').trim();
+      if (!nextXml.startsWith('<')) throw new Error('XMLBuilder 输出异常');
+    } catch (e: any) {
+      addToast('error', '无法保存', `XML 构建失败：${String(e?.message || e)}`);
+      return;
+    }
+
+    setBusy(true);
+    setErrorText('');
+    try {
+      await updateRedisAdminGroupStatePairMessage({
+        profile,
+        groupId: ctx.groupId,
+        pairId: ctx.pairId,
+        role: ctx.role,
+        content: nextXml,
+        timestamp: ctx.timestamp,
+      });
+      addToast('success', '已保存对话对', `${ctx.role} · ${ctx.path || '-'}`);
+
+      setPairValueEditorOpen(false);
+      setPairValueEditorTitle('');
+      setPairValueEditorText('');
+      setPairValueEditorCtx(null);
+
+      setPairViewerData((prev) => {
+        if (!prev) return prev;
+        if (ctx.role === 'user') return { ...prev, userText: nextXml };
+        return { ...prev, assistantText: nextXml };
+      });
+
+      if (selectedKey) {
+        const payload = await fetchRedisAdminInspect({ profile, key: String(selectedKey || ''), preview: 1200, head: 5, tail: 5, sample: 12, top: 20 });
+        setInspect(payload);
+      }
+    } catch (e: any) {
+      setErrorText(String(e?.message || e));
+      addToast('error', '保存失败', String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }, [addToast, buildFrozenAttrSig, buildJsonShapeSig, coerceLeafValue, pairValueEditorCtx, pairValueEditorText, pairViewerData, profile, selectedKey, setJsonLeafAtPath, xmlBuilder]);
 
   const loadHealth = useCallback(async () => {
     const h = await fetchRedisAdminHealth();
@@ -483,16 +815,390 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
 
   useEffect(() => {
     setPairSelectedId('');
-    setPairExpandAll(false);
-    setPairExpandedMap({});
     setPairSearchText('');
     setPairSearchMode('auto');
     setPairSelectedMap({});
-    setPairDeletePreview(null);
-    setPairBulkDeletePreview(null);
+    setPairConfirmOpen(false);
+    setPairConfirmText('');
+    setPairConfirmAcknowledge(false);
+    setPairConfirmTarget(null);
     setPairBulkConfirmOpen(false);
     setPairBulkConfirmText('');
+    setPairBulkConfirmAcknowledge(false);
+    setPairBulkConfirmTarget(null);
+    setPairViewerOpen(false);
+    setPairViewerData(null);
+    setPairValuePreviewOpen(false);
+    setPairValuePreviewTitle('');
+    setPairValuePreviewText('');
+    setPairValuePreviewCtx(null);
+
+    setPairValueEditorOpen(false);
+    setPairValueEditorTitle('');
+    setPairValueEditorText('');
+    setPairValueEditorCtx(null);
+
+    setValueEditorOpen(false);
+    setValueEditorText('');
+    setValueEditorBaseline(null);
   }, [selectedKey]);
+
+  const getStringValueForEditing = useCallback((): { ok: true; text: string; isJson: boolean; json: any } | { ok: false; error: string } => {
+    if (!inspect || typeof inspect !== 'object') return { ok: false, error: '无 inspect 数据' };
+    const t = String((inspect as any).type || '').toLowerCase();
+    if (t !== 'string') return { ok: false, error: `仅支持 string key 编辑，当前类型=${t || '-'}` };
+    const raw = (inspect as any).value ?? (inspect as any).valuePreview ?? '';
+    const text = String(raw ?? '');
+    const trimmed = text.trim();
+    if (!trimmed) return { ok: true, text, isJson: false, json: null };
+    if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return { ok: true, text, isJson: false, json: null };
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!parsed || typeof parsed !== 'object') return { ok: true, text, isJson: false, json: null };
+      return { ok: true, text: stringifyForPreview(parsed), isJson: true, json: parsed };
+    } catch {
+      return { ok: true, text, isJson: false, json: null };
+    }
+  }, [inspect]);
+
+  const openValueEditor = useCallback(() => {
+    const cur = getStringValueForEditing();
+    if (!cur.ok) {
+      addToast('error', '无法编辑', cur.error);
+      return;
+    }
+    let baseline = {
+      isJson: false,
+      shapeSig: '',
+      frozenAttrSig: '',
+      keyCount: 0,
+      keySamples: [] as string[],
+    };
+    if (cur.isJson) {
+      const shape = buildJsonShapeSig(cur.json);
+      baseline = {
+        isJson: true,
+        shapeSig: shape.shapeSig,
+        frozenAttrSig: buildFrozenAttrSig(cur.json),
+        keyCount: shape.keyCount,
+        keySamples: shape.keySamples,
+      };
+    }
+
+    setValueEditorBaseline(baseline);
+    setValueEditorText(cur.text);
+    setValueEditorOpen(true);
+  }, [addToast, buildFrozenAttrSig, buildJsonShapeSig, getStringValueForEditing]);
+
+  const validateJsonEdit = useCallback((baseline: NonNullable<typeof valueEditorBaseline>, nextText: string) => {
+    if (!baseline.isJson) return { ok: true as const, json: null as any };
+    const raw = String(nextText || '').trim();
+    if (!raw) return { ok: false as const, error: 'JSON 不能为空' };
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e: any) {
+      return { ok: false as const, error: `JSON 解析失败：${String(e?.message || e)}` };
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return { ok: false as const, error: 'JSON 必须是 object/array' };
+    }
+
+    const shape = buildJsonShapeSig(parsed);
+    const frozen = buildFrozenAttrSig(parsed);
+    if (shape.shapeSig !== baseline.shapeSig) {
+      return {
+        ok: false as const,
+        error: `结构不允许修改：原 key=${baseline.keyCount}（示例：${baseline.keySamples.join(', ') || '-'}）`,
+      };
+    }
+    if (frozen !== baseline.frozenAttrSig) {
+      return { ok: false as const, error: '禁止修改 @_xxx 字段（例如 @_name）' };
+    }
+    return { ok: true as const, json: parsed };
+  }, [buildFrozenAttrSig, buildJsonShapeSig, valueEditorBaseline]);
+
+  const saveValueEditor = useCallback(async () => {
+    if (!selectedKey) return;
+    if (!valueEditorBaseline) return;
+
+    const nextText = String(valueEditorText ?? '');
+    const baseline = valueEditorBaseline;
+    const validate = validateJsonEdit(baseline, nextText);
+    if (!(validate as any).ok) {
+      addToast('error', '校验失败', (validate as any).error);
+      return;
+    }
+
+    setBusy(true);
+    setErrorText('');
+    try {
+      await setRedisAdminStringValue({ profile, key: selectedKey, value: nextText });
+      addToast('success', '保存成功', selectedKey);
+      setValueEditorOpen(false);
+      setValueEditorText('');
+      setValueEditorBaseline(null);
+      await runInspect(String(selectedKey || ''));
+      await loadOverview();
+    } catch (e: any) {
+      setErrorText(String(e?.message || e));
+      addToast('error', '保存失败', String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }, [addToast, loadOverview, profile, runInspect, selectedKey, validateJsonEdit, valueEditorBaseline, valueEditorText]);
+
+  const xmlParser = useMemo(() => {
+    return new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+      parseAttributeValue: true,
+      parseTagValue: true,
+      trimValues: true,
+      allowBooleanAttributes: true,
+    });
+  }, []);
+
+  const parseXmlToJson = useCallback((text: string) => {
+    const raw = String(text || '').trim();
+    if (!raw || !raw.startsWith('<')) return { ok: false as const, json: null as any, error: raw ? '非 XML 文本' : '空内容' };
+    try {
+      const json = xmlParser.parse(raw);
+      return { ok: true as const, json, error: '' };
+    } catch (e: any) {
+      return { ok: false as const, json: null as any, error: String(e?.message || e) };
+    }
+  }, [xmlParser]);
+
+  type JsonTreeRow = {
+    key: string;
+    name: string;
+    path: string;
+    type: string;
+    value: string;
+    raw: any;
+    children?: JsonTreeRow[];
+  };
+
+  const formatPreviewValue = useCallback((v: any) => {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return String(v);
+    try {
+      return JSON.stringify(v, null, 2);
+    } catch {
+      return String(v);
+    }
+  }, []);
+
+  const makePairValuePreviewCols = useCallback((ctx: NonNullable<typeof pairValuePreviewCtx>): ColumnsType<any> => [
+    {
+      title: '节点',
+      dataIndex: 'name',
+      key: 'name',
+      width: 240,
+      ellipsis: true,
+      render: (v: any) => <Typography.Text style={{ fontSize: 12, fontWeight: 800 }}>{String(v || '')}</Typography.Text>,
+    },
+    {
+      title: '路径',
+      dataIndex: 'path',
+      key: 'path',
+      width: 420,
+      ellipsis: true,
+      render: (v: any) => (
+        <Typography.Text code copyable={{ text: String(v || '') }} style={{ fontSize: 12 }}>
+          {String(v || '')}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: '值',
+      dataIndex: 'value',
+      key: 'value',
+      ellipsis: true,
+      render: (_: any, r: any) => {
+        const txt = formatPreviewValue(r?.raw);
+        const short = txt.length > 220 ? `${txt.slice(0, 220)}…` : txt;
+        const isLeaf = r?.type && String(r.type) !== 'object' && String(r.type) !== 'array' && String(r.type) !== 'limit';
+        const forbidAttr = typeof r?.path === 'string' && r.path.split('.').some((seg: string) => seg.startsWith('@_'));
+        return (
+          <Tooltip title={txt.length > 220 ? '点击查看完整内容' : null}>
+            <span style={{ display: 'inline-block', maxWidth: '100%' }}>
+              <Typography.Text
+                copyable={{ text: txt }}
+                style={{ fontSize: 12, wordBreak: 'break-word', cursor: 'pointer' }}
+                onClick={() => {
+                  if (forbidAttr) {
+                    addToast('error', '禁止编辑', '不允许修改 @_ 属性字段');
+                    return;
+                  }
+                  if (isLeaf) {
+                    openPairLeafEditor({
+                      role: ctx.role,
+                      path: String(r?.path || ''),
+                      leafType: String(r?.type || ''),
+                      leafRaw: r?.raw,
+                      messageJson: ctx.messageJson,
+                    });
+                    return;
+                  }
+                  setPairValuePreviewTitle(r?.path ? `值详情：${r.path}` : '值详情');
+                  setPairValuePreviewText(txt);
+                  setPairValuePreviewCtx({
+                    role: ctx.role,
+                    basePath: String(r?.path || ''),
+                    messageJson: ctx.messageJson,
+                    raw: r?.raw,
+                  });
+                }}
+              >
+                {short}
+              </Typography.Text>
+            </span>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      key: 'type',
+      width: 100,
+      render: (v: any) => <Tag>{String(v || '')}</Tag>,
+    },
+  ], [addToast, formatPreviewValue, openPairLeafEditor]);
+
+  const buildJsonTreeRows = useCallback((input: any, opts?: { maxNodes?: number; maxDepth?: number }) => {
+    const maxNodes = Math.max(50, Number(opts?.maxNodes ?? 1600));
+    const maxDepth = Math.max(3, Number(opts?.maxDepth ?? 18));
+    let count = 0;
+
+    const getType = (v: any) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+
+    const summarize = (v: any) => {
+      const t = getType(v);
+      if (t === 'string') {
+        const s = String(v);
+        return s.length > 140 ? `${s.slice(0, 140)}…` : s;
+      }
+      if (t === 'number' || t === 'boolean' || t === 'bigint') return String(v);
+      if (t === 'undefined') return 'undefined';
+      if (t === 'null') return 'null';
+      if (t === 'array') return `[${Array.isArray(v) ? v.length : 0}]`;
+      if (t === 'object') {
+        const keys = v && typeof v === 'object' ? Object.keys(v) : [];
+        return `{${keys.length}}`;
+      }
+      try {
+        return JSON.stringify(v);
+      } catch {
+        return String(v);
+      }
+    };
+
+    const walk = (node: any, name: string, path: string, depth: number): JsonTreeRow | null => {
+      if (count >= maxNodes) {
+        return {
+          key: `limit:${path}:${count}`,
+          name: '…',
+          path,
+          type: 'limit',
+          value: `已达到展示上限（${maxNodes}）`,
+          raw: null,
+        };
+      }
+      count += 1;
+
+      const t = getType(node);
+      const row: JsonTreeRow = {
+        key: `${count}:${path || name || 'root'}`,
+        name: name || '(root)',
+        path,
+        type: t,
+        value: summarize(node),
+        raw: node,
+      };
+
+      if (depth >= maxDepth) {
+        return row;
+      }
+
+      if (node && typeof node === 'object') {
+        if (Array.isArray(node)) {
+          const children: JsonTreeRow[] = [];
+          for (let i = 0; i < node.length; i += 1) {
+            if (count >= maxNodes) break;
+            const childPath = path ? `${path}[${i}]` : `[${i}]`;
+            const child = walk(node[i], `[${i}]`, childPath, depth + 1);
+            if (child) children.push(child);
+          }
+          if (children.length) row.children = children;
+        } else {
+          const keys = Object.keys(node);
+          const children: JsonTreeRow[] = [];
+          for (const k of keys) {
+            if (count >= maxNodes) break;
+            const childPath = path ? `${path}.${k}` : k;
+            const child = walk((node as any)[k], k, childPath, depth + 1);
+            if (child) children.push(child);
+          }
+          if (children.length) row.children = children;
+        }
+      }
+      return row;
+    };
+
+    const root = walk(input, '(root)', '', 0);
+    if (!root) return [];
+    if ((root.type === 'object' || root.type === 'array') && Array.isArray(root.children) && root.children.length) {
+      return root.children;
+    }
+    return [root];
+  }, []);
+
+  const extractRedisKeyRefs = useCallback((input: any, opts?: { maxRefs?: number }) => {
+    const maxRefs = Math.max(10, Number(opts?.maxRefs ?? 120));
+    const out: Array<{ path: string; key: string }> = [];
+    const seen = new Set<string>();
+    const keyRe = /(sentra:[^\s"'<>]{3,})/gi;
+
+    const walk = (node: any, path: string) => {
+      if (out.length >= maxRefs) return;
+      if (node == null) return;
+      if (typeof node === 'string') {
+        const s = node;
+        const m = s.match(keyRe);
+        if (m && m.length) {
+          for (const raw of m) {
+            if (out.length >= maxRefs) break;
+            const k = String(raw || '').trim();
+            if (!k) continue;
+            const sig = `${path}=>${k}`;
+            if (seen.has(sig)) continue;
+            seen.add(sig);
+            out.push({ path, key: k });
+          }
+        }
+        return;
+      }
+      if (typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i += 1) {
+          if (out.length >= maxRefs) break;
+          walk(node[i], path ? `${path}[${i}]` : `[${i}]`);
+        }
+        return;
+      }
+      for (const k of Object.keys(node)) {
+        if (out.length >= maxRefs) break;
+        walk((node as any)[k], path ? `${path}.${k}` : k);
+      }
+    };
+
+    walk(input, '');
+    return out;
+  }, []);
 
   const openPreview = useCallback((k: string) => {
     const key = String(k || '').trim();
@@ -607,78 +1313,58 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
     setConfirmOpen(true);
   }, [addToast, deletePreview, pattern]);
 
-  const runPairDeleteDry = useCallback(async (groupId: string, pairId: string) => {
-    const gid = String(groupId || '').trim();
-    const pid = String(pairId || '').trim();
-    if (!gid || !pid) return;
-    const shortId = pid.substring(0, 8);
-    const payload = await deleteRedisAdminGroupStatePairs({ profile, groupId: gid, pairIds: [pid], dryRun: true });
-    setPairDeletePreview({ groupId: gid, pairId: pid, shortId, dryRun: true, stats: payload?.stats, ts: Date.now() });
-    addToast('info', '已生成预览', `pairId=${shortId} deleted.conversations=${payload?.stats?.deleted?.conversations ?? '-'}`);
-  }, [addToast, profile]);
-
-  const runPairBulkDeleteDry = useCallback(async (groupId: string, pairIds: string[]) => {
-    const gid = String(groupId || '').trim();
-    const uniq = Array.from(new Set((pairIds || []).map((x) => String(x || '').trim()).filter(Boolean)));
-    if (!gid || !uniq.length) return;
-    const payload = await deleteRedisAdminGroupStatePairs({ profile, groupId: gid, pairIds: uniq, dryRun: true });
-    setPairBulkDeletePreview({ groupId: gid, pairIds: uniq, dryRun: true, stats: payload?.stats, ts: Date.now() });
-    addToast('info', '已生成批量预览', `pairs=${uniq.length} deleted.conversations=${payload?.stats?.deleted?.conversations ?? '-'}`);
-  }, [addToast, profile]);
-
   const openPairConfirm = useCallback((groupId: string, pairId: string) => {
     const gid = String(groupId || '').trim();
     const pid = String(pairId || '').trim();
     if (!gid || !pid) return;
     const shortId = pid.substring(0, 8);
-    if (!pairDeletePreview || pairDeletePreview.groupId !== gid || pairDeletePreview.pairId !== pid) {
-      addToast('info', '请先预览移除', `先点击“预览移除”，再确认删除（pairId=${shortId}）`);
-      return;
-    }
     setPairConfirmText('');
+    setPairConfirmAcknowledge(false);
+    setPairConfirmTarget({ groupId: gid, pairId: pid, shortId });
     setPairConfirmOpen(true);
-  }, [addToast, pairDeletePreview]);
+  }, []);
 
   const openPairBulkConfirm = useCallback((groupId: string, pairIds: string[]) => {
     const gid = String(groupId || '').trim();
     const uniq = Array.from(new Set((pairIds || []).map((x) => String(x || '').trim()).filter(Boolean)));
     if (!gid || !uniq.length) return;
-    const same = pairBulkDeletePreview && pairBulkDeletePreview.groupId === gid && Array.isArray(pairBulkDeletePreview.pairIds) && pairBulkDeletePreview.pairIds.length === uniq.length && uniq.every((x) => pairBulkDeletePreview.pairIds.includes(x));
-    if (!same) {
-      addToast('info', '请先预览批量移除', `先点击“批量预览移除”，再确认删除（pairs=${uniq.length}）`);
-      return;
-    }
     setPairBulkConfirmText('');
+    setPairBulkConfirmAcknowledge(false);
+    setPairBulkConfirmTarget({ groupId: gid, pairIds: uniq, count: uniq.length });
     setPairBulkConfirmOpen(true);
-  }, [addToast, pairBulkDeletePreview]);
+  }, []);
 
   const runPairDeleteConfirm = useCallback(async () => {
-    if (!pairDeletePreview) return;
-    const gid = pairDeletePreview.groupId;
-    const pid = pairDeletePreview.pairId;
-    const shortId = pairDeletePreview.shortId;
-    const payload = await deleteRedisAdminGroupStatePairs({ profile, groupId: gid, pairIds: [pid], dryRun: false });
-    setPairDeletePreview({ groupId: gid, pairId: pid, shortId, dryRun: false, stats: payload?.stats, ts: Date.now() });
+    if (!pairConfirmTarget) return;
+    const gid = pairConfirmTarget.groupId;
+    const pid = pairConfirmTarget.pairId;
+    const shortId = pairConfirmTarget.shortId;
+    await deleteRedisAdminGroupStatePairs({ profile, groupId: gid, pairIds: [pid], dryRun: false });
     addToast('success', '已移除对话对', `pairId=${shortId}`);
     setPairConfirmOpen(false);
     setPairConfirmText('');
+    setPairConfirmAcknowledge(false);
+    setPairConfirmTarget(null);
+    setPairViewerOpen(false);
+    setPairViewerData(null);
     try {
       await runInspect(String(selectedKey || ''));
     } catch {}
     try {
       await runList();
     } catch {}
-  }, [pairDeletePreview, profile, addToast, runInspect, selectedKey, runList]);
+  }, [pairConfirmTarget, profile, addToast, runInspect, selectedKey, runList]);
 
   const runPairBulkDeleteConfirm = useCallback(async () => {
-    if (!pairBulkDeletePreview) return;
-    const gid = pairBulkDeletePreview.groupId;
-    const pairIds = pairBulkDeletePreview.pairIds;
-    const payload = await deleteRedisAdminGroupStatePairs({ profile, groupId: gid, pairIds, dryRun: false });
-    setPairBulkDeletePreview({ groupId: gid, pairIds, dryRun: false, stats: payload?.stats, ts: Date.now() });
+    if (!pairBulkConfirmTarget) return;
+    const gid = pairBulkConfirmTarget.groupId;
+    const pairIds = pairBulkConfirmTarget.pairIds;
+    await deleteRedisAdminGroupStatePairs({ profile, groupId: gid, pairIds, dryRun: false });
     addToast('success', '已批量移除对话对', `pairs=${pairIds.length}`);
     setPairBulkConfirmOpen(false);
     setPairBulkConfirmText('');
+    setPairBulkConfirmAcknowledge(false);
+    setPairBulkConfirmTarget(null);
     setPairSelectedMap({});
     try {
       await runInspect(String(selectedKey || ''));
@@ -686,7 +1372,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
     try {
       await runList();
     } catch {}
-  }, [pairBulkDeletePreview, profile, addToast, runInspect, selectedKey, runList]);
+  }, [pairBulkConfirmTarget, profile, addToast, runInspect, selectedKey, runList]);
 
   const resetFilters = useCallback(() => {
     setCategoryFilter('全部');
@@ -922,9 +1608,6 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
     };
 
     const renderDesktop = (title: string, language: string, text: string) => {
-      if (performanceMode) {
-        return renderMobilePre(title, text);
-      }
       return (
         <div className={styles.previewBox}>
           <div className={styles.previewTitle}>{title}</div>
@@ -1010,7 +1693,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
     }
 
     return null;
-  }, [inspect, uiTheme, isCompact, performanceMode]);
+  }, [inspect, uiTheme, isCompact]);
 
   const overviewRows = useMemo(() => {
     return Object.entries(groups)
@@ -1265,6 +1948,87 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
             autoComplete="off"
             style={{ marginTop: 8 }}
           />
+        </div>
+      </Modal>
+
+      <Modal
+        open={pairValueEditorOpen && !!pairValueEditorCtx}
+        onCancel={() => {
+          setPairValueEditorOpen(false);
+          setPairValueEditorTitle('');
+          setPairValueEditorText('');
+          setPairValueEditorCtx(null);
+        }}
+        footer={null}
+        width="min(1100px, 96vw)"
+        title={pairValueEditorTitle || '编辑值'}
+        destroyOnHidden
+        styles={{ body: { height: '70vh', overflow: 'hidden' } }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 10 }}
+            message="对话对编辑：仅允许修改叶子值；保存时会校验结构不变，并禁止修改 @_ 属性字段。"
+            description={pairValueEditorCtx ? `${pairValueEditorCtx.role} · ${pairValueEditorCtx.path || '-'}` : undefined}
+          />
+
+          <div style={{ flex: 1, minHeight: 0 }}>
+            {isCompact ? (
+              <Input.TextArea
+                value={pairValueEditorText}
+                onChange={(e) => setPairValueEditorText(e.target.value)}
+                style={{ height: '100%' }}
+              />
+            ) : (
+              <Suspense fallback={<pre className={styles.previewPre}>{pairValueEditorText || '-'}</pre>}>
+                <MonacoEditor
+                  height="100%"
+                  language={pairValueEditorCtx?.leafType === 'number' ? 'plaintext' : 'plaintext'}
+                  value={pairValueEditorText}
+                  theme={uiTheme === 'dark' ? 'hc-black' : 'light'}
+                  onChange={(v) => setPairValueEditorText(String(v ?? ''))}
+                  options={{
+                    readOnly: false,
+                    minimap: { enabled: false },
+                    fontSize: 12,
+                    scrollBeyondLastLine: false,
+                    wordWrap: 'on',
+                    lineNumbers: 'on',
+                    folding: false,
+                    renderLineHighlight: 'none',
+                    scrollbar: { vertical: 'auto', horizontal: 'hidden' },
+                    automaticLayout: true,
+                    overviewRulerLanes: 0,
+                  }}
+                />
+              </Suspense>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+            <Button
+              size="small"
+              onClick={() => {
+                setPairValueEditorOpen(false);
+                setPairValueEditorTitle('');
+                setPairValueEditorText('');
+                setPairValueEditorCtx(null);
+              }}
+              disabled={busy}
+            >
+              取消
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              onClick={() => void savePairLeafEditor()}
+              disabled={busy || !pairValueEditorCtx}
+            >
+              保存
+            </Button>
+          </div>
         </div>
       </Modal>
 
@@ -1695,6 +2459,18 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                   <Space size={8}>
                     <Button
                       size="small"
+                      onClick={() => openValueEditor()}
+                      disabled={
+                        busy ||
+                        !selectedKey ||
+                        !selectedItem ||
+                        String(selectedItem.redisType || '').toLowerCase() !== 'string'
+                      }
+                    >
+                      编辑值
+                    </Button>
+                    <Button
+                      size="small"
                       onClick={async () => {
                         if (!selectedKey) return;
                         try {
@@ -1792,13 +2568,12 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                         options={[
                           { label: '预览', value: 'preview' },
                           { label: `对话对${pairContext.ok ? ` (${pairContext.pairCount})` : ''}`, value: 'pairs', disabled: !pairContext.ok },
-                          { label: '分屏', value: 'split', disabled: !pairContext.ok },
                         ]}
                         onChange={(v) => {
                           const next = String(v || 'preview');
-                          if ((next === 'pairs' || next === 'split') && !pairContext.ok) return;
+                          if (next === 'pairs' && !pairContext.ok) return;
                           setDetailFocus(next as any);
-                          if (next === 'pairs' || next === 'split') setPairSectionCollapsed(false);
+                          if (next === 'pairs') setPairSectionCollapsed(false);
                         }}
                       />
                     </div>
@@ -1901,7 +2676,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                             )}
 
                             {detailFocus === 'preview' ? null : (
-                              <div className={styles.pairSection} style={{ maxHeight: detailFocus === 'pairs' ? 540 : 320 }}>
+                              <div className={styles.pairSection} style={{ maxHeight: detailFocus === 'pairs' ? 680 : 360 }}>
                               <div className={styles.pairHeader}>
                                 <div className={styles.pairHeaderTop}>
                                   <div className={styles.pairHeaderLeft}>
@@ -1968,29 +2743,17 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                   <div className={styles.pairHeaderGroupRight}>
                                     <Button
                                       size="small"
-                                      onClick={() => {
-                                        if (!effectiveGroupId) return;
-                                        runPairBulkDeleteDry(effectiveGroupId, selectedIds);
-                                      }}
-                                      disabled={!effectiveGroupId || !selectedIds.length}
-                                    >
-                                      批量预览移除
-                                    </Button>
-                                    <Button
-                                      size="small"
                                       danger
                                       type="primary"
                                       onClick={() => {
                                         if (!effectiveGroupId) return;
                                         openPairBulkConfirm(effectiveGroupId, selectedIds);
                                       }}
-                                      disabled={!effectiveGroupId || !selectedIds.length || !pairBulkDeletePreview || !pairBulkDeletePreview.dryRun}
+                                      disabled={!effectiveGroupId || !selectedIds.length}
                                     >
                                       批量确认移除
                                     </Button>
                                     <div className={styles.pairHeaderDivider} />
-                                    <Button size="small" onClick={() => { setPairExpandAll(true); setPairExpandedMap({}); }}>展开全部</Button>
-                                    <Button size="small" onClick={() => { setPairExpandAll(false); setPairExpandedMap({}); }}>收起全部</Button>
                                     <Button size="small" onClick={() => setPairSectionCollapsed((v) => !v)}>
                                       {pairSectionCollapsed ? '展开' : '收起'}
                                     </Button>
@@ -2007,13 +2770,11 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                   ) : null}
                                   {rows.map((r) => {
                                     const shortId = r.pairId.substring(0, 8);
-                                    const isPreview = pairDeletePreview && pairDeletePreview.groupId === effectiveGroupId && pairDeletePreview.pairId === r.pairId && pairDeletePreview.dryRun;
                                     const isActive = pairSelectedId === r.pairId;
                                     const isChecked = !!pairSelectedMap[r.pairId];
                                     const sn = snippetByPair.get(r.pairId) || { user: '', assistant: '' };
                                     const userLine = sn.user;
                                     const assistantLine = sn.assistant;
-                                    const isExpanded = pairExpandAll || !!pairExpandedMap[r.pairId];
                                     const full = fullByPair.get(r.pairId);
                                     return (
                                       <div
@@ -2021,11 +2782,18 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                         className={`${styles.pairRow} ${isActive ? styles.pairRowActive : ''}`}
                                         onClick={() => {
                                           setPairSelectedId(r.pairId);
-                                          if (pairExpandAll) return;
-                                          setPairExpandedMap((prev) => ({
-                                            ...prev,
-                                            [r.pairId]: !prev[r.pairId],
-                                          }));
+                                          setPairViewerData({
+                                            groupId: effectiveGroupId,
+                                            pairId: r.pairId,
+                                            shortId,
+                                            count: r.count,
+                                            ts: r.ts,
+                                            userText: String(full?.userText || ''),
+                                            assistantText: String(full?.assistantText || ''),
+                                            userTs: (full as any)?.userTs ?? null,
+                                            assistantTs: (full as any)?.assistantTs ?? null,
+                                          });
+                                          setPairViewerOpen(true);
                                         }}
                                       >
                                         <div className={styles.pairRowTop}>
@@ -2057,17 +2825,6 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                                             <Button
                                               size="small"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                if (!effectiveGroupId) return;
-                                                runPairDeleteDry(effectiveGroupId, r.pairId);
-                                              }}
-                                              disabled={!effectiveGroupId}
-                                            >
-                                              预览移除
-                                            </Button>
-                                            <Button
-                                              size="small"
                                               danger
                                               type="primary"
                                               onClick={(e) => {
@@ -2075,7 +2832,7 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                                 if (!effectiveGroupId) return;
                                                 openPairConfirm(effectiveGroupId, r.pairId);
                                               }}
-                                              disabled={!effectiveGroupId || !isPreview}
+                                              disabled={!effectiveGroupId}
                                             >
                                               确认移除
                                             </Button>
@@ -2092,19 +2849,6 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                                             <div className={styles.pairSnippetText}>{assistantLine ? normalizeMultilineText(assistantLine) : '-'}</div>
                                           </div>
                                         </div>
-
-                                        {isExpanded ? (
-                                          <div className={styles.pairDetail}>
-                                            <div className={styles.pairDetailRow}>
-                                              <div className={styles.pairDetailTitle}>User</div>
-                                              <div className={styles.pairDetailText}>{full?.userText ? normalizeMultilineText(full.userText) : '-'}</div>
-                                            </div>
-                                            <div className={styles.pairDetailRow}>
-                                              <div className={styles.pairDetailTitle}>Assistant</div>
-                                              <div className={styles.pairDetailText}>{full?.assistantText ? normalizeMultilineText(full.assistantText) : '-'}</div>
-                                            </div>
-                                          </div>
-                                        ) : null}
                                       </div>
                                     );
                                   })}
@@ -2362,8 +3106,370 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
         </div>
       ) : null}
 
-      {pairConfirmOpen && pairDeletePreview ? (
-        <div className={styles.modalOverlay} onClick={() => setPairConfirmOpen(false)}>
+      <Modal
+        open={pairViewerOpen && !!pairViewerData}
+        onCancel={() => { setPairViewerOpen(false); setPairViewerData(null); }}
+        footer={null}
+        width="min(1200px, 98vw)"
+        title={pairViewerData ? `对话对详情 · ${pairViewerData.shortId}` : '对话对详情'}
+        destroyOnHidden
+        styles={{ body: { paddingTop: 8, height: '78vh', overflow: 'auto' } }}
+      >
+        {pairViewerData ? (
+          (() => {
+            const userParsed = parseXmlToJson(pairViewerData.userText);
+            const assistantParsed = parseXmlToJson(pairViewerData.assistantText);
+            const userTree = userParsed.ok ? buildJsonTreeRows(userParsed.json, { maxNodes: 2200, maxDepth: 24 }) : [];
+            const assistantTree = assistantParsed.ok ? buildJsonTreeRows(assistantParsed.json, { maxNodes: 2200, maxDepth: 24 }) : [];
+            const userRefs = userParsed.ok ? extractRedisKeyRefs(userParsed.json, { maxRefs: 120 }) : [];
+            const assistantRefs = assistantParsed.ok ? extractRedisKeyRefs(assistantParsed.json, { maxRefs: 120 }) : [];
+
+            const makeCols = (role: 'user' | 'assistant', messageJson: any): ColumnsType<JsonTreeRow> => [
+              {
+                title: '节点',
+                dataIndex: 'name',
+                key: 'name',
+                width: 240,
+                ellipsis: true,
+                render: (v: any) => <Typography.Text style={{ fontSize: 12, fontWeight: 800 }}>{String(v || '')}</Typography.Text>,
+              },
+              {
+                title: '路径',
+                dataIndex: 'path',
+                key: 'path',
+                width: 420,
+                ellipsis: true,
+                render: (v: any) => (
+                  <Typography.Text code copyable={{ text: String(v || '') }} style={{ fontSize: 12 }}>
+                    {String(v || '')}
+                  </Typography.Text>
+                ),
+              },
+              {
+                title: '值',
+                dataIndex: 'value',
+                key: 'value',
+                ellipsis: true,
+                render: (_: any, r: JsonTreeRow) => {
+                  const txt = formatPreviewValue(r?.raw);
+                  const short = txt.length > 220 ? `${txt.slice(0, 220)}…` : txt;
+                  const isLeaf = r?.type && String(r.type) !== 'object' && String(r.type) !== 'array' && String(r.type) !== 'limit';
+                  const forbidAttr = typeof r?.path === 'string' && r.path.split('.').some((seg) => seg.startsWith('@_'));
+                  return (
+                    <Tooltip title={txt.length > 220 ? '点击查看完整内容' : null}>
+                      <span style={{ display: 'inline-block', maxWidth: '100%' }}>
+                        <Typography.Text
+                          copyable={{ text: txt }}
+                          style={{ fontSize: 12, wordBreak: 'break-word', cursor: 'pointer' }}
+                          onClick={() => {
+                            if (forbidAttr) {
+                              addToast('error', '禁止编辑', '不允许修改 @_ 属性字段');
+                              return;
+                            }
+                            if (isLeaf) {
+                              openPairLeafEditor({
+                                role,
+                                path: String(r?.path || ''),
+                                leafType: String(r?.type || ''),
+                                leafRaw: r?.raw,
+                                messageJson,
+                              });
+                              return;
+                            }
+                            setPairValuePreviewTitle(r?.path ? `值详情：${r.path}` : '值详情');
+                            setPairValuePreviewText(txt);
+                            setPairValuePreviewCtx({
+                              role,
+                              basePath: String(r?.path || ''),
+                              messageJson,
+                              raw: r?.raw,
+                            });
+                            setPairValuePreviewOpen(true);
+                          }}
+                        >
+                          {short}
+                        </Typography.Text>
+                      </span>
+                    </Tooltip>
+                  );
+                },
+              },
+              {
+                title: '类型',
+                dataIndex: 'type',
+                key: 'type',
+                width: 100,
+                render: (v: any) => <Tag>{String(v || '')}</Tag>,
+              },
+            ];
+
+            return (
+              <>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', marginBottom: 10 }}>
+                  <Button
+                    size="small"
+                    icon={<CopyOutlined />}
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard?.writeText(pairViewerData.pairId);
+                        addToast('success', '已复制 pairId');
+                      } catch (e: any) {
+                        addToast('error', '复制失败', String(e?.message || e));
+                      }
+                    }}
+                  >
+                    复制 pairId
+                  </Button>
+                  <Button
+                    size="small"
+                    danger
+                    type="primary"
+                    onClick={() => {
+                      if (!pairViewerData.groupId) return;
+                      openPairConfirm(pairViewerData.groupId, pairViewerData.pairId);
+                    }}
+                    disabled={!pairViewerData.groupId}
+                  >
+                    移除该对话对
+                  </Button>
+                </div>
+
+                <Descriptions size="small" column={2} bordered>
+                  <Descriptions.Item label="groupId">{pairViewerData.groupId || '-'}</Descriptions.Item>
+                  <Descriptions.Item label="messages">{pairViewerData.count}</Descriptions.Item>
+                  <Descriptions.Item label="pairId" span={2}>
+                    <Typography.Text copyable={{ text: pairViewerData.pairId }} code style={{ wordBreak: 'break-all' }}>
+                      {pairViewerData.pairId}
+                    </Typography.Text>
+                  </Descriptions.Item>
+                </Descriptions>
+
+                <Divider style={{ margin: '12px 0' }} />
+
+                <Tabs
+                  size="small"
+                  items={[
+                    {
+                      key: 'user-json',
+                      label: `User 结构化${userParsed.ok ? '' : ''}`,
+                      children: userParsed.ok ? (
+                        <>
+                          {userRefs.length ? (
+                            <div style={{ marginBottom: 10 }}>
+                              <div className={styles.small} style={{ marginBottom: 6, fontWeight: 900 }}>关联键值（从结构中提取）</div>
+                              <List
+                                size="small"
+                                bordered
+                                dataSource={userRefs}
+                                pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50] }}
+                                renderItem={(it) => (
+                                  <List.Item
+                                    actions={[
+                                      <Tooltip key="open" title="打开该 key">
+                                        <Button
+                                          size="small"
+                                          type="text"
+                                          icon={<EyeOutlined />}
+                                          onClick={() => {
+                                            const k = String(it?.key || '').trim();
+                                            if (!k) return;
+                                            setPairViewerOpen(false);
+                                            setPairViewerData(null);
+                                            setPairValuePreviewOpen(false);
+                                            setPairValuePreviewTitle('');
+                                            setPairValuePreviewText('');
+                                            openPreview(k);
+                                          }}
+                                        />
+                                      </Tooltip>,
+                                    ]}
+                                  >
+                                    <div style={{ minWidth: 0 }}>
+                                      <div className={styles.small} style={{ marginBottom: 2 }}>
+                                        <Typography.Text code copyable={{ text: it.path }} style={{ fontSize: 12 }}>{it.path || '-'}</Typography.Text>
+                                      </div>
+                                      <Typography.Text copyable={{ text: it.key }} style={{ fontWeight: 900 }}>{it.key}</Typography.Text>
+                                    </div>
+                                  </List.Item>
+                                )}
+                              />
+                            </div>
+                          ) : null}
+                          <Table<JsonTreeRow>
+                            size="small"
+                            columns={makeCols('user', userParsed.json)}
+                            dataSource={userTree}
+                            pagination={false}
+                            scroll={{ y: 520, x: 980 }}
+                            expandable={{ defaultExpandAllRows: false, indentSize: 18 }}
+                          />
+                        </>
+                      ) : (
+                        <Alert type="warning" showIcon title="User XML 解析失败" description={userParsed.error} />
+                      ),
+                    },
+                    {
+                      key: 'assistant-json',
+                      label: `Assistant 结构化${assistantParsed.ok ? '' : ''}`,
+                      children: assistantParsed.ok ? (
+                        <>
+                          {assistantRefs.length ? (
+                            <div style={{ marginBottom: 10 }}>
+                              <div className={styles.small} style={{ marginBottom: 6, fontWeight: 900 }}>关联键值（从结构中提取）</div>
+                              <List
+                                size="small"
+                                bordered
+                                dataSource={assistantRefs}
+                                pagination={{ pageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50] }}
+                                renderItem={(it) => (
+                                  <List.Item
+                                    actions={[
+                                      <Tooltip key="open" title="打开该 key">
+                                        <Button
+                                          size="small"
+                                          type="text"
+                                          icon={<EyeOutlined />}
+                                          onClick={() => {
+                                            const k = String(it?.key || '').trim();
+                                            if (!k) return;
+                                            setPairViewerOpen(false);
+                                            setPairViewerData(null);
+                                            setPairValuePreviewOpen(false);
+                                            setPairValuePreviewTitle('');
+                                            setPairValuePreviewText('');
+                                            openPreview(k);
+                                          }}
+                                        />
+                                      </Tooltip>,
+                                    ]}
+                                  >
+                                    <div style={{ minWidth: 0 }}>
+                                      <div className={styles.small} style={{ marginBottom: 2 }}>
+                                        <Typography.Text code copyable={{ text: it.path }} style={{ fontSize: 12 }}>{it.path || '-'}</Typography.Text>
+                                      </div>
+                                      <Typography.Text copyable={{ text: it.key }} style={{ fontWeight: 900 }}>{it.key}</Typography.Text>
+                                    </div>
+                                  </List.Item>
+                                )}
+                              />
+                            </div>
+                          ) : null}
+                          <Table<JsonTreeRow>
+                            size="small"
+                            columns={makeCols('assistant', assistantParsed.json)}
+                            dataSource={assistantTree}
+                            pagination={false}
+                            scroll={{ y: 520, x: 980 }}
+                            expandable={{ defaultExpandAllRows: false, indentSize: 18 }}
+                          />
+                        </>
+                      ) : (
+                        <Alert type="warning" showIcon title="Assistant XML 解析失败" description={assistantParsed.error} />
+                      ),
+                    },
+                  ]}
+                />
+              </>
+            );
+          })()
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={pairValuePreviewOpen}
+        onCancel={() => { setPairValuePreviewOpen(false); setPairValuePreviewTitle(''); setPairValuePreviewText(''); setPairValuePreviewCtx(null); }}
+        footer={null}
+        width="min(1100px, 96vw)"
+        title={pairValuePreviewTitle || '值详情'}
+        destroyOnHidden
+        styles={{ body: { height: '70vh', overflow: 'hidden' } }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 10 }}>
+            <Button
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard?.writeText(pairValuePreviewText);
+                  addToast('success', '已复制');
+                } catch (e: any) {
+                  addToast('error', '复制失败', String(e?.message || e));
+                }
+              }}
+            >
+              复制
+            </Button>
+          </div>
+
+          {pairValuePreviewCtx && pairValuePreviewCtx.raw && typeof pairValuePreviewCtx.raw === 'object' ? (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 10 }}
+                message="值详情：可继续点击叶子值进行编辑（仅允许修改叶子；禁止修改 @_ 属性字段；保存会回写对话对）"
+              />
+              <Table<any>
+                size="small"
+                columns={makePairValuePreviewCols(pairValuePreviewCtx)}
+                dataSource={prefixJsonTreeRows(buildJsonTreeRows(pairValuePreviewCtx.raw, { maxNodes: 1200, maxDepth: 24 }), pairValuePreviewCtx.basePath)}
+                pagination={false}
+                scroll={{ y: 360, x: 980 }}
+                expandable={{ defaultExpandAllRows: false, indentSize: 18 }}
+              />
+              <Divider style={{ margin: '12px 0' }} />
+            </>
+          ) : null}
+
+          {isCompact || performanceMode ? (
+            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, lineHeight: 1.6, overflow: 'auto', flex: 1 }}>
+              {pairValuePreviewText || '-'}
+            </pre>
+          ) : (
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <Suspense fallback={<pre className={styles.previewPre}>{pairValuePreviewText || '-'}</pre>}>
+                <MonacoEditor
+                  height="100%"
+                  language={(() => {
+                    const raw = String(pairValuePreviewText || '').trim();
+                    if (!raw) return 'plaintext';
+                    if (raw.startsWith('{') || raw.startsWith('[')) {
+                      try {
+                        JSON.parse(raw);
+                        return 'json';
+                      } catch {
+                        return 'plaintext';
+                      }
+                    }
+                    if (raw.startsWith('<')) return 'xml';
+                    return 'plaintext';
+                  })()}
+                  value={pairValuePreviewText || ''}
+                  theme={uiTheme === 'dark' ? 'hc-black' : 'light'}
+                  options={{
+                    readOnly: true,
+                    minimap: { enabled: false },
+                    fontSize: 12,
+                    scrollBeyondLastLine: false,
+                    wordWrap: 'on',
+                    lineNumbers: 'off',
+                    folding: false,
+                    renderLineHighlight: 'none',
+                    scrollbar: { vertical: 'auto', horizontal: 'hidden' },
+                    automaticLayout: true,
+                    overviewRulerLanes: 0,
+                    hideCursorInOverviewRuler: true,
+                  }}
+                />
+              </Suspense>
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {pairConfirmOpen && pairConfirmTarget ? (
+        <div className={styles.modalOverlay} onClick={() => { setPairConfirmOpen(false); setPairConfirmText(''); setPairConfirmAcknowledge(false); setPairConfirmTarget(null); }}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()} style={{ width: 'min(760px, 96vw)' }}>
             <div className={styles.modalHeader}>
               <div>
@@ -2371,26 +3477,28 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                 <div className={styles.small}>此操作会修改群会话状态 JSON，仅移除指定 pairId 的历史消息。</div>
               </div>
               <div className={styles.modalActions}>
-                <Button size="small" onClick={() => setPairConfirmOpen(false)}>关闭</Button>
+                <Button size="small" onClick={() => { setPairConfirmOpen(false); setPairConfirmText(''); setPairConfirmAcknowledge(false); setPairConfirmTarget(null); }}>关闭</Button>
               </div>
             </div>
             <div className={styles.modalBody}>
               <div className={styles.warning} style={{ margin: 0 }}>
-                groupId={pairDeletePreview.groupId}，pairId={pairDeletePreview.shortId}
-              </div>
-              <div className={styles.small} style={{ marginTop: 8 }}>
-                预览结果：deleted.conversations={pairDeletePreview?.stats?.deleted?.conversations ?? '-'}
+                groupId={pairConfirmTarget.groupId}，pairId={pairConfirmTarget.shortId}
               </div>
               <div className={styles.small} style={{ marginTop: 10 }}>
                 请输入 pairId 前 8 位以确认：
               </div>
+              <div className={styles.small} style={{ marginTop: 10 }}>
+                <Checkbox checked={pairConfirmAcknowledge} onChange={(e) => setPairConfirmAcknowledge(!!(e as any)?.target?.checked)}>
+                  我已确认要移除该对话对（不可恢复）
+                </Checkbox>
+              </div>
               <div className={styles.inputRow} style={{ padding: '10px 0', borderBottom: 'none' }}>
-                <Input className={styles.antdInput} value={pairConfirmText} onChange={(e) => setPairConfirmText(e.target.value)} placeholder={pairDeletePreview.shortId} size="small" />
+                <Input className={styles.antdInput} value={pairConfirmText} onChange={(e) => setPairConfirmText(e.target.value)} placeholder={pairConfirmTarget.shortId} size="small" />
                 <Button
                   size="small"
                   danger
                   type="primary"
-                  disabled={busy || pairConfirmText.trim() !== pairDeletePreview.shortId}
+                  disabled={busy || !pairConfirmAcknowledge || pairConfirmText.trim() !== pairConfirmTarget.shortId}
                   onClick={async () => {
                     try {
                       await runPairDeleteConfirm();
@@ -2407,8 +3515,8 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
         </div>
       ) : null}
 
-      {pairBulkConfirmOpen && pairBulkDeletePreview ? (
-        <div className={styles.modalOverlay} onClick={() => { setPairBulkConfirmOpen(false); setPairBulkConfirmText(''); }}>
+      {pairBulkConfirmOpen && pairBulkConfirmTarget ? (
+        <div className={styles.modalOverlay} onClick={() => { setPairBulkConfirmOpen(false); setPairBulkConfirmText(''); setPairBulkConfirmAcknowledge(false); setPairBulkConfirmTarget(null); }}>
           <div className={styles.modal} onClick={(e) => e.stopPropagation()} style={{ width: 'min(760px, 96vw)' }}>
             <div className={styles.modalHeader}>
               <div>
@@ -2416,32 +3524,34 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
                 <div className={styles.small}>此操作会修改群会话状态 JSON，仅移除选中的 pairId 历史消息。</div>
               </div>
               <div className={styles.modalActions}>
-                <Button size="small" onClick={() => { setPairBulkConfirmOpen(false); setPairBulkConfirmText(''); }}>关闭</Button>
+                <Button size="small" onClick={() => { setPairBulkConfirmOpen(false); setPairBulkConfirmText(''); setPairBulkConfirmAcknowledge(false); setPairBulkConfirmTarget(null); }}>关闭</Button>
               </div>
             </div>
             <div className={styles.modalBody}>
               <div className={styles.warning} style={{ margin: 0 }}>
-                groupId={pairBulkDeletePreview.groupId}，pairs={pairBulkDeletePreview.pairIds.length}
-              </div>
-              <div className={styles.small} style={{ marginTop: 8 }}>
-                预览结果：deleted.conversations={pairBulkDeletePreview?.stats?.deleted?.conversations ?? '-'}，deleted.activePairs={pairBulkDeletePreview?.stats?.deleted?.activePairs ?? '-'}
+                groupId={pairBulkConfirmTarget.groupId}，pairs={pairBulkConfirmTarget.count}
               </div>
               <div className={styles.small} style={{ marginTop: 10 }}>
                 请输入移除数量以确认：
+              </div>
+              <div className={styles.small} style={{ marginTop: 10 }}>
+                <Checkbox checked={pairBulkConfirmAcknowledge} onChange={(e) => setPairBulkConfirmAcknowledge(!!(e as any)?.target?.checked)}>
+                  我已确认要批量移除这些对话对（不可恢复）
+                </Checkbox>
               </div>
               <div className={styles.inputRow} style={{ padding: '10px 0', borderBottom: 'none' }}>
                 <Input
                   className={styles.antdInput}
                   value={pairBulkConfirmText}
                   onChange={(e) => setPairBulkConfirmText(e.target.value)}
-                  placeholder={String(pairBulkDeletePreview.pairIds.length)}
+                  placeholder={String(pairBulkConfirmTarget.count)}
                   size="small"
                 />
                 <Button
                   size="small"
                   danger
                   type="primary"
-                  disabled={busy || pairBulkConfirmText.trim() !== String(pairBulkDeletePreview.pairIds.length)}
+                  disabled={busy || !pairBulkConfirmAcknowledge || pairBulkConfirmText.trim() !== String(pairBulkConfirmTarget.count)}
                   onClick={async () => {
                     try {
                       await runPairBulkDeleteConfirm();
@@ -2457,6 +3567,77 @@ export function RedisAdminManager(props: { addToast: ToastFn; performanceMode?: 
           </div>
         </div>
       ) : null}
+
+      <Modal
+        open={valueEditorOpen}
+        onCancel={() => { setValueEditorOpen(false); setValueEditorText(''); setValueEditorBaseline(null); }}
+        footer={null}
+        width="min(1200px, 98vw)"
+        title={selectedKey ? `编辑值 · ${selectedKey}` : '编辑值'}
+        destroyOnHidden
+        styles={{ body: { height: '78vh', overflow: 'hidden' } }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+          {valueEditorBaseline?.isJson ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 10 }}
+              message={`JSON 保护模式：禁止修改结构/键名/数组长度/类型，禁止修改 @_ 字段；仅允许修改叶子值（如 string 内容）。key=${valueEditorBaseline.keyCount}`}
+              description={valueEditorBaseline.keySamples.length ? `示例路径：${valueEditorBaseline.keySamples.join(', ')}` : undefined}
+            />
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 10 }}
+              message="自由编辑模式：原值不是 JSON（或无法解析为 JSON），可直接编辑全文。"
+            />
+          )}
+
+          <div style={{ flex: 1, minHeight: 0, border: '1px solid rgba(0,0,0,0.08)' }}>
+            <Suspense fallback={<pre className={styles.previewPre}>{valueEditorText || '-'}</pre>}>
+              <MonacoEditor
+                height="100%"
+                language={valueEditorBaseline?.isJson ? 'json' : 'plaintext'}
+                value={valueEditorText}
+                theme={uiTheme === 'dark' ? 'hc-black' : 'light'}
+                onChange={(v) => setValueEditorText(String(v ?? ''))}
+                options={{
+                  readOnly: false,
+                  minimap: { enabled: false },
+                  fontSize: 12,
+                  scrollBeyondLastLine: false,
+                  wordWrap: 'on',
+                  lineNumbers: 'on',
+                  folding: true,
+                  renderLineHighlight: 'none',
+                  scrollbar: { vertical: 'auto', horizontal: 'hidden' },
+                  automaticLayout: true,
+                }}
+              />
+            </Suspense>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+            <Button
+              size="small"
+              onClick={() => { setValueEditorOpen(false); setValueEditorText(''); setValueEditorBaseline(null); }}
+              disabled={busy}
+            >
+              取消
+            </Button>
+            <Button
+              size="small"
+              type="primary"
+              onClick={() => void saveValueEditor()}
+              disabled={busy || !selectedKey}
+            >
+              保存并写回 Redis
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

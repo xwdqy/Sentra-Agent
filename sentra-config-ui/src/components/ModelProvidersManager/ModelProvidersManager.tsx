@@ -11,10 +11,10 @@ import styles from './ModelProvidersManager.module.css';
 import modelVendorMap from './modelVendorMap.json';
 import llmEnvMapping from './llmEnvMapping.json';
 import {
-  ArrowLeftOutlined,
   ApiOutlined,
-  AppstoreOutlined,
   AudioOutlined,
+  AppstoreOutlined,
+  ArrowLeftOutlined,
   BgColorsOutlined,
   BulbOutlined,
   CheckOutlined,
@@ -33,6 +33,7 @@ import {
   LineChartOutlined,
   LinkOutlined,
   LockOutlined,
+  MessageOutlined,
   NumberOutlined,
   PictureOutlined,
   PlayCircleOutlined,
@@ -43,16 +44,17 @@ import {
   SaveOutlined,
   SearchOutlined,
   SettingOutlined,
+  ShopOutlined,
   SlidersOutlined,
   SoundOutlined,
   SwapOutlined,
   SyncOutlined,
+  UnorderedListOutlined,
   ThunderboltOutlined,
   ToolOutlined,
   TranslationOutlined,
   UploadOutlined,
   VideoCameraOutlined,
-  MessageOutlined,
 } from '@ant-design/icons';
 import { useDevice } from '../../hooks/useDevice';
 import { storage } from '../../utils/storage';
@@ -1983,13 +1985,38 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
         {isCompact && activeProvider ? (
           <div className={styles.mobileTopPanel}>
             <Segmented
-              size="small"
+              size="middle"
+              block
               value={mobileSection}
-              style={{ width: '100%' }}
+              className={styles.mobileSectionSegmented}
               options={[
-                { label: '供应商', value: 'provider' },
-                { label: '配置中心', value: 'config' },
-                { label: '模型', value: 'models' },
+                {
+                  label: (
+                    <span className={styles.mobileSectionLabel}>
+                      <ShopOutlined />
+                      <span>供应商</span>
+                    </span>
+                  ),
+                  value: 'provider',
+                },
+                {
+                  label: (
+                    <span className={styles.mobileSectionLabel}>
+                      <SettingOutlined />
+                      <span>配置中心</span>
+                    </span>
+                  ),
+                  value: 'config',
+                },
+                {
+                  label: (
+                    <span className={styles.mobileSectionLabel}>
+                      <UnorderedListOutlined />
+                      <span>模型</span>
+                    </span>
+                  ),
+                  value: 'models',
+                },
               ]}
               onChange={(v) => setMobileSection(v as any)}
             />
@@ -2134,26 +2161,26 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                     {activeModelsEntry?.fetchedAt ? `更新时间：${new Date(activeModelsEntry.fetchedAt).toLocaleString()}` : '尚未获取（点击右侧刷新）'}
                   </div>
                 </div>
-                <div className={styles.modelsHeaderActions}>
+                <div className={[styles.modelsHeaderActions, isCompact ? styles.modelsHeaderActionsMobile : ''].filter(Boolean).join(' ')}>
                   <Button
                     type="primary"
                     icon={<ReloadOutlined />}
                     onClick={runTestModels}
                     loading={busy}
                     size="small"
+                    block={isCompact}
                   >
                     {busy ? '刷新中...' : '刷新'}
                   </Button>
 
                   <Input
-                    className={styles.antdInput}
+                    className={[styles.antdInput, styles.modelsSearch].filter(Boolean).join(' ')}
                     value={modelSearch}
                     onChange={(e) => setModelSearch(e.target.value)}
                     placeholder="搜索模型id或供应商"
                     allowClear
                     prefix={<SearchOutlined />}
                     size="small"
-                    style={{ width: 320, maxWidth: '100%' }}
                   />
                 </div>
               </div>

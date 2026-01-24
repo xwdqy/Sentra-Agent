@@ -66,3 +66,14 @@
   border: none !important;
   box-shadow: none !important;
 }
+
+:where(.ant-message),
+:where(.ant-notification),
+:where(.ant-modal-wrap),
+:where(.ant-tooltip),
+:where(.ant-popover),
+:where(.ant-dropdown),
+:where(.ant-select-dropdown),
+:where(.ant-picker-dropdown) {
+  z-index: 120000 !important;
+}
