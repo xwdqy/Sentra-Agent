@@ -26,6 +26,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     setIosFileManagerOpen,
     setIosModelProvidersManagerOpen,
     setIosEmojiStickersManagerOpen,
+    setIosMcpServersManagerOpen,
     setIosRedisAdminOpen,
   } = useUIStore();
 
@@ -76,6 +77,14 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       return;
     }
     requestUtilityFocus('model-providers-manager');
+  };
+
+  const handleOpenMcpServersManager = () => {
+    if (isPortable) {
+      setIosMcpServersManagerOpen(true);
+      return;
+    }
+    requestUtilityFocus('mcp-servers-manager');
   };
 
   const handleOpenEmojiStickersManager = () => {
@@ -150,12 +159,14 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       handleOpenPresetImporter,
       handleOpenModelProvidersManager,
       handleOpenEmojiStickersManager,
+      handleOpenMcpServersManager,
       handleOpenRedisAdmin,
       handleOpenTerminalManager,
     );
   }, [
     handleOpenDevCenter,
     handleOpenFileManager,
+    handleOpenMcpServersManager,
     handleOpenModelProvidersManager,
     handleOpenEmojiStickersManager,
     handleOpenPresetImporter,

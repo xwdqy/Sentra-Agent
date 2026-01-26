@@ -5,5 +5,8 @@ logs/
 dist/
 *.log
 
+# 外部 MCP 配置（本地私有，避免提交/更新覆盖）
+mcp/servers.json
+
 # 忽略所有插件目录中的 .env 文件
 plugins/**/.env

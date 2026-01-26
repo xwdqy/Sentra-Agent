@@ -574,7 +574,8 @@ class GroupHistoryManager {
         return xml;
       }
 
-      const othersContext = allMessages.filter((pm) => String(pm?.msgObj?.sender_id) !== sid);
+      const othersPending = Array.isArray(history.pendingMessages) ? history.pendingMessages : [];
+      const othersContext = othersPending.filter((pm) => String(pm?.msgObj?.sender_id) !== sid);
       const total = othersContext.length + senderContext.length;
       if (total === 0) return '';
 

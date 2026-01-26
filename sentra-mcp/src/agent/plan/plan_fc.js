@@ -1,5 +1,5 @@
 import logger from '../../logger/index.js';
-import { config, getStageModel, getStageProvider } from '../../config/index.js';
+import { config, getStageModel, getStageProvider, getStageTimeoutMs } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
 import { z } from 'zod';
 import { buildPlanningManifest, manifestToBulletedText, manifestToXmlToolsCatalog } from './manifest.js';
@@ -116,6 +116,7 @@ async function generateSinglePlan({
       messages: attemptMessages,
       temperature: planningTemp,
       top_p,
+      timeoutMs: getStageTimeoutMs('plan'),
       apiKey: provider.apiKey,
       baseURL: provider.baseURL,
       model: planModel,
@@ -256,6 +257,7 @@ async function selectBestPlan({ objective, manifest, candidates, context }) {
     const resp = await chatCompletion({
       messages,
       temperature: Number.isFinite(fc.planTemperature) ? fc.planTemperature : Math.max(0.1, ((Number.isFinite(fc.temperature) ? fc.temperature : (config.llm.temperature ?? 0.2)) - 0.1)),
+      timeoutMs: getStageTimeoutMs('plan'),
       apiKey: provider.apiKey,
       baseURL: provider.baseURL,
       model: planModel,
@@ -348,7 +350,10 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
   const overlays = (context?.promptOverlays || context?.overlays || {});
   const overlayGlobal = overlays.global?.system || overlays.global || '';
   const overlayPlan = overlays.plan?.system || overlays.emit_plan?.system || overlays.plan || overlays.emit_plan || '';
-  const sys = composeSystem(ep.system, [overlayGlobal, overlayPlan].filter(Boolean).join('\n\n'));
+  const sys = [
+    composeSystem(ep.system, [overlayGlobal, overlayPlan].filter(Boolean).join('\n\n')),
+    ep.concurrency_hint || ''
+  ].filter(Boolean).join('\n\n');
   const policyText = await buildFCPolicy();
   const planInstrText = await buildPlanFunctionCallInstruction({ allowedAiNames, locale: 'zh-CN' });
   

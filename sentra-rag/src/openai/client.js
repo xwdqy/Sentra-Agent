@@ -1,9 +1,17 @@
 import OpenAI from 'openai';
 import { getEnv, getEnvNumber } from '../config/env.js';
 
+function normalizeOpenAIBaseUrl(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return raw;
+  const root = raw.replace(/\/+$/, '');
+  if (/\/v\d+$/i.test(root)) return root;
+  return `${root}/v1`;
+}
+
 export function createChatOpenAIClient() {
   const apiKey = getEnv('CHAT_API_KEY', { required: true });
-  const baseURL = getEnv('CHAT_BASE_URL', { required: true });
+  const baseURL = normalizeOpenAIBaseUrl(getEnv('CHAT_BASE_URL', { required: true }));
   const timeout = getEnvNumber('CHAT_TIMEOUT_MS', { defaultValue: 60000 });
 
   return new OpenAI({ apiKey, baseURL, timeout });
@@ -11,7 +19,7 @@ export function createChatOpenAIClient() {
 
 export function createEmbeddingOpenAIClient() {
   const apiKey = getEnv('EMBEDDING_API_KEY', { required: true });
-  const baseURL = getEnv('EMBEDDING_BASE_URL', { required: true });
+  const baseURL = normalizeOpenAIBaseUrl(getEnv('EMBEDDING_BASE_URL', { required: true }));
   const timeout = getEnvNumber('EMBEDDING_TIMEOUT_MS', { defaultValue: 60000 });
 
   return new OpenAI({ apiKey, baseURL, timeout });

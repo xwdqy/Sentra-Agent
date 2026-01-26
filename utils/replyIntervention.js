@@ -1,6 +1,6 @@
 import { Agent } from '../agent.js';
 import { createLogger } from './logger.js';
-import { getEnv, getEnvInt, getEnvBool, onEnvReload } from './envHotReloader.js';
+import { getEnv, getEnvInt, getEnvBool, getEnvTimeoutMs, onEnvReload } from './envHotReloader.js';
 import { initAgentPresetCore } from '../components/AgentPresetInitializer.js';
 import { loadPrompt } from '../prompts/loader.js';
 import { chatWithRetry as chatWithRetryCore } from '../components/ChatWithRetry.js';
@@ -198,7 +198,8 @@ function getDecisionConfig() {
   const model = getEnv('REPLY_DECISION_MODEL', mainModel || 'gpt-4o-mini');
   const maxTokens = getEnvInt('REPLY_DECISION_MAX_TOKENS', 128);
   const maxRetries = getEnvInt('REPLY_DECISION_MAX_RETRIES', getEnvInt('MAX_RETRIES', 3));
-  const timeout = getEnvInt('REPLY_DECISION_TIMEOUT', getEnvInt('TIMEOUT', 15000));
+  const globalTimeout = getEnvTimeoutMs('TIMEOUT', 180000, 900000);
+  const timeout = getEnvTimeoutMs('REPLY_DECISION_TIMEOUT', globalTimeout, 900000);
   return { model, maxTokens, maxRetries, timeout };
 }
 

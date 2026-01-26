@@ -35,17 +35,19 @@
             { "key": "MAIN_AI_MODEL", "group": "主程序 / 主对话", "kind": "model", "picker": "model", "modelScope": "chat" },
             { "key": "TEMPERATURE", "group": "主程序 / 主对话", "kind": "number", "advanced": true },
             { "key": "MAX_TOKENS", "group": "主程序 / 主对话", "kind": "number", "advanced": true },
-            { "key": "TIMEOUT", "group": "主程序 / 主对话", "kind": "number", "advanced": true },
+            { "key": "TIMEOUT", "group": "主程序 / 主对话", "kind": "number" },
 
             { "key": "AGENT_PRESET_CONVERTER_BASE_URL", "group": "主程序 / 预设转换", "kind": "base_url" },
             { "key": "AGENT_PRESET_CONVERTER_API_KEY", "group": "主程序 / 预设转换", "kind": "api_key" },
             { "key": "AGENT_PRESET_CONVERTER_MODEL", "group": "主程序 / 预设转换", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "AGENT_PRESET_CONVERTER_TIMEOUT_MS", "group": "主程序 / 预设转换", "kind": "number" },
 
             { "key": "AGENT_PRESET_TEACHING_ENABLED", "group": "主程序 / 预设教导", "kind": "boolean" },
             { "key": "AGENT_PRESET_TEACHING_WHITELIST", "group": "主程序 / 预设教导", "kind": "text" },
             { "key": "AGENT_PRESET_TEACHING_BASE_URL", "group": "主程序 / 预设教导", "kind": "base_url" },
             { "key": "AGENT_PRESET_TEACHING_API_KEY", "group": "主程序 / 预设教导", "kind": "api_key" },
             { "key": "AGENT_PRESET_TEACHING_MODEL", "group": "主程序 / 预设教导", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "AGENT_PRESET_TEACHING_TIMEOUT_MS", "group": "主程序 / 预设教导", "kind": "number" },
             { "key": "AGENT_PRESET_TEACHING_CONTEXT_PAIRS", "group": "主程序 / 预设教导", "kind": "number", "advanced": true },
             { "key": "AGENT_PRESET_TEACHING_BATCH_SIZE", "group": "主程序 / 预设教导", "kind": "number", "advanced": true },
 
@@ -54,20 +56,21 @@
             { "key": "PROACTIVE_DIRECTIVE_MODEL", "group": "主程序 / 主动规划", "kind": "model", "picker": "model", "modelScope": "chat" },
             { "key": "PROACTIVE_DIRECTIVE_TEMPERATURE", "group": "主程序 / 主动规划", "kind": "number", "advanced": true },
             { "key": "PROACTIVE_DIRECTIVE_MAX_TOKENS", "group": "主程序 / 主动规划", "kind": "number", "advanced": true },
-            { "key": "PROACTIVE_DIRECTIVE_TIMEOUT", "group": "主程序 / 主动规划", "kind": "number", "advanced": true },
+            { "key": "PROACTIVE_DIRECTIVE_TIMEOUT", "group": "主程序 / 主动规划", "kind": "number" },
             { "key": "PROACTIVE_DIRECTIVE_MAX_RETRIES", "group": "主程序 / 主动规划", "kind": "number", "advanced": true },
 
             { "key": "REPLY_DECISION_BASE_URL", "group": "主程序 / 回复决策", "kind": "base_url" },
             { "key": "REPLY_DECISION_API_KEY", "group": "主程序 / 回复决策", "kind": "api_key" },
             { "key": "REPLY_DECISION_MODEL", "group": "主程序 / 回复决策", "kind": "model", "picker": "model", "modelScope": "chat" },
             { "key": "REPLY_DECISION_MAX_TOKENS", "group": "主程序 / 回复决策", "kind": "number", "advanced": true },
-            { "key": "REPLY_DECISION_TIMEOUT", "group": "主程序 / 回复决策", "kind": "number", "advanced": true },
+            { "key": "REPLY_DECISION_TIMEOUT", "group": "主程序 / 回复决策", "kind": "number" },
             { "key": "REPLY_DECISION_MAX_RETRIES", "group": "主程序 / 回复决策", "kind": "number", "advanced": true },
             { "key": "REPLY_GATE_DEBUG", "group": "主程序 / 回复决策", "kind": "boolean", "advanced": true },
 
             { "key": "REPAIR_BASE_URL", "group": "主程序 / 格式修复", "kind": "base_url" },
             { "key": "REPAIR_API_KEY", "group": "主程序 / 格式修复", "kind": "api_key" },
             { "key": "REPAIR_AI_MODEL", "group": "主程序 / 格式修复", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "REPAIR_TIMEOUT_MS", "group": "主程序 / 格式修复", "kind": "number" },
             { "key": "ENABLE_STRICT_FORMAT_CHECK", "group": "主程序 / 格式修复", "kind": "boolean", "advanced": true },
             { "key": "ENABLE_FORMAT_REPAIR", "group": "主程序 / 格式修复", "kind": "boolean", "advanced": true },
 
@@ -75,18 +78,21 @@
             { "key": "CONTEXT_MEMORY_BASE_URL", "group": "主程序 / 长期记忆", "kind": "base_url" },
             { "key": "CONTEXT_MEMORY_API_KEY", "group": "主程序 / 长期记忆", "kind": "api_key" },
             { "key": "CONTEXT_MEMORY_MODEL", "group": "主程序 / 长期记忆", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "CONTEXT_MEMORY_TIMEOUT_MS", "group": "主程序 / 长期记忆", "kind": "number" },
             { "key": "CONTEXT_MEMORY_TRIGGER_DISCARDED_PAIRS", "group": "主程序 / 长期记忆", "kind": "number", "advanced": true },
 
             { "key": "ENABLE_USER_PERSONA", "group": "主程序 / 用户画像", "kind": "boolean" },
             { "key": "PERSONA_BASE_URL", "group": "主程序 / 用户画像", "kind": "base_url" },
             { "key": "PERSONA_API_KEY", "group": "主程序 / 用户画像", "kind": "api_key" },
             { "key": "PERSONA_MODEL", "group": "主程序 / 用户画像", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "PERSONA_TIMEOUT_MS", "group": "主程序 / 用户画像", "kind": "number" },
             { "key": "PERSONA_MIN_MESSAGES", "group": "主程序 / 用户画像", "kind": "number", "advanced": true },
             { "key": "PERSONA_UPDATE_INTERVAL_MS", "group": "主程序 / 用户画像", "kind": "number", "advanced": true },
 
             { "key": "EMBEDDING_API_BASE_URL", "group": "主程序 / 向量嵌入", "kind": "base_url" },
             { "key": "EMBEDDING_API_KEY", "group": "主程序 / 向量嵌入", "kind": "api_key" },
-            { "key": "EMBEDDING_MODEL", "group": "主程序 / 向量嵌入", "kind": "model", "picker": "model", "modelScope": "embedding" }
+            { "key": "EMBEDDING_MODEL", "group": "主程序 / 向量嵌入", "kind": "model", "picker": "model", "modelScope": "embedding" },
+            { "key": "BUNDLE_EMBEDDING_TIMEOUT_MS", "group": "主程序 / 向量嵌入", "kind": "number" }
           ]
         }
       ]
@@ -105,34 +111,41 @@
             { "key": "OPENAI_TOOL_CHOICE", "group": "MCP / 全局(OpenAI)", "kind": "enum", "options": ["auto", "native", "none"], "advanced": true },
             { "key": "OPENAI_TEMPERATURE", "group": "MCP / 全局(OpenAI)", "kind": "number", "advanced": true },
             { "key": "OPENAI_MAX_TOKENS", "group": "MCP / 全局(OpenAI)", "kind": "number", "advanced": true },
+            { "key": "OPENAI_TIMEOUT_MS", "group": "MCP / 全局(OpenAI)", "kind": "number" },
 
             { "key": "JUDGE_BASE_URL", "group": "MCP / 决策阶段", "kind": "base_url" },
             { "key": "JUDGE_API_KEY", "group": "MCP / 决策阶段", "kind": "api_key" },
             { "key": "JUDGE_MODEL", "group": "MCP / 决策阶段", "kind": "model", "picker": "model", "modelScope": "chat", "multiple": true, "valueFormat": "csv" },
             { "key": "JUDGE_TEMPERATURE", "group": "MCP / 决策阶段", "kind": "number", "advanced": true },
             { "key": "JUDGE_MAX_TOKENS", "group": "MCP / 决策阶段", "kind": "number", "advanced": true },
+            { "key": "JUDGE_TIMEOUT_MS", "group": "MCP / 决策阶段", "kind": "number" },
+            { "key": "JUDGE_RACE_TIMEOUT_MS", "group": "MCP / 决策阶段", "kind": "number", "advanced": true },
 
             { "key": "PLAN_MODEL", "group": "MCP / Plan", "kind": "model", "picker": "model", "modelScope": "chat", "advanced": true, "multiple": true, "valueFormat": "csv" },
+            { "key": "PLAN_TIMEOUT_MS", "group": "MCP / Plan", "kind": "number" },
 
             { "key": "REASONER_BASE_URL", "group": "MCP / Reasoner", "kind": "base_url" },
             { "key": "REASONER_API_KEY", "group": "MCP / Reasoner", "kind": "api_key" },
             { "key": "REASONER_MODEL", "group": "MCP / Reasoner", "kind": "model", "picker": "model", "modelScope": "chat" },
             { "key": "REASONER_TEMPERATURE", "group": "MCP / Reasoner", "kind": "number", "advanced": true },
             { "key": "REASONER_MAX_TOKENS", "group": "MCP / Reasoner", "kind": "number", "advanced": true },
+            { "key": "REASONER_TIMEOUT_MS", "group": "MCP / Reasoner", "kind": "number" },
 
             { "key": "SUMMARIZER_BASE_URL", "group": "MCP / Summary", "kind": "base_url" },
             { "key": "SUMMARIZER_API_KEY", "group": "MCP / Summary", "kind": "api_key" },
             { "key": "SUMMARIZER_MODEL", "group": "MCP / Summary", "kind": "model", "picker": "model", "modelScope": "chat" },
             { "key": "SUMMARIZER_TEMPERATURE", "group": "MCP / Summary", "kind": "number", "advanced": true },
+            { "key": "SUMMARIZER_TIMEOUT_MS", "group": "MCP / Summary", "kind": "number" },
 
             { "key": "OPENAI_EMBEDDING_MODEL", "group": "MCP / 向量嵌入", "kind": "model", "picker": "model", "modelScope": "embedding" },
             { "key": "EMBEDDING_BASE_URL", "group": "MCP / 向量嵌入", "kind": "base_url" },
             { "key": "EMBEDDING_API_KEY", "group": "MCP / 向量嵌入", "kind": "api_key" },
+            { "key": "EMBEDDING_TIMEOUT_MS", "group": "MCP / 向量嵌入", "kind": "number" },
 
             { "key": "RERANK_BASE_URL", "group": "MCP / 重排序", "kind": "base_url" },
             { "key": "RERANK_API_KEY", "group": "MCP / 重排序", "kind": "api_key" },
             { "key": "RERANK_MODEL", "group": "MCP / 重排序", "kind": "model", "picker": "model", "modelScope": "rerank" },
-            { "key": "RERANK_TIMEOUT_MS", "group": "MCP / 重排序", "kind": "number", "advanced": true }
+            { "key": "RERANK_TIMEOUT_MS", "group": "MCP / 重排序", "kind": "number" }
           ]
         },
         {
@@ -146,36 +159,44 @@
             { "key": "OPENAI_TOOL_CHOICE", "group": "MCP / 兜底配置", "kind": "enum", "options": ["auto", "native", "none"], "advanced": true },
             { "key": "OPENAI_TEMPERATURE", "group": "MCP / 兜底配置", "kind": "number", "advanced": true },
             { "key": "OPENAI_MAX_TOKENS", "group": "MCP / 兜底配置", "kind": "number", "advanced": true },
+            { "key": "OPENAI_TIMEOUT_MS", "group": "MCP / 兜底配置", "kind": "number" },
 
             { "key": "FC_BASE_URL", "group": "MCP / FC模式 / 兜底配置", "kind": "base_url" },
             { "key": "FC_API_KEY", "group": "MCP / FC模式 / 兜底配置", "kind": "api_key" },
             { "key": "FC_MODEL", "group": "MCP / FC模式 / 兜底配置", "kind": "model", "picker": "model", "modelScope": "chat" },
             { "key": "FC_TEMPERATURE", "group": "MCP / FC模式 / 兜底配置", "kind": "number", "advanced": true },
             { "key": "FC_MAX_TOKENS", "group": "MCP / FC模式 / 兜底配置", "kind": "number", "advanced": true },
+            { "key": "FC_TIMEOUT_MS", "group": "MCP / FC模式 / 兜底配置", "kind": "number" },
 
             { "key": "JUDGE_FC_BASE_URL", "group": "MCP / FC模式 / 决策阶段", "kind": "base_url" },
             { "key": "JUDGE_FC_API_KEY", "group": "MCP / FC模式 / 决策阶段", "kind": "api_key" },
             { "key": "JUDGE_FC_MODEL", "group": "MCP / FC模式 / 决策阶段", "kind": "model", "picker": "model", "modelScope": "chat", "multiple": true, "valueFormat": "csv" },
+            { "key": "JUDGE_FC_TIMEOUT_MS", "group": "MCP / FC模式 / 决策阶段", "kind": "number" },
 
             { "key": "PLAN_FC_BASE_URL", "group": "MCP / FC模式 / 计划产出", "kind": "base_url" },
             { "key": "PLAN_FC_API_KEY", "group": "MCP / FC模式 / 计划产出", "kind": "api_key" },
             { "key": "PLAN_FC_MODEL", "group": "MCP / FC模式 / 计划产出", "kind": "model", "picker": "model", "modelScope": "chat", "multiple": true, "valueFormat": "csv" },
+            { "key": "PLAN_FC_TIMEOUT_MS", "group": "MCP / FC模式 / 计划产出", "kind": "number" },
 
             { "key": "ARG_FC_BASE_URL", "group": "MCP / FC模式 / 辩论阶段", "kind": "base_url" },
             { "key": "ARG_FC_API_KEY", "group": "MCP / FC模式 / 辩论阶段", "kind": "api_key" },
             { "key": "ARG_FC_MODEL", "group": "MCP / FC模式 / 辩论阶段", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "ARG_FC_TIMEOUT_MS", "group": "MCP / FC模式 / 辩论阶段", "kind": "number" },
 
             { "key": "EVAL_FC_BASE_URL", "group": "MCP / FC模式 / 评估阶段", "kind": "base_url" },
             { "key": "EVAL_FC_API_KEY", "group": "MCP / FC模式 / 评估阶段", "kind": "api_key" },
             { "key": "EVAL_FC_MODEL", "group": "MCP / FC模式 / 评估阶段", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "EVAL_FC_TIMEOUT_MS", "group": "MCP / FC模式 / 评估阶段", "kind": "number" },
 
             { "key": "SUMMARY_FC_BASE_URL", "group": "MCP / FC模式 / 总结阶段", "kind": "base_url" },
             { "key": "SUMMARY_FC_API_KEY", "group": "MCP / FC模式 / 总结阶段", "kind": "api_key" },
             { "key": "SUMMARY_FC_MODEL", "group": "MCP / FC模式 / 总结阶段", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "SUMMARY_FC_TIMEOUT_MS", "group": "MCP / FC模式 / 总结阶段", "kind": "number" },
 
             { "key": "REFLECTION_FC_BASE_URL", "group": "MCP / FC模式 / 反思阶段", "kind": "base_url" },
             { "key": "REFLECTION_FC_API_KEY", "group": "MCP / FC模式 / 反思阶段", "kind": "api_key" },
             { "key": "REFLECTION_FC_MODEL", "group": "MCP / FC模式 / 反思阶段", "kind": "model", "picker": "model", "modelScope": "chat" },
+            { "key": "REFLECTION_FC_TIMEOUT_MS", "group": "MCP / FC模式 / 反思阶段", "kind": "number" },
 
             { "key": "FC_PLAN_TEMPERATURE", "group": "MCP / FC模式 / 计划产出", "kind": "number", "advanced": true },
             { "key": "FC_PLAN_TOP_P", "group": "MCP / FC模式 / 计划产出", "kind": "number", "advanced": true },
@@ -188,11 +209,12 @@
             { "key": "OPENAI_EMBEDDING_MODEL", "group": "MCP / 向量嵌入", "kind": "model", "picker": "model", "modelScope": "embedding" },
             { "key": "EMBEDDING_BASE_URL", "group": "MCP / 向量嵌入", "kind": "base_url" },
             { "key": "EMBEDDING_API_KEY", "group": "MCP / 向量嵌入", "kind": "api_key" },
+            { "key": "EMBEDDING_TIMEOUT_MS", "group": "MCP / 向量嵌入", "kind": "number" },
 
             { "key": "RERANK_BASE_URL", "group": "MCP / 重排序", "kind": "base_url" },
             { "key": "RERANK_API_KEY", "group": "MCP / 重排序", "kind": "api_key" },
             { "key": "RERANK_MODEL", "group": "MCP / 重排序", "kind": "model", "picker": "model", "modelScope": "rerank" },
-            { "key": "RERANK_TIMEOUT_MS", "group": "MCP / 重排序", "kind": "number", "advanced": true }
+            { "key": "RERANK_TIMEOUT_MS", "group": "MCP / 重排序", "kind": "number" }
           ]
         }
       ]
@@ -209,17 +231,17 @@
             { "key": "rag_CHAT_MODEL", "group": "RAG / 合约生成", "kind": "model", "picker": "model", "modelScope": "chat" },
             { "key": "rag_CHAT_TEMPERATURE", "group": "RAG / 合约生成", "kind": "number", "advanced": true },
             { "key": "rag_CHAT_MAX_OUTPUT_TOKENS", "group": "RAG / 合约生成", "kind": "number", "advanced": true },
-            { "key": "rag_CHAT_TIMEOUT_MS", "group": "RAG / 合约生成", "kind": "number", "advanced": true },
+            { "key": "rag_CHAT_TIMEOUT_MS", "group": "RAG / 合约生成", "kind": "number" },
 
             { "key": "rag_EMBEDDING_BASE_URL", "group": "RAG / 向量嵌入", "kind": "base_url" },
             { "key": "rag_EMBEDDING_API_KEY", "group": "RAG / 向量嵌入", "kind": "api_key" },
             { "key": "rag_EMBEDDING_MODEL", "group": "RAG / 向量嵌入", "kind": "model", "picker": "model", "modelScope": "embedding" },
-            { "key": "rag_EMBEDDING_TIMEOUT_MS", "group": "RAG / 向量嵌入", "kind": "number", "advanced": true },
+            { "key": "rag_EMBEDDING_TIMEOUT_MS", "group": "RAG / 向量嵌入", "kind": "number" },
 
             { "key": "rag_RERANK_BASE_URL", "group": "RAG / 重排序", "kind": "base_url" },
             { "key": "rag_RERANK_API_KEY", "group": "RAG / 重排序", "kind": "api_key" },
             { "key": "rag_RERANK_MODEL", "group": "RAG / 重排序", "kind": "model", "picker": "model", "modelScope": "rerank" },
-            { "key": "rag_RERANK_TIMEOUT_MS", "group": "RAG / 重排序", "kind": "number", "advanced": true }
+            { "key": "rag_RERANK_TIMEOUT_MS", "group": "RAG / 重排序", "kind": "number" }
           ]
         }
       ]

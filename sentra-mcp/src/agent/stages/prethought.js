@@ -3,7 +3,7 @@
  */
 
 import logger from '../../logger/index.js';
-import { config } from '../../config/index.js';
+import { config, getStageTimeoutMs } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
 import { buildToolContextSystem } from '../plan/manifest.js';
 import { loadPrompt, renderTemplate } from '../prompts/loader.js';
@@ -30,6 +30,7 @@ export async function getPreThought(objective, manifest, conversation) {
       omitMaxTokens: useOmit,
       max_tokens: useOmit ? undefined : Number(config.reasoner.maxTokens),
       temperature: Number(config.reasoner.temperature ?? 0.2),
+      timeoutMs: getStageTimeoutMs('plan'),
       apiKey: config.reasoner.apiKey,
       baseURL: config.reasoner.baseURL,
       model: config.reasoner.model,

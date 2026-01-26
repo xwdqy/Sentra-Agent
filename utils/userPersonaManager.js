@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url';
 import { extractXMLTag, extractAllXMLTags } from './xmlUtils.js';
 import { escapeXml, escapeXmlAttr, unescapeXml } from './xmlUtils.js';
 import { createLogger } from './logger.js';
-import { getEnv, getEnvInt, getEnvBool, onEnvReload } from './envHotReloader.js';
+import { getEnv, getEnvInt, getEnvBool, getEnvTimeoutMs, onEnvReload } from './envHotReloader.js';
 import { loadPrompt } from '../prompts/loader.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -404,6 +404,12 @@ class UserPersonaManager {
    */
   async _analyzePersona(recentMessages, existingPersona, isFirstTime, senderId) {
     const prompt = this._buildAnalysisPrompt(recentMessages, existingPersona, isFirstTime, senderId);
+
+    const timeout = getEnvTimeoutMs(
+      'PERSONA_TIMEOUT_MS',
+      getEnvTimeoutMs('TIMEOUT', 180000, 900000),
+      900000
+    );
     
     try {
       const systemPrompt = await this._getSystemPrompt(isFirstTime);
@@ -423,7 +429,8 @@ class UserPersonaManager {
           temperature: 1,
           max_tokens: 2000,
           apiBaseUrl: this.baseUrl,
-          apiKey: this.apiKey
+          apiKey: this.apiKey,
+          timeout
         }
       );
 

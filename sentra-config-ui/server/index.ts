@@ -14,6 +14,7 @@ import { redisAdminRoutes } from './routes/redisAdmin.ts';
 import { llmProvidersRoutes } from './routes/llmProviders.ts';
 import { emojiStickersRoutes } from './routes/emojiStickers.ts';
 import { terminalExecutorRoutes } from './routes/terminalExecutor.ts';
+import { mcpServersRoutes } from './routes/mcpServers.ts';
 import { join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import dotenv from 'dotenv';
@@ -453,6 +454,7 @@ async function start() {
   await fastify.register(redisAdminRoutes);
   await fastify.register(llmProvidersRoutes);
   await fastify.register(emojiStickersRoutes);
+  await fastify.register(mcpServersRoutes);
 
   // 生产环境提供静态文件
   if (process.env.NODE_ENV === 'production') {

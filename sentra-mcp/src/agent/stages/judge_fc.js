@@ -3,7 +3,7 @@
  * 使用 Sentra XML 协议进行工具调用
  */
 
-import { config, getStageModel, getStageProvider } from '../../config/index.js';
+import { config, getStageModel, getStageProvider, getStageTimeoutMs } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
 import { manifestToXmlToolsCatalog } from '../plan/manifest.js';
 import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
@@ -91,11 +91,12 @@ export async function judgeToolNecessityFC(objective, manifest, conversation, co
     
     const systemContent = [
       baseSystem,
+      jp.concurrency_hint || '',
       jp.manifest_intro,
       manifestXml,
       policy,
       fcInstruction,
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     const conv = normalizeConversation(conversation);
     const userGoal = renderTemplate(jp.user_goal, { objective });
@@ -137,6 +138,7 @@ export async function judgeToolNecessityFC(objective, manifest, conversation, co
         omitMaxTokens: useOmit,
         max_tokens: useOmit ? undefined : Number(config.fcLlm.maxTokens),
         temperature: Number(config.fcLlm.temperature ?? 0.2),
+        timeoutMs: getStageTimeoutMs('judge'),
         apiKey: provider.apiKey,
         baseURL: provider.baseURL,
         model: modelName,

@@ -214,6 +214,14 @@ export function getEnvInt(name, defaultValue) {
   return Number.isFinite(n) ? n : defaultValue;
 }
 
+export function getEnvTimeoutMs(name, defaultValue = 180000, maxMs = 900000) {
+  const raw = getEnvInt(name, defaultValue);
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return defaultValue;
+  const cap = Number.isFinite(maxMs) && maxMs > 0 ? maxMs : 900000;
+  return Math.min(n, cap);
+}
+
 export function getEnvBool(name, defaultValue) {
   const v = getEnv(name, undefined);
   if (v === undefined) return defaultValue;

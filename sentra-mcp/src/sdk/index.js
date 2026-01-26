@@ -199,10 +199,14 @@ export class SentraMcpSDK {
    * overlays/promptOverlays: per-stage system overlays, e.g. { global: '...', plan: '...', emit_plan: '...', judge: '...', arggen: '...', final_judge: '...', final_summary: '...' }
    * @returns {Promise<import('../utils/result.js').Result>}
    */
-  async runOnce({ objective, conversation, context = {}, overlays, promptOverlays }) {
+  async runOnce({ objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey }) {
     await this.init();
     const ov = promptOverlays || overlays;
-    const ctx = ov ? { ...context, promptOverlays: { ...(context.promptOverlays || {}), ...ov } } : context;
+    const ctx0 = (context && typeof context === 'object') ? context : {};
+    const ctx1 = (channelId != null || identityKey != null)
+      ? { ...ctx0, ...(channelId != null ? { channelId } : {}), ...(identityKey != null ? { identityKey } : {}) }
+      : ctx0;
+    const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
     return planThenExecute({ objective, context: ctx, mcpcore: this.mcpcore, conversation });
   }
 
@@ -265,12 +269,16 @@ export class SentraMcpSDK {
    * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any> }} params
    * @returns {AsyncIterable<any>}
    */
-  stream({ objective, conversation, context = {}, overlays, promptOverlays }) {
+  stream({ objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey }) {
     const self = this;
     async function* gen() {
       await self.init();
       const ov = promptOverlays || overlays;
-      const ctx = ov ? { ...context, promptOverlays: { ...(context.promptOverlays || {}), ...ov } } : context;
+      const ctx0 = (context && typeof context === 'object') ? context : {};
+      const ctx1 = (channelId != null || identityKey != null)
+        ? { ...ctx0, ...(channelId != null ? { channelId } : {}), ...(identityKey != null ? { identityKey } : {}) }
+        : ctx0;
+      const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
       for await (const ev of planThenExecuteStream({ objective, context: ctx, mcpcore: self.mcpcore, conversation })) {
         yield ev;
       }
@@ -283,13 +291,17 @@ export class SentraMcpSDK {
    * Note: stop() only stops event consumption; the underlying run will continue to finish.
    * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, onEvent: (ev:any)=>void }} params
    */
-  async streamWithCallback({ objective, conversation, context = {}, overlays, promptOverlays, onEvent }) {
+  async streamWithCallback({ objective, conversation, context = {}, overlays, promptOverlays, onEvent, channelId, identityKey }) {
     await this.init();
     let stopped = false;
     const done = (async () => {
       try {
         const ov = promptOverlays || overlays;
-        const ctx = ov ? { ...context, promptOverlays: { ...(context.promptOverlays || {}), ...ov } } : context;
+        const ctx0 = (context && typeof context === 'object') ? context : {};
+        const ctx1 = (channelId != null || identityKey != null)
+          ? { ...ctx0, ...(channelId != null ? { channelId } : {}), ...(identityKey != null ? { identityKey } : {}) }
+          : ctx0;
+        const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
         for await (const ev of planThenExecuteStream({ objective, context: ctx, mcpcore: this.mcpcore, conversation })) {
           if (stopped) break;
           try { onEvent?.(ev); } catch {}

@@ -3,7 +3,7 @@
  */
 
 import logger from '../../logger/index.js';
-import { config, getStageModel, getStageProvider } from '../../config/index.js';
+import { config, getStageModel, getStageProvider, getStageTimeoutMs } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
 import { validateAndRepairArgs } from '../../utils/schema.js';
 import { clip } from '../../utils/text.js';
@@ -219,6 +219,7 @@ export async function generateToolArgs(params) {
         const resp = await chatCompletion({
           messages: messagesFC,
           temperature: fc.temperature ?? config.llm.temperature,
+          timeoutMs: getStageTimeoutMs('arg'),
           apiKey: provider.apiKey,
           baseURL: provider.baseURL,
           model: argModel,
@@ -292,7 +293,8 @@ export async function generateToolArgs(params) {
         messages: baseMessages,
         tools: perStepTools,
         tool_choice: { type: 'function', function: { name: aiName } },
-        temperature: config.llm.temperature
+        temperature: config.llm.temperature,
+        timeoutMs: getStageTimeoutMs('arg')
       });
       const call = resp.choices?.[0]?.message?.tool_calls?.[0];
       if (call?.function?.arguments) {
@@ -344,6 +346,7 @@ export async function generateToolArgs(params) {
           const resp2 = await chatCompletion({
             messages: messagesFC,
             temperature: fc.temperature ?? config.llm.temperature,
+            timeoutMs: getStageTimeoutMs('arg'),
             apiKey: provider.apiKey,
             baseURL: provider.baseURL,
             model: argModel,
@@ -566,6 +569,7 @@ export async function fixToolArgs(params) {
         const respFix = await chatCompletion({
           messages: messagesFixFC,
           temperature: fc.temperature ?? config.llm.temperature,
+          timeoutMs: getStageTimeoutMs('arg'),
           apiKey: provider.apiKey,
           baseURL: provider.baseURL,
           model: argModel,
@@ -602,7 +606,8 @@ export async function fixToolArgs(params) {
         messages: messagesFix,
         tools: perStepTools,
         tool_choice: { type: 'function', function: { name: aiName } },
-        temperature: config.llm.temperature
+        temperature: config.llm.temperature,
+        timeoutMs: getStageTimeoutMs('arg')
       });
       const callFix = respFix.choices?.[0]?.message?.tool_calls?.[0];
       if (callFix?.function?.arguments) {
@@ -647,6 +652,7 @@ export async function fixToolArgs(params) {
           const respFix2 = await chatCompletion({
             messages: messagesFixFC,
             temperature: fc.temperature ?? config.llm.temperature,
+            timeoutMs: getStageTimeoutMs('arg'),
             apiKey: provider.apiKey,
             baseURL: provider.baseURL,
             model: argModel,

@@ -1,6 +1,6 @@
 import { createLogger } from '../utils/logger.js';
 import { appendTeachingLog } from '../utils/presetTeachingLogViewer.js';
-import { getEnv, getEnvBool } from '../utils/envHotReloader.js';
+import { getEnv, getEnvBool, getEnvTimeoutMs } from '../utils/envHotReloader.js';
 import { escapeXml, escapeXmlAttr, unescapeXml } from '../utils/xmlUtils.js';
 import { getRecentPresetTeachingExamples, pushPresetTeachingExample } from '../utils/presetTeachingCache.js';
 import { loadPrompt, renderTemplate } from '../prompts/loader.js';
@@ -618,6 +618,12 @@ async function runEditPlanWithRetry({ agent, model, messages, nodeIndex, groupId
   const maxAttempts = 2;
   let lastError = '';
   let lastRaw = '';
+
+  const timeout = getEnvTimeoutMs(
+    'AGENT_PRESET_TEACHING_TIMEOUT_MS',
+    getEnvTimeoutMs('TIMEOUT', 180000, 900000),
+    900000
+  );
   let operations = null;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -627,7 +633,8 @@ async function runEditPlanWithRetry({ agent, model, messages, nodeIndex, groupId
         model,
         temperature: 0,
         apiBaseUrl,
-        apiKey
+        apiKey,
+        timeout
       });
     } catch (e) {
       return { operations: null, error: `chat_failed: ${String(e)}`, raw: '' };

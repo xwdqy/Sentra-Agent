@@ -222,6 +222,7 @@ export function buildDesktopIcons(
     handleOpenDevCenter: () => void,
     handleOpenPresetImporter: () => void,
     handleOpenModelProvidersManager?: () => void,
+    handleOpenMcpServersManager?: () => void,
     handleOpenRedisAdmin?: () => void,
     handleOpenTerminalManager?: () => void,
 ): DesktopIcon[];
@@ -241,6 +242,7 @@ export function buildDesktopIcons(
     handleOpenPresetImporter: () => void,
     handleOpenModelProvidersManager?: () => void,
     handleOpenEmojiStickersManager?: () => void,
+    handleOpenMcpServersManager?: () => void,
     handleOpenRedisAdmin?: () => void,
     handleOpenTerminalManager?: () => void,
 ): DesktopIcon[];
@@ -260,6 +262,7 @@ export function buildDesktopIcons(
     handleOpenPresetImporter: () => void,
     handleOpenModelProvidersManager?: () => void,
     handleOpenEmojiStickersManager?: () => void,
+    handleOpenMcpServersManager?: () => void,
     handleOpenRedisAdmin?: () => void,
     handleOpenTerminalManager?: () => void,
 ): DesktopIcon[] {
@@ -288,6 +291,17 @@ export function buildDesktopIcons(
             onClick: () => {
                 recordUsage('app:terminal-manager');
                 if (handleOpenTerminalManager) handleOpenTerminalManager();
+                else handleOpenDevCenter();
+            }
+        },
+        {
+            id: 'desktop-mcp-servers-manager',
+            name: '外部MCP工具',
+            icon: getIconForType('mcp-servers-manager', 'module'),
+            position: { x: startX + gap * 8, y: startY },
+            onClick: () => {
+                recordUsage('app:mcp-servers-manager');
+                if (handleOpenMcpServersManager) handleOpenMcpServersManager();
                 else handleOpenDevCenter();
             }
         },

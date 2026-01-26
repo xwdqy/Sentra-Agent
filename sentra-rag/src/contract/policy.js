@@ -12,7 +12,8 @@ export async function loadContractPolicy() {
   const json = JSON.parse(raw);
 
   const lang = String(getEnv('SENTRA_CONTRACT_LANG', { defaultValue: 'zh' })).toLowerCase();
-  const text = lang.startsWith('zh') ? json.zh : json.en;
+  const picked = lang.startsWith('zh') ? json.zh : json.en;
+  const text = Array.isArray(picked) ? picked.join('\n') : picked;
   if (!text) throw new Error('Contract policy missing for selected language');
 
   return { lang: lang.startsWith('zh') ? 'zh' : 'en', text };

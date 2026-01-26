@@ -1,9 +1,9 @@
 import logger from '../../src/logger/index.js';
 import { config } from '../../src/config/index.js';
 import path from 'node:path';
-import os from 'node:os';
+import fs from 'node:fs/promises';
+import OpenAI from 'openai';
 import { abs as toAbs } from '../../src/utils/path.js';
-import { httpRequest } from '../../src/utils/http.js';
 import { ok, fail } from '../../src/utils/result.js';
 
 let _JSDOM;
@@ -83,6 +83,10 @@ function safeSlug(s) {
     .replace(/[^a-z0-9._-]+/gi, '_')
     .replace(/_+/g, '_')
     .slice(0, 80);
+}
+
+function toPosix(p) {
+  return String(p || '').replace(/\\/g, '/');
 }
 
 async function saveWebParserArtifacts({ baseDir, prefix, html, screenshotBuf, screenshotExt, debug }) {
@@ -801,6 +805,8 @@ export default async function webParserHandler(args, options = {}) {
   if (result.method === 'puppeteer' && cfg.visionEnabled) {
     if (!cfg.visionApiKey) {
       vision = { success: false, code: 'NO_VISION_CONFIG', error: '未配置 vision API Key（请设置 WEB_PARSER_VISION_API_KEY / VISION_API_KEY 或全局 llm.apiKey）' };
+    } else if (!String(cfg.visionModel || '').trim()) {
+      vision = { success: false, code: 'NO_VISION_MODEL', error: '未配置 vision 模型（请设置 WEB_PARSER_VISION_MODEL / VISION_MODEL 或全局 llm.model）' };
     } else {
       const shotUri = result?.screenshot?.dataUri;
       if (!shotUri) {

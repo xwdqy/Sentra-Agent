@@ -126,6 +126,10 @@ export const DesktopView = (props: DesktopViewProps) => {
     setModelProvidersManagerOpen,
     modelProvidersManagerMinimized,
     setModelProvidersManagerMinimized,
+    mcpServersManagerOpen,
+    setMcpServersManagerOpen,
+    mcpServersManagerMinimized,
+    setMcpServersManagerMinimized,
     emojiStickersManagerOpen,
     setEmojiStickersManagerOpen,
     emojiStickersManagerMinimized,
@@ -230,6 +234,7 @@ export const DesktopView = (props: DesktopViewProps) => {
     (deepWikiOpen ? 1 : 0) +
     (redisAdminOpen ? 1 : 0) +
     (modelProvidersManagerOpen ? 1 : 0) +
+    (mcpServersManagerOpen ? 1 : 0) +
     (emojiStickersManagerOpen ? 1 : 0) +
     (presetsEditorOpen ? 1 : 0) +
     (presetImporterOpen ? 1 : 0) +
@@ -407,6 +412,9 @@ export const DesktopView = (props: DesktopViewProps) => {
     } else if (id === 'model-providers-manager') {
       setModelProvidersManagerOpen(true);
       setModelProvidersManagerMinimized(false);
+    } else if (id === 'mcp-servers-manager') {
+      setMcpServersManagerOpen(true);
+      setMcpServersManagerMinimized(false);
     } else if (id === 'emoji-stickers-manager') {
       setEmojiStickersManagerOpen(true);
       setEmojiStickersManagerMinimized(false);
@@ -439,6 +447,8 @@ export const DesktopView = (props: DesktopViewProps) => {
     setRedisAdminMinimized,
     setModelProvidersManagerOpen,
     setModelProvidersManagerMinimized,
+    setMcpServersManagerOpen,
+    setMcpServersManagerMinimized,
     setEmojiStickersManagerOpen,
     setEmojiStickersManagerMinimized,
     setPresetsEditorOpen,
@@ -481,6 +491,12 @@ export const DesktopView = (props: DesktopViewProps) => {
       ensureUtilityZ('model-providers-manager');
     }
   }, [modelProvidersManagerOpen, ensureUtilityZ]);
+
+  useEffect(() => {
+    if (mcpServersManagerOpen) {
+      ensureUtilityZ('mcp-servers-manager');
+    }
+  }, [mcpServersManagerOpen, ensureUtilityZ]);
 
   useEffect(() => {
     if (emojiStickersManagerOpen) {
@@ -667,6 +683,27 @@ export const DesktopView = (props: DesktopViewProps) => {
     });
   }
 
+  if (mcpServersManagerOpen) {
+    extraTabs.push({
+      id: 'mcp-servers-manager',
+      title: '外部 MCP 工具',
+      icon: getIconForType('mcp-servers-manager', 'module'),
+      isActive: activeUtilityId === 'mcp-servers-manager',
+      onActivate: () => {
+        setMcpServersManagerOpen(true);
+        setMcpServersManagerMinimized(false);
+        bringUtilityToFront('mcp-servers-manager');
+      },
+      onClose: () => {
+        setMcpServersManagerOpen(false);
+        setMcpServersManagerMinimized(false);
+        if (activeUtilityId === 'mcp-servers-manager') {
+          setActiveUtilityId(null);
+        }
+      },
+    });
+  }
+
   if (emojiStickersManagerOpen) {
     extraTabs.push({
       id: 'emoji-stickers-manager',
@@ -818,6 +855,16 @@ export const DesktopView = (props: DesktopViewProps) => {
         setModelProvidersManagerOpen(true);
         setModelProvidersManagerMinimized(false);
         bringUtilityToFront('model-providers-manager');
+      }
+    },
+    {
+      name: 'mcp-servers-manager',
+      type: 'module' as const,
+      onClick: () => {
+        recordUsage('app:mcp-servers-manager');
+        setMcpServersManagerOpen(true);
+        setMcpServersManagerMinimized(false);
+        bringUtilityToFront('mcp-servers-manager');
       }
     },
     {
@@ -974,6 +1021,10 @@ export const DesktopView = (props: DesktopViewProps) => {
           setModelProvidersManagerOpen={setModelProvidersManagerOpen}
           modelProvidersManagerMinimized={modelProvidersManagerMinimized}
           setModelProvidersManagerMinimized={setModelProvidersManagerMinimized}
+          mcpServersManagerOpen={mcpServersManagerOpen}
+          setMcpServersManagerOpen={setMcpServersManagerOpen}
+          mcpServersManagerMinimized={mcpServersManagerMinimized}
+          setMcpServersManagerMinimized={setMcpServersManagerMinimized}
           emojiStickersManagerOpen={emojiStickersManagerOpen}
           setEmojiStickersManagerOpen={setEmojiStickersManagerOpen}
           emojiStickersManagerMinimized={emojiStickersManagerMinimized}

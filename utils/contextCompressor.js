@@ -183,6 +183,7 @@ export function buildContextSummaryMessages(options = {}) {
  * @param {string} [params.presetText] - 可选，Agent 预设提示词，用于保持概括时的人设一致
  * @param {string} [params.apiBaseUrl] - 可选，API 基础 URL
  * @param {string} [params.apiKey] - 可选，API 密钥
+ * @param {number} [params.timeout] - 可选，超时时间（毫秒）
  *
  * @returns {Promise<{ summary: string, messages: Array, model?: string }>}
  */
@@ -199,7 +200,8 @@ export async function compressContext(params = {}) {
     model,
     presetText,
     apiBaseUrl,
-    apiKey
+    apiKey,
+    timeout
   } = params;
 
   if (!agent || typeof agent.chat !== 'function') {
@@ -225,7 +227,8 @@ export async function compressContext(params = {}) {
   const options = {
     ...(model ? { model } : {}),
     ...(apiBaseUrl ? { apiBaseUrl } : {}),
-    ...(apiKey ? { apiKey } : {})
+    ...(apiKey ? { apiKey } : {}),
+    ...(Number.isFinite(Number(timeout)) && Number(timeout) > 0 ? { timeout: Number(timeout) } : {})
   };
 
   logger.debug(

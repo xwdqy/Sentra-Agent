@@ -1,4 +1,4 @@
-import { getEnvBool, getEnvInt, loadEnv } from '../utils/envHotReloader.js';
+import { getEnvBool, getEnvInt, getEnvTimeoutMs, loadEnv } from '../utils/envHotReloader.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -505,6 +505,8 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
 
   const userid = String(msg?.sender_id ?? '');
   const groupId = msg?.group_id ? `G:${msg.group_id}` : `U:${userid}`;
+  const channelId = groupId;
+  const identityKey = msg?.group_id ? `G:${msg.group_id}|U:${userid}` : `U:${userid}`;
   const currentTaskId = taskId;
 
   const mergedUsers = Array.isArray(msg?._mergedUsers) ? msg._mergedUsers : null;
@@ -1137,10 +1139,14 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
       let restartMcp = false;
       let restartObjective = null;
 
+      logger.debug(`MCP identity: ${groupId} channelId=${channelId} identityKey=${identityKey}`);
+
       for await (const ev of sdk.stream({
         objective: userObjective,
         conversation: conversation,
-        overlays
+        overlays,
+        channelId,
+        identityKey
       })) {
       logger.debug('Agent事件', ev);
 
@@ -1542,7 +1548,7 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               judgeSummary: ev.summary,
               toolNames: ev.toolNames,
               originalRootXml: proactiveRootXml,
-              timeoutMs: getEnvInt('TOOL_PREREPLY_TIMEOUT_MS', 6000)
+              timeoutMs: getEnvTimeoutMs('TOOL_PREREPLY_TIMEOUT_MS', 180000, 900000)
             });
 
             (async () => {

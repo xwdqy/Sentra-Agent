@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { createHash } from 'crypto';
 import { createLogger } from './logger.js';
-import { getEnv, onEnvReload } from './envHotReloader.js';
+import { getEnv, getEnvTimeoutMs, onEnvReload } from './envHotReloader.js';
 import { loadPrompt } from '../prompts/loader.js';
 
 const logger = createLogger('PresetTextToJson');
@@ -272,6 +272,12 @@ export async function convertPresetTextToJson({ agent, rawText, fileName, model 
     throw new Error('convertPresetTextToJson: 需要传入带 chat(messages, options) 方法的 agent 实例');
   }
 
+  const timeout = getEnvTimeoutMs(
+    'AGENT_PRESET_CONVERTER_TIMEOUT_MS',
+    getEnvTimeoutMs('TIMEOUT', 180000, 900000),
+    900000
+  );
+
   const text = typeof rawText === 'string' ? rawText.trim() : '';
   if (!text) {
     logger.warn('convertPresetTextToJson: 预设文本为空，返回空 JSON');
@@ -324,7 +330,8 @@ export async function convertPresetTextToJson({ agent, rawText, fileName, model 
       model: chosenModel,
       temperature: 0,
       apiBaseUrl: converterBaseUrl,
-      apiKey: converterApiKey
+      apiKey: converterApiKey,
+      timeout
     });
   } catch (e) {
     logger.error('convertPresetTextToJson: 调用 LLM 失败，将回退到最小 JSON', e);

@@ -35,14 +35,159 @@ const CONTRACT_V4_PROCEDURE = [
   '   - No markdown, no extra text before/after XML',
 ].join('\n');
 
+const FEWSHOT_INGEST_USER = [
+  '<sentra-input>',
+  '  <task>ingest</task>',
+  '  <lang>zh</lang>',
+  '  <normalized_input>',
+  '    <query_text></query_text>',
+  '    <context_text></context_text>',
+  '    <document_text>用户反馈：RAG 入库报错 XML parse failed</document_text>',
+  '  </normalized_input>',
+  '</sentra-input>',
+].join('\n');
+
+const FEWSHOT_INGEST_ASSISTANT = [
+  '<sentra-contract>',
+  '  <meta>',
+  '    <task><string>ingest</string></task>',
+  '    <lang><string>zh</string></lang>',
+  '    <version><string>rag-contract-v4</string></version>',
+  '    <request_id><string></string></request_id>',
+  '  </meta>',
+  '  <normalized_input>',
+  '    <query_text><string></string></query_text>',
+  '    <context_text><string></string></context_text>',
+  '    <document_text><string>用户反馈：RAG 入库报错 XML parse failed</string></document_text>',
+  '  </normalized_input>',
+  '  <segments>',
+  '    <parent>',
+  '      <array>',
+  '        <object>',
+  '          <field name="segment_id"><string>p_0</string></field>',
+  '          <field name="text"><string>RAG 入库报错，涉及 XML 解析失败</string></field>',
+  '          <field name="start_char"><number>0</number></field>',
+  '          <field name="end_char"><number>22</number></field>',
+  '        </object>',
+  '      </array>',
+  '    </parent>',
+  '    <child>',
+  '      <array>',
+  '        <object>',
+  '          <field name="segment_id"><string>c_0</string></field>',
+  '          <field name="parent_id"><string>p_0</string></field>',
+  '          <field name="text"><string>错误信息：XML parse failed</string></field>',
+  '          <field name="start_char"><number>0</number></field>',
+  '          <field name="end_char"><number>22</number></field>',
+  '        </object>',
+  '      </array>',
+  '    </child>',
+  '  </segments>',
+  '  <extraction>',
+  '    <entities><array></array></entities>',
+  '    <relations><array></array></relations>',
+  '    <linking_hints><array></array></linking_hints>',
+  '  </extraction>',
+  '  <retrieval_plan>',
+  '    <strategy><string></string></strategy>',
+  '    <intent><string></string></intent>',
+  '    <parameters><object></object></parameters>',
+  '    <steps><array></array></steps>',
+  '  </retrieval_plan>',
+  '  <final_answer>',
+  '    <answer><string></string></answer>',
+  '    <citations><array></array></citations>',
+  '  </final_answer>',
+  '  <quality>',
+  '    <can_execute><boolean>true</boolean></can_execute>',
+  '    <confidence><number>0.6</number></confidence>',
+  '    <errors><array></array></errors>',
+  '    <warnings><array></array></warnings>',
+  '  </quality>',
+  '</sentra-contract>',
+].join('\n');
+
+const FEWSHOT_REPAIR_USER = [
+  '<sentra-repair>',
+  '  <lang>zh</lang>',
+  '  <error_report>XML root is not <sentra-contract></error_report>',
+  '  <bad_xml><contract><meta><task>ingest</task></meta></contract></bad_xml>',
+  '</sentra-repair>',
+].join('\n');
+
+const FEWSHOT_REPAIR_ASSISTANT = [
+  '<sentra-contract>',
+  '  <meta>',
+  '    <task><string>ingest</string></task>',
+  '    <lang><string>zh</string></lang>',
+  '    <version><string>rag-contract-v4</string></version>',
+  '    <request_id><string></string></request_id>',
+  '  </meta>',
+  '  <normalized_input>',
+  '    <query_text><string></string></query_text>',
+  '    <context_text><string></string></context_text>',
+  '    <document_text><string></string></document_text>',
+  '  </normalized_input>',
+  '  <segments>',
+  '    <parent><array></array></parent>',
+  '    <child><array></array></child>',
+  '  </segments>',
+  '  <extraction>',
+  '    <entities><array></array></entities>',
+  '    <relations><array></array></relations>',
+  '    <linking_hints><array></array></linking_hints>',
+  '  </extraction>',
+  '  <retrieval_plan>',
+  '    <strategy><string></string></strategy>',
+  '    <intent><string></string></intent>',
+  '    <parameters><object></object></parameters>',
+  '    <steps><array></array></steps>',
+  '  </retrieval_plan>',
+  '  <final_answer>',
+  '    <answer><string></string></answer>',
+  '    <citations><array></array></citations>',
+  '  </final_answer>',
+  '  <quality>',
+  '    <can_execute><boolean>false</boolean></can_execute>',
+  '    <confidence><number>0</number></confidence>',
+  '    <errors>',
+  '      <array>',
+  '        <string>Bad XML root was not <sentra-contract>; repaired to minimal skeleton</string>',
+  '      </array>',
+  '    </errors>',
+  '    <warnings><array></array></warnings>',
+  '  </quality>',
+  '</sentra-contract>',
+].join('\n');
+
+ function sanitizeXmlText(value) {
+   return String(value ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+ }
+
 function xmlEscape(value) {
-  return String(value)
+  return sanitizeXmlText(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
 }
+
+ function extractContractXmlBlock(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return '';
+
+  const fenced = raw.match(/```(?:xml)?\s*([\s\S]*?)\s*```/i);
+  const candidate = String(fenced?.[1] ?? raw).trim();
+
+  const start = candidate.indexOf('<sentra-contract');
+  if (start < 0) return candidate;
+
+  const endTag = '</sentra-contract>';
+  const end = candidate.lastIndexOf(endTag);
+  if (end < 0) return candidate.slice(start).trim();
+  return candidate.slice(start, end + endTag.length).trim();
+ }
 
 function injectNormalizedInputXml(xml, { queryText, contextText, documentText } = {}) {
   const open = '<normalized_input>';
@@ -139,6 +284,13 @@ function buildUserInputXml({ task, lang, queryText, contextText, documentText })
   ].join('\n');
 }
 
+ function extractAssistantTextWithMeta(resp) {
+   const choice = resp?.choices?.[0];
+   const finishReason = choice?.finish_reason;
+   const text = extractAssistantText(resp);
+   return { text, finishReason };
+ }
+
 export async function requestContractXml(openai, policy, { task, queryText, contextText, documentText, lang }) {
   const model = getEnv('CHAT_MODEL', { defaultValue: 'gpt-4o-mini' });
   const temperature = getEnvNumber('CHAT_TEMPERATURE', { defaultValue: 0 });
@@ -151,6 +303,8 @@ export async function requestContractXml(openai, policy, { task, queryText, cont
     temperature,
     messages: [
       { role: 'system', content: `${policy.text}\n\n${CONTRACT_HARDENING}\n\n${CONTRACT_V4_PROCEDURE}` },
+      { role: 'user', content: FEWSHOT_INGEST_USER },
+      { role: 'assistant', content: FEWSHOT_INGEST_ASSISTANT },
       { role: 'user', content: inputXml },
     ],
   };
@@ -158,9 +312,15 @@ export async function requestContractXml(openai, policy, { task, queryText, cont
 
   const resp = await openai.chat.completions.create(req);
 
-  const xml = extractAssistantText(resp);
+  const { text, finishReason } = extractAssistantTextWithMeta(resp);
+  const xmlRaw = extractContractXmlBlock(text);
+  if (finishReason === 'length' && !xmlRaw.includes('</sentra-contract>')) {
+    throw new Error('Model output truncated (finish_reason=length)');
+  }
+
   const echoInput = getEnvBoolean('CONTRACT_ECHO_INPUT', { defaultValue: true });
-  return echoInput ? injectNormalizedInputXml(xml, { queryText, contextText, documentText }) : xml;
+  const injected = echoInput ? injectNormalizedInputXml(xmlRaw, { queryText, contextText, documentText }) : xmlRaw;
+  return extractContractXmlBlock(injected);
 }
 
 export async function requestContractXmlRepair(openai, policy, { badXml, errorReport, lang }) {
@@ -185,6 +345,8 @@ export async function requestContractXmlRepair(openai, policy, { badXml, errorRe
     temperature,
     messages: [
       { role: 'system', content: `${policy.text}\n\n${CONTRACT_HARDENING}\n\n${CONTRACT_V4_PROCEDURE}` },
+      { role: 'user', content: FEWSHOT_REPAIR_USER },
+      { role: 'assistant', content: FEWSHOT_REPAIR_ASSISTANT },
       { role: 'user', content: user },
     ],
   };
@@ -192,5 +354,10 @@ export async function requestContractXmlRepair(openai, policy, { badXml, errorRe
 
   const resp = await openai.chat.completions.create(req);
 
-  return extractAssistantText(resp);
+  const { text, finishReason } = extractAssistantTextWithMeta(resp);
+  const xml = extractContractXmlBlock(text);
+  if (finishReason === 'length' && !xml.includes('</sentra-contract>')) {
+    throw new Error('Model output truncated (finish_reason=length)');
+  }
+  return xml;
 }

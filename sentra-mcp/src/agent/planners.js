@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { config } from '../config/index.js';
+import { config, getStageTimeoutMs } from '../config/index.js';
 import logger from '../logger/index.js';
 import { chatCompletion } from '../openai/client.js';
 import { HistoryStore } from '../history/store.js';
@@ -31,8 +31,32 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadToolDef } from './tools/loader.js';
 import { isRunCancelled, clearRunCancelled } from '../bus/runCancel.js';
+import { registerRunStart, markRunFinished, removeRun, buildConcurrencyOverlay } from '../bus/runRegistry.js';
 
 function now() { return Date.now(); }
+
+function mergeGlobalOverlay(context, overlayText) {
+  if (!overlayText) return context;
+  const ctx0 = (context && typeof context === 'object') ? context : {};
+  const po0 = (ctx0.promptOverlays && typeof ctx0.promptOverlays === 'object') ? ctx0.promptOverlays : {};
+  const existingGlobal = po0.global;
+  const existingSystem = (existingGlobal && typeof existingGlobal === 'object')
+    ? (existingGlobal.system || '')
+    : (existingGlobal ? String(existingGlobal) : '');
+  const mergedSystem = [existingSystem, overlayText].filter(Boolean).join('\n\n');
+  const nextGlobal = (existingGlobal && typeof existingGlobal === 'object')
+    ? { ...existingGlobal, system: mergedSystem }
+    : { system: mergedSystem };
+  return { ...ctx0, promptOverlays: { ...po0, global: nextGlobal } };
+}
+
+function injectConcurrencyOverlay({ runId, objective, context }) {
+  const cid = context?.channelId != null ? String(context.channelId) : '';
+  const ik = context?.identityKey != null ? String(context.identityKey) : '';
+  if (!cid && !ik) return context;
+  const overlay = buildConcurrencyOverlay({ runId, channelId: cid, identityKey: ik, objective });
+  return mergeGlobalOverlay(context, overlay);
+}
 
 /**
  * 规范化 reason：仅支持数组格式
@@ -130,6 +154,7 @@ async function generateSingleNativePlan({ messages, tools, allowedAiNames, tempe
     tools,
     tool_choice: { type: 'function', function: { name: 'emit_plan' } },
     temperature,
+    timeoutMs: getStageTimeoutMs('plan'),
     model,
   });
   const call = res.choices?.[0]?.message?.tool_calls?.[0];
@@ -204,7 +229,8 @@ async function selectBestNativePlan({ objective, manifest, candidates, context }
       messages: baseMsgs,
       tools,
       tool_choice: { type: 'function', function: { name: 'select_plan' } },
-      temperature
+      temperature,
+      timeoutMs: getStageTimeoutMs('plan')
     });
     const call = res.choices?.[0]?.message?.tool_calls?.[0];
     let parsed; try { parsed = call?.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch { parsed = {}; }
@@ -317,7 +343,10 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
   const overlays = (context?.promptOverlays || context?.overlays || {});
   const overlayGlobal = overlays.global?.system || overlays.global || '';
   const overlayPlan = overlays.plan?.system || overlays.emit_plan?.system || overlays.plan || overlays.emit_plan || '';
-  const sys = composeSystem(ep.system, [overlayGlobal, overlayPlan].filter(Boolean).join('\n\n'));
+  const sys = [
+    composeSystem(ep.system, [overlayGlobal, overlayPlan].filter(Boolean).join('\n\n')),
+    ep.concurrency_hint || ''
+  ].filter(Boolean).join('\n\n');
   // 检索历史规划记忆（相似目标的成功计划），作为参考上下文
   let planMemoryMsgs = [];
   if (config.memory?.enable) {
@@ -516,7 +545,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
         { role: 'assistant', content: '严格约束：只能从以下 aiName 中选择，并且每步仅包含一个工具。若无合适工具可输出空计划。可选 aiName 列表:\n' + (allowedAiNames.join(', ')) },
         { role: 'user', content: ep.user_request }
       ]);
-      const re2 = await chatCompletion({ messages: replanMessages2, tools, tool_choice: { type: 'function', function: { name: 'emit_plan' } }, temperature: Math.max(0.1, (config.llm.temperature ?? 0.2) - 0.1), model: planModel });
+      const re2 = await chatCompletion({ messages: replanMessages2, tools, tool_choice: { type: 'function', function: { name: 'emit_plan' } }, temperature: Math.max(0.1, (config.llm.temperature ?? 0.2) - 0.1), timeoutMs: getStageTimeoutMs('plan'), model: planModel });
       const rcall2 = re2.choices?.[0]?.message?.tool_calls?.[0];
       let reparsed2; try { reparsed2 = rcall2?.function?.arguments ? JSON.parse(rcall2.function.arguments) : {}; } catch { reparsed2 = {}; }
       const stepsArr2 = Array.isArray(reparsed2?.steps)
@@ -584,7 +613,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
       { role: 'assistant', content: '上一个计划的 dependsOn 存在越界/环/自依赖问题。请重新生成一个满足以下严格约束的计划：\n1) 每一步的 dependsOn 仅引用小于当前步索引的步骤；\n2) 禁止任何形式的环；\n3) 避免自依赖；\n4) 若不需要依赖请省略 dependsOn 字段；\n5) 仅输出必需字段并符合 emit_plan 的 JSON 结构。' },
       { role: 'user', content: ep.user_request }
     ]);
-    const re = await chatCompletion({ messages: replanMessages, tools, tool_choice: { type: 'function', function: { name: 'emit_plan' } }, temperature: Math.max(0.1, (config.llm.temperature ?? 0.2) - 0.1), model: planModel });
+    const re = await chatCompletion({ messages: replanMessages, tools, tool_choice: { type: 'function', function: { name: 'emit_plan' } }, temperature: Math.max(0.1, (config.llm.temperature ?? 0.2) - 0.1), timeoutMs: getStageTimeoutMs('plan'), model: planModel });
     const rcall = re.choices?.[0]?.message?.tool_calls?.[0];
     let reparsed; try { reparsed = rcall?.function?.arguments ? JSON.parse(rcall.function.arguments) : {}; } catch { reparsed = {}; }
     const stepsArr = Array.isArray(reparsed?.steps)
@@ -1403,152 +1432,162 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
 
 export async function planThenExecute({ objective, context = {}, mcpcore, conversation }) {
   const runId = uuidv4();
-  await HistoryStore.append(runId, { type: 'start', objective, context: sanitizeContextForLog(context) });
+  const ctx0 = (context && typeof context === 'object') ? context : {};
+  registerRunStart({ runId, channelId: ctx0.channelId, identityKey: ctx0.identityKey, objective });
+  const ctx = injectConcurrencyOverlay({ runId, objective, context: ctx0 });
+  try {
+    await HistoryStore.append(runId, { type: 'start', objective, context: sanitizeContextForLog(ctx) });
 
-  // 步骤1：构建工具清单
-  let manifest0 = buildPlanningManifest(mcpcore);
-  
-  // 步骤2：判断是否需要工具（使用原始工具列表）
-  const judgeFunc = (config.llm?.toolStrategy || 'auto') === 'fc' ? judgeToolNecessityFC : judgeToolNecessity;
-  const judge = await judgeFunc(objective, manifest0, conversation, context);
-  await HistoryStore.append(runId, { type: 'judge', need: judge.need, summary: judge.summary, toolNames: judge.toolNames, ok: judge.ok !== false });
-  if (judge && judge.ok === false) {
-    const plan = { manifest: manifest0, steps: [] };
+    // 步骤1：构建工具清单
+    let manifest0 = buildPlanningManifest(mcpcore);
+    
+    // 步骤2：判断是否需要工具（使用原始工具列表）
+    const judgeFunc = (config.llm?.toolStrategy || 'auto') === 'fc' ? judgeToolNecessityFC : judgeToolNecessity;
+    const judge = await judgeFunc(objective, manifest0, conversation, ctx);
+    await HistoryStore.append(runId, { type: 'judge', need: judge.need, summary: judge.summary, toolNames: judge.toolNames, ok: judge.ok !== false });
+    if (judge && judge.ok === false) {
+      const plan = { manifest: manifest0, steps: [] };
+      await HistoryStore.setPlan(runId, plan);
+      await HistoryStore.append(runId, { type: 'plan', plan });
+      const exec = { used: [], attempted: 0, succeeded: 0, successRate: 0 };
+      await HistoryStore.append(runId, { type: 'done', exec });
+      const summary = String(judge.summary || 'Judge阶段失败');
+      try { await HistoryStore.setSummary(runId, summary); } catch {}
+      await HistoryStore.append(runId, { type: 'summary', summary });
+      return fail('JUDGE_FAILED', 'JUDGE_FAILED', { runId, plan, exec, eval: { success: false, summary }, summary });
+    }
+    if (!judge.need) {
+      const plan = { manifest: manifest0, steps: [] };
+      await HistoryStore.setPlan(runId, plan);
+      await HistoryStore.append(runId, { type: 'plan', plan });
+      const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
+      const evalObj = { success: true, summary: '判定无需调用工具，直接完成。' };
+      await HistoryStore.append(runId, { type: 'done', exec });
+      const summary = '本次任务判定无需调用工具。';
+      await HistoryStore.setSummary(runId, summary);
+      await HistoryStore.append(runId, { type: 'summary', summary });
+      return ok({ runId, plan, exec, eval: evalObj, summary });
+    }
+
+    const plan = await generatePlan(objective, mcpcore, { ...ctx, runId, judge }, conversation);
     await HistoryStore.setPlan(runId, plan);
     await HistoryStore.append(runId, { type: 'plan', plan });
-    const exec = { used: [], attempted: 0, succeeded: 0, successRate: 0 };
+
+    let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
+    let evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
+
+    // Global repair loop (circuit breaker): limit the number of repair cycles
+    const enableRepair = !(config.runner?.enableRepair === false);
+    const maxRepairs = enableRepair ? Math.max(0, Number(config.runner?.maxRepairs ?? 1)) : 0;
+    let repairs = 0;
+    while (!evalObj.success && repairs < maxRepairs) {
+      // 收集所有失败的步骤（不只是第一个）
+      const failedSteps = Array.isArray(evalObj.failedSteps) && evalObj.failedSteps.length
+        ? evalObj.failedSteps.filter((f) => Number.isFinite(f.index))
+        : [];
+      if (failedSteps.length === 0) break;
+      
+      // 提取失败步骤的索引
+      const failedIndices = failedSteps.map((f) => Number(f.index)).sort((a, b) => a - b);
+      
+      // 构建依赖链：找出所有依赖失败步骤的下游步骤
+      const retryChain = buildDependencyChain(plan.steps, failedIndices);
+      const retryIndices = Array.from(retryChain).sort((a, b) => a - b);
+      
+      // 构建成功步骤的上下文（所有成功的步骤结果）
+      const history = await HistoryStore.list(runId, 0, -1);
+      const prior = history
+        .filter((h) => h.type === 'tool_result' && Number(h.result?.success) === 1)
+        .map((h) => ({ aiName: h.aiName, args: h.args, result: h.result, data: h.result?.data }));
+
+      // 记录重试事件
+      await HistoryStore.append(runId, { 
+        type: 'retry_begin', 
+        failedSteps: failedSteps.map((f) => ({ index: f.index, aiName: f.aiName, reason: f.reason })),
+        repairIndex: repairs + 1 
+      });
+      
+      if (config.flags.enableVerboseSteps) {
+        logger.info('开始重试失败步骤及其依赖链', {
+          label: 'RETRY',
+          originalFailed: failedIndices,
+          retryChain: retryIndices,
+          chainSize: retryIndices.length,
+          failedSteps: failedSteps.map((f) => `步骤${f.index}(${f.aiName}): ${f.reason}`)
+        });
+      }
+      
+      // 重试失败步骤及其所有下游依赖步骤
+      const retryExec = await executePlan(runId, objective, mcpcore, plan, { 
+        retrySteps: retryIndices,  // 执行失败步骤 + 依赖它们的步骤
+        seedRecent: prior, 
+        conversation, 
+        context 
+      });
+      
+      await HistoryStore.append(runId, { 
+        type: 'retry_done', 
+        failedSteps: failedSteps.map((f) => ({ index: f.index, aiName: f.aiName, reason: f.reason })),
+        repairIndex: repairs + 1, 
+        exec: retryExec 
+      });
+
+      // 重试后，需要从 history 中重新统计全局的 exec（因为 retryExec 只包含重试步骤）
+      const updatedHistory = await HistoryStore.list(runId, 0, -1);
+      const allToolResults = updatedHistory.filter((h) => h.type === 'tool_result');
+      const globalUsed = allToolResults.map((h) => ({
+        aiName: h.aiName,
+        args: h.args,
+        result: h.result
+      }));
+      const globalSucceeded = allToolResults.filter((h) => Number(h.result?.success) === 1).length;
+      const globalExec = {
+        used: globalUsed,
+        attempted: allToolResults.length,
+        succeeded: globalSucceeded,
+        successRate: allToolResults.length ? globalSucceeded / allToolResults.length : 0
+      };
+      exec = globalExec;
+
+      evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
+      repairs++;
+    }
+
     await HistoryStore.append(runId, { type: 'done', exec });
-    const summary = String(judge.summary || 'Judge阶段失败');
-    try { await HistoryStore.setSummary(runId, summary); } catch {}
-    await HistoryStore.append(runId, { type: 'summary', summary });
-    return fail('JUDGE_FAILED', 'JUDGE_FAILED', { runId, plan, exec, eval: { success: false, summary }, summary });
-  }
-  if (!judge.need) {
-    const plan = { manifest: manifest0, steps: [] };
-    await HistoryStore.setPlan(runId, plan);
-    await HistoryStore.append(runId, { type: 'plan', plan });
-    const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
-    const evalObj = { success: true, summary: '判定无需调用工具，直接完成。' };
-    await HistoryStore.append(runId, { type: 'done', exec });
-    const summary = '本次任务判定无需调用工具。';
-    await HistoryStore.setSummary(runId, summary);
-    await HistoryStore.append(runId, { type: 'summary', summary });
-    return ok({ runId, plan, exec, eval: evalObj, summary });
-  }
-
-  const plan = await generatePlan(objective, mcpcore, { ...context, runId, judge }, conversation);
-  await HistoryStore.setPlan(runId, plan);
-  await HistoryStore.append(runId, { type: 'plan', plan });
-
-  let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context });
-  let evalObj = await evaluateRun(objective, plan, exec, runId, context);
-
-  // Global repair loop (circuit breaker): limit the number of repair cycles
-  const enableRepair = !(config.runner?.enableRepair === false);
-  const maxRepairs = enableRepair ? Math.max(0, Number(config.runner?.maxRepairs ?? 1)) : 0;
-  let repairs = 0;
-  while (!evalObj.success && repairs < maxRepairs) {
-    // 收集所有失败的步骤（不只是第一个）
-    const failedSteps = Array.isArray(evalObj.failedSteps) && evalObj.failedSteps.length
-      ? evalObj.failedSteps.filter((f) => Number.isFinite(f.index))
-      : [];
-    if (failedSteps.length === 0) break;
     
-    // 提取失败步骤的索引
-    const failedIndices = failedSteps.map((f) => Number(f.index)).sort((a, b) => a - b);
+    // 总结步骤，支持失败反馈
+    const summaryResult = await summarizeToolHistory(runId, '', ctx);
     
-    // 构建依赖链：找出所有依赖失败步骤的下游步骤
-    const retryChain = buildDependencyChain(plan.steps, failedIndices);
-    const retryIndices = Array.from(retryChain).sort((a, b) => a - b);
-    
-    // 构建成功步骤的上下文（所有成功的步骤结果）
-    const history = await HistoryStore.list(runId, 0, -1);
-    const prior = history
-      .filter((h) => h.type === 'tool_result' && Number(h.result?.success) === 1)
-      .map((h) => ({ aiName: h.aiName, args: h.args, result: h.result, data: h.result?.data }));
-
-    // 记录重试事件
-    await HistoryStore.append(runId, { 
-      type: 'retry_begin', 
-      failedSteps: failedSteps.map((f) => ({ index: f.index, aiName: f.aiName, reason: f.reason })),
-      repairIndex: repairs + 1 
-    });
-    
-    if (config.flags.enableVerboseSteps) {
-      logger.info('开始重试失败步骤及其依赖链', {
-        label: 'RETRY',
-        originalFailed: failedIndices,
-        retryChain: retryIndices,
-        chainSize: retryIndices.length,
-        failedSteps: failedSteps.map((f) => `步骤${f.index}(${f.aiName}): ${f.reason}`)
+    if (!summaryResult.success && config.flags.enableVerboseSteps) {
+      logger.warn('总结步骤失败', {
+        label: 'RUN',
+        runId,
+        error: summaryResult.error,
+        attempts: summaryResult.attempts
       });
     }
     
-    // 重试失败步骤及其所有下游依赖步骤
-    const retryExec = await executePlan(runId, objective, mcpcore, plan, { 
-      retrySteps: retryIndices,  // 执行失败步骤 + 依赖它们的步骤
-      seedRecent: prior, 
-      conversation, 
-      context 
+    // 向后兼容：返回 summary 字符串
+    const summary = summaryResult.summary || '';
+
+    const okres = ok({ 
+      runId, 
+      plan, 
+      exec, 
+      eval: evalObj, 
+      summary,
+      summaryResult  // 附加完整的总结结果
     });
-    
-    await HistoryStore.append(runId, { 
-      type: 'retry_done', 
-      failedSteps: failedSteps.map((f) => ({ index: f.index, aiName: f.aiName, reason: f.reason })),
-      repairIndex: repairs + 1, 
-      exec: retryExec 
-    });
-
-    // 重试后，需要从 history 中重新统计全局的 exec（因为 retryExec 只包含重试步骤）
-    const updatedHistory = await HistoryStore.list(runId, 0, -1);
-    const allToolResults = updatedHistory.filter((h) => h.type === 'tool_result');
-    const globalUsed = allToolResults.map((h) => ({
-      aiName: h.aiName,
-      args: h.args,
-      result: h.result
-    }));
-    const globalSucceeded = allToolResults.filter((h) => Number(h.result?.success) === 1).length;
-    const globalExec = {
-      used: globalUsed,
-      attempted: allToolResults.length,
-      succeeded: globalSucceeded,
-      successRate: allToolResults.length ? globalSucceeded / allToolResults.length : 0
-    };
-    exec = globalExec;
-
-    evalObj = await evaluateRun(objective, plan, exec, runId, context);
-    repairs++;
+    if (config.flags.enableVerboseSteps) {
+      logger.info('Run completed', { label: 'RUN', runId, attempted: exec.attempted, succeeded: exec.succeeded, successRate: exec.successRate });
+    }
+    return okres;
+  } finally {
+    const cancelled = isRunCancelled(runId);
+    try { markRunFinished(runId, { cancelled }); } catch {}
+    try { removeRun(runId); } catch {}
+    try { clearRunCancelled(runId); } catch {}
   }
-
-  await HistoryStore.append(runId, { type: 'done', exec });
-  
-  // 总结步骤，支持失败反馈
-  const summaryResult = await summarizeToolHistory(runId, '', context);
-  
-  if (!summaryResult.success && config.flags.enableVerboseSteps) {
-    logger.warn('总结步骤失败', {
-      label: 'RUN',
-      runId,
-      error: summaryResult.error,
-      attempts: summaryResult.attempts
-    });
-  }
-  
-  // 向后兼容：返回 summary 字符串
-  const summary = summaryResult.summary || '';
-
-  const okres = ok({ 
-    runId, 
-    plan, 
-    exec, 
-    eval: evalObj, 
-    summary,
-    summaryResult  // 附加完整的总结结果
-  });
-  if (config.flags.enableVerboseSteps) {
-    logger.info('Run completed', { label: 'RUN', runId, attempted: exec.attempted, succeeded: exec.succeeded, successRate: exec.successRate });
-  }
-  return okres;
 }
 
 // 流式执行：通过 RunEvents 推送（同时持久化到 HistoryStore），以 JSON 事件逐步产出
@@ -1556,12 +1595,15 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
 export async function* planThenExecuteStream({ objective, context = {}, mcpcore, conversation, pollIntervalMs = 200 }) {
   const runId = uuidv4();
   const sub = RunEvents.subscribe(runId);
+  const ctx0 = (context && typeof context === 'object') ? context : {};
+  registerRunStart({ runId, channelId: ctx0.channelId, identityKey: ctx0.identityKey, objective });
+  const ctx = injectConcurrencyOverlay({ runId, objective, context: ctx0 });
 
   // Producer: run the workflow in background while emitting events
   (async () => {
     try {
       // Start
-      const sanitizedCtx = sanitizeContextForLog(context);
+      const sanitizedCtx = sanitizeContextForLog(ctx);
       emitRunEvent(runId, { type: 'start', objective, context: sanitizedCtx });
       await HistoryStore.append(runId, { type: 'start', objective, context: sanitizedCtx });
 
@@ -1570,7 +1612,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       
       // 步骤2：判断是否需要工具（使用原始工具列表）
       const judgeFunc = (config.llm?.toolStrategy || 'auto') === 'fc' ? judgeToolNecessityFC : judgeToolNecessity;
-      const judge = await judgeFunc(objective, manifest0, conversation, context);
+      const judge = await judgeFunc(objective, manifest0, conversation, ctx);
       emitRunEvent(runId, { type: 'judge', need: judge.need, summary: judge.summary, toolNames: judge.toolNames, ok: judge.ok !== false });
       await HistoryStore.append(runId, { type: 'judge', need: judge.need, summary: judge.summary, toolNames: judge.toolNames, ok: judge.ok !== false });
       if (judge && judge.ok === false) {
@@ -1603,13 +1645,13 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       }
 
       // Plan (after judge)
-      const plan = await generatePlan(objective, mcpcore, { ...context, runId, judge }, conversation);
+      const plan = await generatePlan(objective, mcpcore, { ...ctx, runId, judge }, conversation);
       await HistoryStore.setPlan(runId, plan);
       emitRunEvent(runId, { type: 'plan', plan });
       await HistoryStore.append(runId, { type: 'plan', plan });
 
       // Execute concurrently (existing executor emits args/tool_result events)
-      let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context });
+      let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
 
       // 若运行在执行阶段被取消，则跳过后续评估/补救/总结，仅发出取消型 done/summary 事件
       if (isRunCancelled(runId)) {
@@ -1626,7 +1668,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       }
 
       // Evaluate
-      let evalObj = await evaluateRun(objective, plan, exec, runId, context); // evaluation event emitted inside
+      let evalObj = await evaluateRun(objective, plan, exec, runId, ctx); // evaluation event emitted inside
 
       // Retry loop if enabled and within global limits
       const enableRepair = !(config.runner?.enableRepair === false);
@@ -1706,7 +1748,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
           };
           exec = globalExec;
 
-          evalObj = await evaluateRun(objective, plan, exec, runId, context);
+          evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
         }
         repairs++;
       }
@@ -1743,7 +1785,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
           });
         }
         try {
-          const reflection = await checkTaskCompleteness(runId, objective, plan.manifest, context);
+          const reflection = await checkTaskCompleteness(runId, objective, plan.manifest, ctx);
           
           emitRunEvent(runId, {
             type: 'reflection',
@@ -1816,7 +1858,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
             const supplementConversation = Array.isArray(conversation) ? conversation : [];
             
             const supplementPlan = await generatePlan(supplementObjective, mcpcore, { 
-              ...context, 
+              ...ctx, 
               runId, 
               isReflectionSupplement: true,
               originalPlan: plan,
@@ -1858,7 +1900,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
               const supplementExec = await executePlan(runId, supplementObjective, mcpcore, supplementPlan, {
                 seedRecent: prior,
                 conversation,
-                context
+                context: ctx
               });
               
               emitRunEvent(runId, { 
@@ -1929,7 +1971,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       });
       
       // 总结步骤，支持失败反馈
-      const summaryResult = await summarizeToolHistory(runId, '', context);
+      const summaryResult = await summarizeToolHistory(runId, '', ctx);
       
       if (!summaryResult.success && config.flags.enableVerboseSteps) {
         logger.warn('总结步骤失败', {
@@ -1963,6 +2005,9 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       emitRunEvent(runId, { type: 'done', error: String(e) });
       await HistoryStore.append(runId, { type: 'done', error: String(e) });
     } finally {
+      const cancelled = isRunCancelled(runId);
+      try { markRunFinished(runId, { cancelled }); } catch {}
+      try { removeRun(runId); } catch {}
       try { await sub.return?.(); } catch {}
       try { RunEvents.close(runId); } catch {}
       try { clearRunCancelled(runId); } catch {}
@@ -1975,6 +2020,9 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       if (ev?.type === 'completed' || ev?.type === 'summary') break;
     }
   } finally {
+    const cancelled = isRunCancelled(runId);
+    try { markRunFinished(runId, { cancelled }); } catch {}
+    try { removeRun(runId); } catch {}
     try { await sub.return?.(); } catch {}
     try { RunEvents.close(runId); } catch {}
     try { clearRunCancelled(runId); } catch {}

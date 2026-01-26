@@ -1,6 +1,6 @@
 import { createLogger } from '../utils/logger.js';
 import { compressContext } from '../utils/contextCompressor.js';
-import { getEnv } from '../utils/envHotReloader.js';
+import { getEnv, getEnvTimeoutMs } from '../utils/envHotReloader.js';
 import {
   saveContextMemoryItem,
   getLastSummarizedPairCount,
@@ -84,6 +84,12 @@ export async function triggerContextSummarizationIfNeededCore(options = {}) {
 
     const model = CONTEXT_MEMORY_MODEL || MAIN_AI_MODEL;
 
+    const timeout = getEnvTimeoutMs(
+      'CONTEXT_MEMORY_TIMEOUT_MS',
+      getEnvTimeoutMs('TIMEOUT', 180000, 900000),
+      900000
+    );
+
     const contextMemoryBaseUrl = getEnv('CONTEXT_MEMORY_BASE_URL', getEnv('API_BASE_URL', 'https://yuanplus.chat/v1'));
     const contextMemoryApiKey = getEnv('CONTEXT_MEMORY_API_KEY', getEnv('API_KEY'));
 
@@ -105,7 +111,8 @@ export async function triggerContextSummarizationIfNeededCore(options = {}) {
       model,
       presetText,
       apiBaseUrl: contextMemoryBaseUrl,
-      apiKey: contextMemoryApiKey
+      apiKey: contextMemoryApiKey,
+      timeout
     });
 
     if (!summary || !summary.trim()) {

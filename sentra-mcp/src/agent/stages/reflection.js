@@ -1,4 +1,4 @@
-import { config, getStageModel, getStageProvider } from '../../config/index.js';
+import { config, getStageModel, getStageProvider, getStageTimeoutMs } from '../../config/index.js';
 import logger from '../../logger/index.js';
 import { HistoryStore } from '../../history/store.js';
 import { chatCompletion } from '../../openai/client.js';
@@ -134,6 +134,7 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
         messages,
         temperature,
         top_p,
+        timeoutMs: getStageTimeoutMs('reflection'),
         apiKey: provider.apiKey,
         baseURL: provider.baseURL,
         model: reflectionModel,

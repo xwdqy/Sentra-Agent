@@ -68,6 +68,7 @@ export const getDisplayName = (name: string): string => {
   const mapping: Record<string, string> = {
     '.': '对话配置',
     'mcp-plugins': '本地插件',
+    'mcp-servers-manager': '外部MCP工具',
     'sentra-config-ui': 'WebUI配置',
     'dev-center': '开发中心',
     'utils/emoji-stickers': '表情包配置',
@@ -209,6 +210,7 @@ export const getIconForType = (name: string, type: 'module' | 'plugin'): React.R
   if (n.includes('preset-importer')) return <AppIconWrapper bg="linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)"><IoCloudDownload color="white" /></AppIconWrapper>;
   if (n.includes('agent-presets') || n.includes('presets-editor')) return <AppIconWrapper bg="linear-gradient(135deg, #00b09b 0%, #96c93d 100%)"><IoDocumentText color="white" /></AppIconWrapper>;
   if (n.includes('redis-admin')) return <AppIconWrapper bg="linear-gradient(135deg, #7c3aed 0%, #2563eb 100%)"><IoServer color="white" /></AppIconWrapper>;
+  if (n.includes('mcp-servers-manager')) return <AppIconWrapper bg="linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%)"><IoApps color="white" /></AppIconWrapper>;
   if (n.includes('model-providers-manager')) return <AppIconWrapper bg="linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%)"><LLMIcon width={34} height={34} /></AppIconWrapper>;
   if (n.includes('emoji-stickers-manager')) return <AppIconWrapper bg="linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%)"><FcPicture /></AppIconWrapper>;
 

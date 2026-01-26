@@ -1,7 +1,7 @@
 import { createLogger } from './logger.js';
 import { escapeXml } from './xmlUtils.js';
 import { Agent } from '../agent.js';
-import { getEnv, getEnvInt } from './envHotReloader.js';
+import { getEnv, getEnvInt, getEnvTimeoutMs } from './envHotReloader.js';
 import { loadPrompt } from '../prompts/loader.js';
 
 const logger = createLogger('FormatRepair');
@@ -87,6 +87,8 @@ export async function repairSentraResponse(rawText, opts = {}) {
     throw new Error('repairSentraResponse: rawText 为空或非字符串');
   }
 
+  const repairTimeout = getEnvTimeoutMs('REPAIR_TIMEOUT_MS', getEnvTimeoutMs('TIMEOUT', 180000, 900000), 900000);
+
   const agent = opts.agent || new Agent({
     apiKey: getEnv('REPAIR_API_KEY', getEnv('API_KEY')),
     apiBaseUrl: getEnv('REPAIR_BASE_URL', getEnv('API_BASE_URL', 'https://yuanplus.chat/v1')),
@@ -94,7 +96,7 @@ export async function repairSentraResponse(rawText, opts = {}) {
     temperature: parseFloat(getEnv('TEMPERATURE', '0.7')),
     maxTokens: getEnvInt('MAX_TOKENS', 4096),
     maxRetries: getEnvInt('MAX_RETRIES', 3),
-    timeout: getEnvInt('TIMEOUT', 60000)
+    timeout: repairTimeout
   });
 
   const model = opts.model || getEnv('REPAIR_AI_MODEL', getEnv('MAIN_AI_MODEL'));
@@ -159,7 +161,8 @@ export async function repairSentraResponse(rawText, opts = {}) {
       model,
       temperature,
       tools,
-      tool_choice
+      tool_choice,
+      timeout: repairTimeout
     });
   } catch (e) {
     logger.error('调用修复模型失败', e);
@@ -222,6 +225,8 @@ export function shouldRepair(text) {
 export async function repairSentraDecision(rawText, opts = {}) {
   if (!rawText || typeof rawText !== 'string') throw new Error('repairSentraDecision: rawText 无效');
 
+  const repairTimeout = getEnvTimeoutMs('REPAIR_TIMEOUT_MS', getEnvTimeoutMs('TIMEOUT', 180000, 900000), 900000);
+
   const agent = opts.agent || new Agent({
     apiKey: getEnv('REPAIR_API_KEY', getEnv('API_KEY')),
     apiBaseUrl: getEnv('REPAIR_BASE_URL', getEnv('API_BASE_URL', 'https://yuanplus.chat/v1')),
@@ -229,7 +234,7 @@ export async function repairSentraDecision(rawText, opts = {}) {
     temperature: 0.2,
     maxTokens: getEnvInt('MAX_TOKENS', 4096),
     maxRetries: getEnvInt('MAX_RETRIES', 3),
-    timeout: getEnvInt('TIMEOUT', 60000)
+    timeout: repairTimeout
   });
 
   const model = opts.model || getEnv('REPAIR_AI_MODEL', getEnv('MAIN_AI_MODEL'));
@@ -265,7 +270,7 @@ export async function repairSentraDecision(rawText, opts = {}) {
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
     ],
-    { model, temperature, tools, tool_choice }
+    { model, temperature, tools, tool_choice, timeout: repairTimeout }
   );
 
   if (!result || typeof result !== 'object') throw new Error('修复工具返回无效结果');
@@ -286,6 +291,8 @@ export async function repairSentraDecision(rawText, opts = {}) {
 export async function repairSentraPersona(rawText, opts = {}) {
   if (!rawText || typeof rawText !== 'string') throw new Error('repairSentraPersona: rawText 无效');
 
+  const repairTimeout = getEnvTimeoutMs('REPAIR_TIMEOUT_MS', getEnvTimeoutMs('TIMEOUT', 180000, 900000), 900000);
+
   const agent = opts.agent || new Agent({
     apiKey: getEnv('REPAIR_API_KEY', getEnv('API_KEY')),
     apiBaseUrl: getEnv('REPAIR_BASE_URL', getEnv('API_BASE_URL', 'https://yuanplus.chat/v1')),
@@ -293,7 +300,7 @@ export async function repairSentraPersona(rawText, opts = {}) {
     temperature: 0.2,
     maxTokens: getEnvInt('MAX_TOKENS', 4096),
     maxRetries: getEnvInt('MAX_RETRIES', 3),
-    timeout: getEnvInt('TIMEOUT', 60000)
+    timeout: repairTimeout
   });
 
   const model = opts.model || getEnv('REPAIR_AI_MODEL', getEnv('MAIN_AI_MODEL'));

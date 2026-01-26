@@ -1,6 +1,6 @@
 import { Agent } from '../agent.js';
 import { createLogger } from '../utils/logger.js';
-import { getEnv, getEnvInt, onEnvReload } from '../utils/envHotReloader.js';
+import { getEnv, getEnvInt, getEnvTimeoutMs, onEnvReload } from '../utils/envHotReloader.js';
 import { parseSentraResponse } from '../utils/protocolUtils.js';
 import { escapeXml, appendXmlBlockLines, appendConstraintsBlock } from '../utils/xmlUtils.js';
 import { chatWithRetry as chatWithRetryCore } from './ChatWithRetry.js';
@@ -164,7 +164,7 @@ export function checkProactiveWhitelistTarget(payload = {}) {
 function getPlannerConfig() {
   const model = getEnv('PROACTIVE_DIRECTIVE_MODEL', 'gpt-4.1-mini');
   const maxTokens = getEnvInt('PROACTIVE_DIRECTIVE_MAX_TOKENS', 4096);
-  const timeout = getEnvInt('PROACTIVE_DIRECTIVE_TIMEOUT', 60000);
+  const timeout = getEnvTimeoutMs('PROACTIVE_DIRECTIVE_TIMEOUT', 180000, 900000);
   const maxRetries = getEnvInt('PROACTIVE_DIRECTIVE_MAX_RETRIES', 3);
   return { model, maxTokens, timeout, maxRetries };
 }

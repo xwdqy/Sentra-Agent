@@ -10,9 +10,11 @@ let embeddingClientKey;
 export function getOpenAI() {
   const key = `${config.llm.apiKey || ''}@@${config.llm.baseURL || ''}`;
   if (!client || clientKey !== key) {
+    const timeout = Number(config.llm?.timeoutMs);
     client = new OpenAI({
       apiKey: config.llm.apiKey,
       baseURL: config.llm.baseURL,
+      ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
     });
     clientKey = key;
   }
@@ -22,18 +24,28 @@ export function getOpenAI() {
 export function getEmbeddingOpenAI() {
   const apiKey = config.embedding.apiKey || config.llm.apiKey;
   const baseURL = config.embedding.baseURL || config.llm.baseURL;
-  const key = `${apiKey || ''}@@${baseURL || ''}`;
+  const timeout = Number(config.embedding?.timeoutMs);
+  const key = `${apiKey || ''}@@${baseURL || ''}@@${Number.isFinite(timeout) && timeout > 0 ? timeout : ''}`;
   if (!embeddingClient || embeddingClientKey !== key) {
-    embeddingClient = new OpenAI({ apiKey, baseURL });
+    embeddingClient = new OpenAI({
+      apiKey,
+      baseURL,
+      ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {}),
+    });
     embeddingClientKey = key;
   }
   return embeddingClient;
 }
 
-export async function chatCompletion({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens }) {
+export async function chatCompletion({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens, timeoutMs }) {
   // Allow per-call overrides of API credentials and base URL
-  const openai = (apiKey || baseURL)
-    ? new OpenAI({ apiKey: apiKey || config.llm.apiKey, baseURL: baseURL || config.llm.baseURL })
+  const timeout = Number(timeoutMs);
+  const openai = (apiKey || baseURL || Number.isFinite(timeout))
+    ? new OpenAI({
+        apiKey: apiKey || config.llm.apiKey,
+        baseURL: baseURL || config.llm.baseURL,
+        ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {})
+      })
     : getOpenAI();
   const payload = {
     model: model || config.llm.model,
@@ -64,9 +76,14 @@ export async function chatCompletion({ messages, tools, tool_choice, temperature
   return res;
 }
 
-export async function chatCompletionStream({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens, onDelta }) {
-  const openai = (apiKey || baseURL)
-    ? new OpenAI({ apiKey: apiKey || config.llm.apiKey, baseURL: baseURL || config.llm.baseURL })
+export async function chatCompletionStream({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens, onDelta, timeoutMs }) {
+  const timeout = Number(timeoutMs);
+  const openai = (apiKey || baseURL || Number.isFinite(timeout))
+    ? new OpenAI({
+        apiKey: apiKey || config.llm.apiKey,
+        baseURL: baseURL || config.llm.baseURL,
+        ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {})
+      })
     : getOpenAI();
 
   const payload = {
@@ -119,10 +136,12 @@ export async function chatCompletionStream({ messages, tools, tool_choice, tempe
 // 中文：简单封装 Embeddings 接口，返回每个输入文本的向量数组
 export async function embedTexts({ texts = [], apiKey, baseURL, model }) {
   if (!Array.isArray(texts) || texts.length === 0) return [];
-  const openai = (apiKey || baseURL)
+  const timeout = Number(config.embedding?.timeoutMs);
+  const openai = (apiKey || baseURL || (Number.isFinite(timeout) && timeout > 0))
     ? new OpenAI({
         apiKey: apiKey || config.embedding.apiKey || config.llm.apiKey,
         baseURL: baseURL || config.embedding.baseURL || config.llm.baseURL,
+        ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {})
       })
     : getEmbeddingOpenAI();
   const mdl = model || config.embedding.model || 'text-embedding-3-small';

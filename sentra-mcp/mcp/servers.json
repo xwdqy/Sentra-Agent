@@ -1,8 +1,30 @@
 [
   {
-    "id": "chrome-devtools",
+    "id": "douyin-china-tiktok-all-api",
     "type": "stdio",
     "command": "cmd",
-    "args": ["/c", "npx", "-y", "chrome-devtools-mcp@latest"]
+    "args": [
+      "/c",
+      "mcp-remote",
+      "https://mcp.rapidapi.com",
+      "--header",
+      "x-api-host: douyin-china-tiktok-all-api.p.rapidapi.com",
+      "--header",
+      "x-api-key: f9f619ad56mshaac66164ef8f398p177a60jsna0af321e44c5"
+    ]
+  },
+  {
+    "id": "rapidapi-hub-youtube",
+    "type": "stdio",
+    "command": "cmd",
+    "args": [
+      "/c",
+      "mcp-remote",
+      "https://mcp.rapidapi.com",
+      "--header",
+      "x-api-host: youtube138.p.rapidapi.com",
+      "--header",
+      "x-api-key: f9f619ad56mshaac66164ef8f398p177a60jsna0af321e44c5"
+    ]
   }
 ]

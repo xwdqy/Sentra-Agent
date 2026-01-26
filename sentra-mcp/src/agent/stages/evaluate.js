@@ -3,7 +3,7 @@
  */
 
 import logger from '../../logger/index.js';
-import { config, getStageModel, getStageProvider } from '../../config/index.js';
+import { config, getStageModel, getStageProvider, getStageTimeoutMs } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
 import { HistoryStore } from '../../history/store.js';
 import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
@@ -96,7 +96,8 @@ export async function evaluateRun(objective, plan, exec, runId, context = {}) {
       messages: baseMsgs,
       tools,
       tool_choice: { type: 'function', function: { name: 'final_judge' } },
-      temperature: 0.1
+      temperature: 0.1,
+      timeoutMs: getStageTimeoutMs('eval')
     });
     const call = res.choices?.[0]?.message?.tool_calls?.[0];
     if (call?.function?.arguments) {
@@ -151,6 +152,7 @@ export async function evaluateRun(objective, plan, exec, runId, context = {}) {
       messages,
       temperature,
       top_p,
+      timeoutMs: getStageTimeoutMs('eval'),
       apiKey: provider.apiKey,
       baseURL: provider.baseURL,
       model: evalModel,

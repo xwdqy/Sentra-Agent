@@ -13,6 +13,7 @@ const DeepWikiChat = lazy(() => import('../../components/DeepWikiChat').then(mod
 const PresetImporter = lazy(() => import('../../components/PresetImporter').then(module => ({ default: module.PresetImporter })));
 const ModelProvidersManager = lazy(() => import('../../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
 const EmojiStickersManager = lazy(() => import('../../components/EmojiStickersManager/EmojiStickersManager').then(module => ({ default: module.default })));
+const McpServersManager = lazy(() => import('../../components/McpServersManager/McpServersManager').then(module => ({ default: module.default })));
 const DevCenterV2 = lazy(() => import('../../components/DevCenterV2').then(module => ({ default: module.DevCenterV2 })));
 const RedisAdminManager = lazy(() => import('../../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
 const TerminalManager = lazy(() => import('../../components/TerminalManager/TerminalManager').then(module => ({ default: module.default })));
@@ -80,6 +81,11 @@ type DesktopUtilityWindowsLayerProps = {
   modelProvidersManagerMinimized: boolean;
   setModelProvidersManagerMinimized: (v: boolean) => void;
 
+  mcpServersManagerOpen: boolean;
+  setMcpServersManagerOpen: (v: boolean) => void;
+  mcpServersManagerMinimized: boolean;
+  setMcpServersManagerMinimized: (v: boolean) => void;
+
   emojiStickersManagerOpen: boolean;
   setEmojiStickersManagerOpen: (v: boolean) => void;
   emojiStickersManagerMinimized: boolean;
@@ -138,6 +144,10 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
     setModelProvidersManagerOpen,
     modelProvidersManagerMinimized,
     setModelProvidersManagerMinimized,
+    mcpServersManagerOpen,
+    setMcpServersManagerOpen,
+    mcpServersManagerMinimized,
+    setMcpServersManagerMinimized,
     emojiStickersManagerOpen,
     setEmojiStickersManagerOpen,
     emojiStickersManagerMinimized,
@@ -278,6 +288,16 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
                   },
                 },
                 {
+                  id: 'mcp-servers-manager',
+                  name: 'mcp-servers-manager',
+                  subtitle: '外部 MCP 工具管理（mcp/servers.json）',
+                  onOpen: () => {
+                    setMcpServersManagerOpen(true);
+                    setMcpServersManagerMinimized(false);
+                    bringUtilityToFront('mcp-servers-manager');
+                  },
+                },
+                {
                   id: 'emoji-stickers-manager',
                   name: 'emoji-stickers-manager',
                   subtitle: '表情包配置（上传/预览/一键写入 .env）',
@@ -411,6 +431,41 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
         >
           <Suspense fallback={<LazyWindowFallback title="加载 模型供应商" />}>
             <ModelProvidersManager addToast={addToast as any} />
+          </Suspense>
+        </MacWindow>
+      )}
+
+      {mcpServersManagerOpen && (
+        <MacWindow
+          id="mcp-servers-manager"
+          title="外部 MCP 工具"
+          icon={getIconForType('mcp-servers-manager', 'module')}
+          initialPos={getInitialPos('mcp-servers-manager')}
+          safeArea={desktopSafeArea}
+          zIndex={utilityZMap['mcp-servers-manager'] ?? 2010}
+          isActive={activeUtilityId === 'mcp-servers-manager'}
+          isMinimized={mcpServersManagerMinimized}
+          performanceMode={performanceMode}
+          initialSize={getInitialSize('mcp-servers-manager', { width: 1040, height: 720 })}
+          initialMaximized={getInitialMaximized('mcp-servers-manager')}
+          onClose={() => {
+            handleWindowMaximize('mcp-servers-manager', false);
+            updateLayout('mcp-servers-manager', { maximized: false });
+            setMcpServersManagerOpen(false);
+            setMcpServersManagerMinimized(false);
+          }}
+          onMinimize={() => {
+            handleWindowMaximize('mcp-servers-manager', false);
+            setMcpServersManagerMinimized(true);
+            setActiveUtilityId(null);
+          }}
+          onMaximize={handleMaximizePersist('mcp-servers-manager')}
+          onFocus={() => { bringUtilityToFront('mcp-servers-manager'); }}
+          onMove={handleMove('mcp-servers-manager')}
+          onResize={handleResize('mcp-servers-manager')}
+        >
+          <Suspense fallback={<LazyWindowFallback title="加载 外部 MCP 工具" />}>
+            <McpServersManager addToast={addToast as any} />
           </Suspense>
         </MacWindow>
       )}

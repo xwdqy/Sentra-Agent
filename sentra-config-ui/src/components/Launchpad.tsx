@@ -79,7 +79,7 @@ export const Launchpad: React.FC<LaunchpadProps> = ({ isOpen, onClose, items }) 
     const toolsApps: typeof items = [];
     const qqApps: typeof items = [];
 
-    const builtinToolOrder = ['file-manager', 'terminal-manager', 'presets-editor', 'preset-importer', 'emoji-stickers-manager', 'model-providers-manager', 'dev-center'];
+    const builtinToolOrder = ['file-manager', 'terminal-manager', 'presets-editor', 'preset-importer', 'emoji-stickers-manager', 'model-providers-manager', 'mcp-servers-manager', 'dev-center'];
     const builtinToolSet = new Set(builtinToolOrder);
     const builtinTools: typeof items = [];
 

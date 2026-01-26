@@ -1,4 +1,4 @@
-import { loadEnv, initEnvWatcher, getEnv, getEnvInt, getEnvBool, onEnvReload } from './utils/envHotReloader.js';
+import { loadEnv, initEnvWatcher, getEnv, getEnvInt, getEnvBool, getEnvTimeoutMs, onEnvReload } from './utils/envHotReloader.js';
 import SentraMcpSDK from 'sentra-mcp';
 import SentraPromptsSDK from 'sentra-prompts';
 import { Agent } from "./agent.js";
@@ -220,7 +220,7 @@ const agent = new Agent({
   temperature: parseFloat(getEnv('TEMPERATURE', '0.7')),
   maxTokens: getEnvInt('MAX_TOKENS', 4096),
   maxRetries: getEnvInt('MAX_RETRIES', 3),
-  timeout: getEnvInt('TIMEOUT', 60000)
+  timeout: getEnvTimeoutMs('TIMEOUT', 180000, 900000)
 });
 
 onEnvReload(() => {
@@ -231,7 +231,7 @@ onEnvReload(() => {
     const nextTemperature = parseFloat(getEnv('TEMPERATURE', '0.7'));
     const nextMaxTokens = getEnvInt('MAX_TOKENS', 4096);
     const nextMaxRetries = getEnvInt('MAX_RETRIES', 3);
-    const nextTimeout = getEnvInt('TIMEOUT', 60000);
+    const nextTimeout = getEnvTimeoutMs('TIMEOUT', 180000, 900000);
 
     if (nextBaseUrl && nextBaseUrl !== agent.config.apiBaseUrl) agent.config.apiBaseUrl = nextBaseUrl;
     if (nextApiKey && nextApiKey !== agent.config.apiKey) agent.config.apiKey = nextApiKey;
@@ -295,8 +295,7 @@ function initAgentPresetWatcher() {
 initAgentPresetWatcher();
 
 function getEmoRuntimeConfig() {
-  const timeoutRaw = getEnvInt('SENTRA_EMO_TIMEOUT', 60000);
-  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 60000;
+  const timeout = getEnvTimeoutMs('SENTRA_EMO_TIMEOUT', 180000, 900000);
   const baseRaw = getEnv('SENTRA_EMO_URL', '') || '';
   const baseURL = typeof baseRaw === 'string' && baseRaw.trim() ? baseRaw.trim() : null;
   return { timeout, baseURL };
@@ -706,14 +705,14 @@ const baseSystem = await SentraPromptsSDK(baseSystemText);
 
 async function sendAndWaitResult(message) {
   const maxRetriesRaw = getEnvInt('SEND_RPC_MAX_RETRIES', 0);
-  const timeoutRaw = getEnvInt('SEND_RPC_TIMEOUT_MS', 120000);
+  const timeoutRaw = getEnvTimeoutMs('SEND_RPC_TIMEOUT_MS', 180000, 900000);
 
   const maxRetries = Number.isFinite(maxRetriesRaw) && maxRetriesRaw >= 0
     ? maxRetriesRaw
     : 0;
   const timeoutMs = Number.isFinite(timeoutRaw) && timeoutRaw > 0
     ? timeoutRaw
-    : 120000;
+    : 180000;
 
   const doOnce = () => {
     return new Promise((resolve) => {

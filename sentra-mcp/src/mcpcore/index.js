@@ -14,7 +14,30 @@ function makeAINameLocal(name) {
   return `local__${name}`;
 }
 function makeAINameExternal(serverId, name) {
-  return `ext__${serverId}__${name}`;
+  try {
+    const strategy = String(config?.llm?.toolStrategy || 'auto').toLowerCase();
+    if (strategy === 'fc') {
+      return `ext__${String(serverId ?? '')}__${String(name ?? '')}`;
+    }
+  } catch {}
+
+  const sanitize = (s) => String(s ?? '').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const sid = sanitize(serverId);
+  const raw = String(name ?? '');
+  const n0 = sanitize(raw);
+  const prefix = `ext__${sid}__`;
+  let base = `${prefix}${n0}`;
+
+  const changed = n0 !== raw;
+  const tooLong = base.length > 64;
+  if (!changed && !tooLong) return base;
+
+  const h = crypto.createHash('sha1').update(`${serverId}::${raw}`).digest('hex').slice(0, 10);
+  const suffix = `_${h}`;
+  const maxNameLen = Math.max(1, 64 - prefix.length - suffix.length);
+  const clipped = n0.slice(0, maxNameLen);
+  base = `${prefix}${clipped}${suffix}`;
+  return base;
 }
 
 // Local fallback for cooldown when Redis is unavailable

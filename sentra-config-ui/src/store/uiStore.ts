@@ -65,6 +65,11 @@ export type UIStore = {
   modelProvidersManagerMinimized: boolean;
   setModelProvidersManagerMinimized: (min: boolean) => void;
 
+  mcpServersManagerOpen: boolean;
+  setMcpServersManagerOpen: (open: boolean) => void;
+  mcpServersManagerMinimized: boolean;
+  setMcpServersManagerMinimized: (min: boolean) => void;
+
   emojiStickersManagerOpen: boolean;
   setEmojiStickersManagerOpen: (open: boolean) => void;
   emojiStickersManagerMinimized: boolean;
@@ -109,6 +114,9 @@ export type UIStore = {
   setIosTerminalManagerOpen: (open: boolean) => void;
   iosRedisAdminOpen: boolean;
   setIosRedisAdminOpen: (open: boolean) => void;
+
+  iosMcpServersManagerOpen: boolean;
+  setIosMcpServersManagerOpen: (open: boolean) => void;
 };
 
 function normalizeHexColor(v: string) {
@@ -243,6 +251,17 @@ export const useUIStore = create<UIStore>((set: SetState<UIStore>) => {
       set({ modelProvidersManagerMinimized: min });
     },
 
+    mcpServersManagerOpen: readBool('sentra_mcp_servers_manager_open', false),
+    setMcpServersManagerOpen: (open: boolean) => {
+      storage.setBool('sentra_mcp_servers_manager_open', open);
+      set({ mcpServersManagerOpen: open });
+    },
+    mcpServersManagerMinimized: readBool('sentra_mcp_servers_manager_minimized', false),
+    setMcpServersManagerMinimized: (min: boolean) => {
+      storage.setBool('sentra_mcp_servers_manager_minimized', min);
+      set({ mcpServersManagerMinimized: min });
+    },
+
     emojiStickersManagerOpen: readBool('sentra_emoji_stickers_manager_open', false),
     setEmojiStickersManagerOpen: (open: boolean) => {
       storage.setBool('sentra_emoji_stickers_manager_open', open);
@@ -322,5 +341,8 @@ export const useUIStore = create<UIStore>((set: SetState<UIStore>) => {
     setIosTerminalManagerOpen: (open: boolean) => set({ iosTerminalManagerOpen: open }),
     iosRedisAdminOpen: false,
     setIosRedisAdminOpen: (open: boolean) => set({ iosRedisAdminOpen: open }),
+
+    iosMcpServersManagerOpen: false,
+    setIosMcpServersManagerOpen: (open: boolean) => set({ iosMcpServersManagerOpen: open }),
   };
 });

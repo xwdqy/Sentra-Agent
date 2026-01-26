@@ -51,6 +51,10 @@ export function DesktopDock(props: DesktopDockProps) {
     setModelProvidersManagerOpen,
     setModelProvidersManagerMinimized,
 
+    mcpServersManagerOpen,
+    setMcpServersManagerOpen,
+    setMcpServersManagerMinimized,
+
     emojiStickersManagerOpen,
     setEmojiStickersManagerOpen,
     setEmojiStickersManagerMinimized,
@@ -92,6 +96,9 @@ export function DesktopDock(props: DesktopDockProps) {
           break;
         case 'model-providers-manager':
           void import('../../components/ModelProvidersManager/ModelProvidersManager');
+          break;
+        case 'mcp-servers-manager':
+          void import('../../components/McpServersManager/McpServersManager');
           break;
         case 'emoji-stickers-manager':
           void import('../../components/EmojiStickersManager/EmojiStickersManager');
@@ -199,6 +206,22 @@ export function DesktopDock(props: DesktopDockProps) {
         onClose: () => {
           setModelProvidersManagerOpen(false);
           setModelProvidersManagerMinimized(false);
+        },
+      },
+      {
+        id: 'mcp-servers-manager-app',
+        name: '外部 MCP 工具',
+        icon: getIconForType('mcp-servers-manager', 'module'),
+        isOpen: mcpServersManagerOpen,
+        onHover: () => prefetchUtilityChunk('mcp-servers-manager'),
+        onClick: () => {
+          setMcpServersManagerOpen(true);
+          setMcpServersManagerMinimized(false);
+          requestUtilityFocus('mcp-servers-manager');
+        },
+        onClose: () => {
+          setMcpServersManagerOpen(false);
+          setMcpServersManagerMinimized(false);
         },
       },
       {
@@ -322,6 +345,7 @@ export function DesktopDock(props: DesktopDockProps) {
     closeWindow,
     loadConfigs,
     modelProvidersManagerOpen,
+    mcpServersManagerOpen,
     openWindow,
     openWindows,
     presetImporterOpen,
@@ -338,6 +362,8 @@ export function DesktopDock(props: DesktopDockProps) {
     setLaunchpadOpen,
     setModelProvidersManagerMinimized,
     setModelProvidersManagerOpen,
+    setMcpServersManagerMinimized,
+    setMcpServersManagerOpen,
     setEmojiStickersManagerMinimized,
     setEmojiStickersManagerOpen,
     setPresetImporterMinimized,

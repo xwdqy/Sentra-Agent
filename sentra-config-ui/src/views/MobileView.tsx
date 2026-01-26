@@ -17,6 +17,7 @@ import { useTerminals } from '../hooks/useTerminals';
 import { useIOSEditor } from '../hooks/useIOSEditor';
 
 const ModelProvidersManager = React.lazy(() => import('../components/ModelProvidersManager/ModelProvidersManager').then(module => ({ default: module.default })));
+const McpServersManager = React.lazy(() => import('../components/McpServersManager/McpServersManager').then(module => ({ default: module.default })));
 const RedisAdminManager = React.lazy(() => import('../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
 const TerminalWindow = React.lazy(() => import('../components/TerminalWindow').then(module => ({ default: module.TerminalWindow })));
 const TerminalExecutorWindow = React.lazy(() => import('../components/TerminalExecutorWindow').then(module => ({ default: module.TerminalExecutorWindow })));
@@ -66,6 +67,8 @@ export function MobileView(props: MobileViewProps) {
     setIosFileManagerOpen,
     iosModelProvidersManagerOpen,
     setIosModelProvidersManagerOpen,
+    iosMcpServersManagerOpen,
+    setIosMcpServersManagerOpen,
     iosEmojiStickersManagerOpen,
     setIosEmojiStickersManagerOpen,
     iosTerminalManagerOpen,
@@ -156,8 +159,18 @@ export function MobileView(props: MobileViewProps) {
         },
       };
     }
+    if (icon.id === 'desktop-mcp-servers-manager') {
+      return {
+        ...icon,
+        onClick: () => {
+          setReturnToLaunchpad(false);
+          setIosMcpServersManagerOpen(true);
+          bringIOSAppToFront('ios-mcp-servers-manager');
+        },
+      };
+    }
     return icon;
-  }, [bringIOSAppToFront, setIosEmojiStickersManagerOpen, setIosTerminalManagerOpen]);
+  }, [bringIOSAppToFront, setIosEmojiStickersManagerOpen, setIosMcpServersManagerOpen, setIosTerminalManagerOpen]);
 
   const iosHomeIcons = React.useMemo(() => {
     return (desktopIcons || [])
@@ -187,6 +200,10 @@ export function MobileView(props: MobileViewProps) {
   React.useEffect(() => {
     if (iosModelProvidersManagerOpen && iosZMap['ios-model-providers-manager'] == null) bringIOSAppToFront('ios-model-providers-manager');
   }, [bringIOSAppToFront, iosModelProvidersManagerOpen, iosZMap]);
+
+  React.useEffect(() => {
+    if (iosMcpServersManagerOpen && iosZMap['ios-mcp-servers-manager'] == null) bringIOSAppToFront('ios-mcp-servers-manager');
+  }, [bringIOSAppToFront, iosMcpServersManagerOpen, iosZMap]);
 
   React.useEffect(() => {
     if (iosEmojiStickersManagerOpen && iosZMap['ios-emoji-stickers-manager'] == null) bringIOSAppToFront('ios-emoji-stickers-manager');
@@ -475,6 +492,19 @@ export function MobileView(props: MobileViewProps) {
                   onClose: () => setIosModelProvidersManagerOpen(false),
                 });
               }
+              if (iosMcpServersManagerOpen) {
+                rows.push({
+                  id: 'ios-mcp-servers-manager',
+                  name: '外部 MCP 工具',
+                  icon: getIconForType('mcp-servers-manager', 'module'),
+                  onOpen: () => {
+                    setIosMcpServersManagerOpen(true);
+                    bringIOSAppToFront('ios-mcp-servers-manager');
+                    setIosAppSwitcherOpen(false);
+                  },
+                  onClose: () => setIosMcpServersManagerOpen(false),
+                });
+              }
               if (iosRedisAdminOpen) {
                 rows.push({
                   id: 'ios-redis-admin',
@@ -636,6 +666,33 @@ export function MobileView(props: MobileViewProps) {
         </div>
       )}
 
+      {iosMcpServersManagerOpen && (
+        <div
+          style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', zIndex: iosZMap['ios-mcp-servers-manager'] ?? 2000 }}
+          onPointerDownCapture={() => bringIOSAppToFront('ios-mcp-servers-manager')}
+        >
+          <div className="ios-app-window" style={{ display: 'flex' }}>
+            <div className="ios-app-header">
+              <div className="ios-back-btn" onClick={() => {
+                setIosMcpServersManagerOpen(false);
+                if (returnToLaunchpad) setLaunchpadOpen(true);
+              }}>
+                <IoChevronBack /> {returnToLaunchpad ? '应用' : '主页'}
+              </div>
+              <div>外部 MCP 工具</div>
+              <div style={{ color: '#ff3b30', cursor: 'pointer', fontWeight: 'bold' }} onClick={() => setIosMcpServersManagerOpen(false)}>
+                关闭
+              </div>
+            </div>
+            <div className="ios-app-content">
+              <Suspense fallback={<SentraLoading title="加载 外部 MCP 工具" subtitle="首次打开可能较慢，请稍等..." />}>
+                <McpServersManager addToast={addToast as any} />
+              </Suspense>
+            </div>
+          </div>
+        </div>
+      )}
+
       {terminalWindows.map(term => (
         <div
           key={term.id}
@@ -717,6 +774,17 @@ export function MobileView(props: MobileViewProps) {
               setReturnToLaunchpad(true);
               setIosModelProvidersManagerOpen(true);
               bringIOSAppToFront('ios-model-providers-manager');
+              setLaunchpadOpen(false);
+            }
+          },
+          {
+            name: 'mcp-servers-manager',
+            type: 'module' as const,
+            onClick: () => {
+              recordUsage('app:mcp-servers-manager');
+              setReturnToLaunchpad(true);
+              setIosMcpServersManagerOpen(true);
+              bringIOSAppToFront('ios-mcp-servers-manager');
               setLaunchpadOpen(false);
             }
           },

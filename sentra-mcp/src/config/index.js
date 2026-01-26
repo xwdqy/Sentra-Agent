@@ -35,6 +35,12 @@ const int = (v, d) => {
   return Number.isFinite(n) ? n : d;
 };
 
+const timeoutMs = (v, d) => {
+  const n = Number.parseInt(v, 10);
+  if (!Number.isFinite(n) || n <= 0) return d;
+  return Math.min(n, 900000);
+};
+
 // Parse simple comma-separated strings to string array
 function parseCsv(v) {
   return String(v || '')
@@ -82,6 +88,7 @@ function buildConfigFromEnv() {
     model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
     temperature: Number(process.env.OPENAI_TEMPERATURE || 0.2),
     maxTokens: int(process.env.OPENAI_MAX_TOKENS, 4096),
+    timeoutMs: timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000),
     toolChoice: process.env.OPENAI_TOOL_CHOICE || 'auto',
     toolStrategy: (process.env.TOOL_STRATEGY || 'auto').toLowerCase(),
   },
@@ -98,6 +105,7 @@ function buildConfigFromEnv() {
     model: process.env.FC_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1-mini',
     temperature: Number(process.env.FC_TEMPERATURE || process.env.OPENAI_TEMPERATURE || 0.2),
     maxTokens: int(process.env.FC_MAX_TOKENS, -1), // -1 表示省略 max_tokens
+    timeoutMs: timeoutMs(process.env.FC_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000)),
     format: (process.env.FC_FORMAT || 'sentra').toLowerCase(),
     planMaxRetries: int(process.env.FC_PLAN_MAX_RETRIES, 3),
     argMaxRetries: int(process.env.FC_ARG_MAX_RETRIES, 3),
@@ -127,6 +135,13 @@ function buildConfigFromEnv() {
     summaryApiKey: process.env.SUMMARY_FC_API_KEY || process.env.FC_API_KEY || process.env.OPENAI_API_KEY || '',
     reflectionBaseURL: process.env.REFLECTION_FC_BASE_URL || process.env.FC_BASE_URL || process.env.OPENAI_BASE_URL || 'https://yuanplus.chat/v1',
     reflectionApiKey: process.env.REFLECTION_FC_API_KEY || process.env.FC_API_KEY || process.env.OPENAI_API_KEY || '',
+    // Stage-specific request timeouts (ms). If unset, fall back to FC_TIMEOUT_MS.
+    judgeTimeoutMs: timeoutMs(process.env.JUDGE_FC_TIMEOUT_MS, timeoutMs(process.env.FC_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000))),
+    planTimeoutMs: timeoutMs(process.env.PLAN_FC_TIMEOUT_MS, timeoutMs(process.env.FC_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000))),
+    argTimeoutMs: timeoutMs(process.env.ARG_FC_TIMEOUT_MS, timeoutMs(process.env.FC_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000))),
+    evalTimeoutMs: timeoutMs(process.env.EVAL_FC_TIMEOUT_MS, timeoutMs(process.env.FC_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000))),
+    summaryTimeoutMs: timeoutMs(process.env.SUMMARY_FC_TIMEOUT_MS, timeoutMs(process.env.FC_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000))),
+    reflectionTimeoutMs: timeoutMs(process.env.REFLECTION_FC_TIMEOUT_MS, timeoutMs(process.env.FC_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000))),
     // Stage-specific sampling controls (optional; fall back to temperature/top_p defaults)
     planTemperature: Number(process.env.FC_PLAN_TEMPERATURE || 'NaN'),
     planTopP: Number(process.env.FC_PLAN_TOP_P || 'NaN'),
@@ -143,6 +158,7 @@ function buildConfigFromEnv() {
     baseURL: process.env.EMBEDDING_BASE_URL || process.env.OPENAI_BASE_URL || 'https://yuanplus.chat/v1',
     apiKey: process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY || '',
     model: process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small',
+    timeoutMs: timeoutMs(process.env.EMBEDDING_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000)),
   },
   // 记忆系统配置（启用后将把规划/工具调用摘要落库到 Redis，并支持相似检索）
   memory: {
@@ -179,6 +195,7 @@ function buildConfigFromEnv() {
     apiKey: process.env.SUMMARIZER_API_KEY || process.env.OPENAI_API_KEY || '',
     model: process.env.SUMMARIZER_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1-mini',
     temperature: Number(process.env.SUMMARIZER_TEMPERATURE || 0.1),
+    timeoutMs: timeoutMs(process.env.SUMMARIZER_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000)),
   },
   // 工具候选重排序（ReRank）配置
   rerank: {
@@ -189,7 +206,7 @@ function buildConfigFromEnv() {
     candidateK: int(process.env.RERANK_CANDIDATE_K, 50),
     topN: int(process.env.RERANK_TOP_N, 12),
     useDescFallback: String(process.env.RERANK_USE_DESC_FALLBACK || 'false').toLowerCase() === 'true',
-    timeoutMs: int(process.env.RERANK_TIMEOUT_MS, 12000),
+    timeoutMs: timeoutMs(process.env.RERANK_TIMEOUT_MS, 180000),
     maxSubqueries: int(process.env.RERANK_MAX_SUBQUERIES, 5),
     aggAlpha: Number(process.env.RERANK_AGG_ALPHA || 0.1),  // frequency weight
     aggBeta: Number(process.env.RERANK_AGG_BETA || 0.5),   // score weight
@@ -204,6 +221,7 @@ function buildConfigFromEnv() {
     models: judgeModels,
     temperature: Number(process.env.JUDGE_TEMPERATURE || 0.1),
     maxTokens: int(process.env.JUDGE_MAX_TOKENS, -1),
+    timeoutMs: timeoutMs(process.env.JUDGE_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000)),
     raceTimeoutMs: int(process.env.JUDGE_RACE_TIMEOUT_MS, 12000),
   },
 
@@ -211,6 +229,7 @@ function buildConfigFromEnv() {
   plan: {
     model: primaryPlanModel,
     models: planModels,
+    timeoutMs: timeoutMs(process.env.PLAN_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000)),
   },
   // 中文：思考/预推演专用模型（与工具调用的 LLM 分离，避免相互覆盖）
   reasoner: {
@@ -220,6 +239,7 @@ function buildConfigFromEnv() {
     temperature: Number(process.env.REASONER_TEMPERATURE || process.env.OPENAI_TEMPERATURE || 0.2),
     // -1 或未设置表示“不限制/由服务端决定”，调用时将省略 max_tokens
     maxTokens: int(process.env.REASONER_MAX_TOKENS, -1),
+    timeoutMs: timeoutMs(process.env.REASONER_TIMEOUT_MS, timeoutMs(process.env.OPENAI_TIMEOUT_MS, 180000)),
   },
   planner: {
     maxSteps: int(process.env.PLAN_MAX_STEPS, 8),
@@ -394,4 +414,42 @@ export function getStageProvider(stage) {
     reflection: { baseURL: config.llm?.baseURL, apiKey: config.llm?.apiKey },
   };
   return nativeProviderMap[stage] || { baseURL: config.llm?.baseURL, apiKey: config.llm?.apiKey };
+}
+
+export function getStageTimeoutMs(stage) {
+  const strategy = config.llm?.toolStrategy || 'auto';
+  const fc = config.fcLlm || {};
+
+  const normalizeMs = (v, d) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : d;
+  };
+
+  const globalDefault = normalizeMs(config.llm?.timeoutMs, 60000);
+
+  // FC mode (or auto that may run FC fallbacks)
+  if (strategy === 'fc' || strategy === 'auto') {
+    const fcDefault = normalizeMs(fc.timeoutMs, globalDefault);
+    const stageMap = {
+      judge: fc.judgeTimeoutMs,
+      plan: fc.planTimeoutMs,
+      arg: fc.argTimeoutMs,
+      eval: fc.evalTimeoutMs,
+      summary: fc.summaryTimeoutMs,
+      reflection: fc.reflectionTimeoutMs,
+    };
+    const v = stageMap[stage];
+    return normalizeMs(v, fcDefault);
+  }
+
+  // Native mode
+  const stageMap = {
+    judge: config.judge?.timeoutMs,
+    plan: config.plan?.timeoutMs,
+    arg: config.llm?.timeoutMs,
+    eval: config.llm?.timeoutMs,
+    summary: config.summarizer?.timeoutMs,
+    reflection: config.llm?.timeoutMs,
+  };
+  return normalizeMs(stageMap[stage], globalDefault);
 }

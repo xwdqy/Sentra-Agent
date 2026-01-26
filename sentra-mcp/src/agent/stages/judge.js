@@ -2,7 +2,7 @@
  * 判断阶段：判断是否需要调用工具
  */
 
-import { config } from '../../config/index.js';
+import { config, getStageTimeoutMs } from '../../config/index.js';
 import { chatCompletion } from '../../openai/client.js';
 import { manifestToBulletedText } from '../plan/manifest.js';
 import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
@@ -95,10 +95,11 @@ export async function judgeToolNecessity(objective, manifest, conversation, cont
     
     const systemContent = [
       baseSystem,
+      jp.concurrency_hint || '',
       jp.manifest_intro,
       manifestBullet,
       outputFormat,
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     const conv = normalizeConversation(conversation);
     const msgs = compactMessages([
@@ -127,6 +128,7 @@ export async function judgeToolNecessity(objective, manifest, conversation, cont
         omitMaxTokens: useOmit,
         max_tokens: useOmit ? undefined : Number(config.judge.maxTokens),
         temperature: Number(config.judge.temperature ?? 0.1),
+        timeoutMs: getStageTimeoutMs('judge'),
         apiKey: config.judge.apiKey,
         baseURL: config.judge.baseURL,
         model: modelName,
