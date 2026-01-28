@@ -271,53 +271,6 @@ flowchart LR
   H --> I[保存对话与记忆: 历史/摘要/知识入库]
 ```
 
-### 2) 工程视角总览（更细，但依然是“流程故事”）
-
-下面这张图会把关键模块都摆出来，但仍然尽量用“动作词”描述，而不是堆变量名。
-
-```mermaid
-flowchart TD
-  A[WebSocket: incoming message] --> B{去重}
-  B -->|dup| X[丢弃]
-  B -->|ok| C[记录到待处理队列]
-  C --> D[画像更新(可选)]
-  C --> E[情绪分析(异步，可选)]
-  C --> F[Bundler: handleIncomingMessage]
-
-  F -->|buffered/ignore| R0[等待更多消息进入窗口]
-
-  F -->|pending_queued| Q1[延迟聚合队列]
-  Q1 --> Q2[OverrideIntent(可选): 是否改主意]
-  Q2 -->|需要取消| Q3[标记取消 task + cancelRun(仅本会话)]
-  Q2 -->|不取消| Q4[继续等待 drain]
-
-  F -->|start_bundle| G1[collectBundleForSender: 拿到聚合后的消息]
-  G1 --> H1[shouldReply: 群聊门禁/疲劳/注意力/LLM gate]
-  H1 -->|needReply=false| Z[结束: 本轮不回]
-  H1 -->|needReply=true| M1{群聊多用户合并?}
-  M1 -->|yes| M2[GroupReplyMerger: window 内合并多用户]
-  M1 -->|no| P1[进入 MessagePipeline]
-  M2 --> P1
-
-  P1 --> S1[构建本轮目标 + 上下文]
-  S1 --> S2[系统注入: 人设/情绪/记忆/提示词/RAG]
-  S2 --> S3[MCP: sdk.stream(...)]
-
-  S3 -->|judge: 无需工具| J1[chatWithRetry 生成最终回复]
-  J1 --> O1[smartSend -> replySendQueue: 去重/融合/排队发送]
-
-  S3 -->|judge: 需要工具| T0[Tool Pre-Reply(可选): 先发进度感]
-  S3 -->|plan/args| T1[生成计划/参数]
-  S3 -->|tool_result*| T2[收集工具结果(不立即发最终)]
-  S3 -->|completed| T3[ToolFinal: chatWithRetry 汇总生成最终回复]
-  T3 --> O1
-
-  O1 --> K1[History: 保存对话对]
-  K1 --> K2[群聊: promote scoped->shared (避免污染)]
-  K1 --> K3[异步: context summarization / preset teaching / RAG ingest]
-  K3 --> END[释放并发槽位 + 触发队列/延迟聚合 drain]
-```
-
 ### 2) 典型时序图（群聊：有聚合、有门禁、有工具）
 
 ```mermaid
