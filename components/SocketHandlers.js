@@ -1,4 +1,4 @@
-import { getEnvInt } from '../utils/envHotReloader.js';
+import { getEnvBool, getEnvInt } from '../utils/envHotReloader.js';
 import { shouldAnalyzeEmotion } from '../utils/emotionGate.js';
 
 export function setupSocketHandlers(ctx) {
@@ -156,7 +156,8 @@ export function setupSocketHandlers(ctx) {
             : ((typeof msg?.objective === 'string' && msg.objective.trim())
                 ? msg.objective
                 : (msg?.summary || ''));
-        if (userid && emoText && emo && shouldAnalyzeEmotion(emoText, userid)) {
+        const emoEnabled = getEnvBool('SENTRA_EMO_ENABLED', false);
+        if (emoEnabled && userid && emoText && emo && shouldAnalyzeEmotion(emoText, userid)) {
           emo.analyze(emoText, { userid, username }).catch(() => {});
         }
         const groupId = conversationKey;

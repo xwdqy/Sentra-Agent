@@ -105,10 +105,17 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parsePositiveInt(value, defaultValue) {
+  const raw = value == null ? '' : String(value).trim();
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : defaultValue;
+}
+
 // 基础超时请求封装
 async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
+  const ms = parsePositiveInt(timeoutMs, 20000);
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(new Error(`Abort by timeout ${timeoutMs}ms`)), timeoutMs);
+  const t = setTimeout(() => controller.abort(new Error(`Abort by timeout ${ms}ms`)), ms);
   try {
     const res = await fetch(url, { ...options, signal: controller.signal });
     return res;
@@ -433,9 +440,9 @@ async function singleBilibiliSearchHandler(args = {}, options = {}) {
   const quality = Number(penv.BILI_QUALITY || process.env.BILI_QUALITY || 80);
   const maxDownloadMB = Number(penv.BILI_MAX_DOWNLOAD_MB || process.env.BILI_MAX_DOWNLOAD_MB || 65);
   const maxBytes = Math.max(1, Math.floor(maxDownloadMB * 1024 * 1024));
-  const fetchTimeoutMs = Number(penv.BILI_FETCH_TIMEOUT_MS || process.env.BILI_FETCH_TIMEOUT_MS || 20000);
-  const probeTimeoutMs = Number(penv.BILI_PROBE_TIMEOUT_MS || process.env.BILI_PROBE_TIMEOUT_MS || 8000);
-  const downloadTimeoutMs = Number(penv.BILI_DOWNLOAD_TIMEOUT_MS || process.env.BILI_DOWNLOAD_TIMEOUT_MS || 120000);
+  const fetchTimeoutMs = parsePositiveInt(penv.BILI_FETCH_TIMEOUT_MS, parsePositiveInt(process.env.BILI_FETCH_TIMEOUT_MS, 20000));
+  const probeTimeoutMs = parsePositiveInt(penv.BILI_PROBE_TIMEOUT_MS, parsePositiveInt(process.env.BILI_PROBE_TIMEOUT_MS, 8000));
+  const downloadTimeoutMs = parsePositiveInt(penv.BILI_DOWNLOAD_TIMEOUT_MS, parsePositiveInt(process.env.BILI_DOWNLOAD_TIMEOUT_MS, 120000));
   const strictProbe = String(penv.BILI_STRICT_PROBE || process.env.BILI_STRICT_PROBE || 'true').toLowerCase() !== 'false';
   const userAgent = String(penv.BILI_USER_AGENT || process.env.BILI_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36');
   const cookie = String(penv.BILI_COOKIE || process.env.BILI_COOKIE || '');

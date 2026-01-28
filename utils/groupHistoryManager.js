@@ -102,6 +102,15 @@ function serializeHistory(history) {
     }
   }
 
+  const scopedConversationsBySenderObj = {};
+  if (history.scopedConversationsBySender && history.scopedConversationsBySender instanceof Map) {
+    for (const [senderId, arr] of history.scopedConversationsBySender.entries()) {
+      if (!senderId) continue;
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+      scopedConversationsBySenderObj[String(senderId)] = arr;
+    }
+  }
+
   const activePairsObj = {};
   if (history.activePairs && history.activePairs instanceof Map) {
     for (const [pairId, ctx] of history.activePairs.entries()) {
@@ -115,6 +124,8 @@ function serializeHistory(history) {
         ? ctx.lastUpdatedAt
         : createdAt;
       const status = typeof ctx.status === 'string' ? ctx.status : 'building';
+      const scopeSenderId = typeof ctx.scopeSenderId === 'string' ? ctx.scopeSenderId : null;
+      const commitMode = typeof ctx.commitMode === 'string' ? ctx.commitMode : 'shared';
 
       activePairsObj[String(pairId)] = {
         assistant,
@@ -122,13 +133,16 @@ function serializeHistory(history) {
         messages,
         createdAt,
         lastUpdatedAt,
-        status
+        status,
+        scopeSenderId,
+        commitMode
       };
     }
   }
 
   return {
     conversations: Array.isArray(history.conversations) ? history.conversations : [],
+    scopedConversationsBySender: scopedConversationsBySenderObj,
     pendingMessages: Array.isArray(history.pendingMessages) ? history.pendingMessages : [],
     processingMessages: Array.isArray(history.processingMessages) ? history.processingMessages : [],
     activePairs: activePairsObj,
@@ -174,13 +188,25 @@ function deserializeHistory(data) {
         messages,
         createdAt,
         lastUpdatedAt,
-        status
+        status,
+        scopeSenderId: typeof ctx.scopeSenderId === 'string' ? ctx.scopeSenderId : null,
+        commitMode: typeof ctx.commitMode === 'string' ? ctx.commitMode : 'shared'
       });
+    }
+  }
+
+  const scopedConversationsBySender = new Map();
+  if (data.scopedConversationsBySender && typeof data.scopedConversationsBySender === 'object') {
+    for (const [senderId, arr] of Object.entries(data.scopedConversationsBySender)) {
+      if (!senderId) continue;
+      if (!Array.isArray(arr) || arr.length === 0) continue;
+      scopedConversationsBySender.set(String(senderId), arr);
     }
   }
 
   return {
     conversations: Array.isArray(data.conversations) ? data.conversations : [],
+    scopedConversationsBySender,
     pendingMessages: Array.isArray(data.pendingMessages) ? data.pendingMessages : [],
     processingMessages: Array.isArray(data.processingMessages) ? data.processingMessages : [],
     activePairs,
@@ -304,6 +330,7 @@ class GroupHistoryManager {
     // Redis 中也没有，则创建新的空历史
     const initial = {
       conversations: [],              // 完整的对话历史（user/assistant对）
+      scopedConversationsBySender: new Map(),
       pendingMessages: [],             // 待处理的消息列表（还未开始处理）
       processingMessages: [],          // 正在处理的消息列表（已开始处理，但未完成）
       senderLastMessageTime: new Map(), // 记录每个sender的最后消息时间（用于超时清理）
@@ -397,6 +424,66 @@ class GroupHistoryManager {
     });
   }
 
+  async promoteScopedConversationsToShared(groupId, senderId) {
+    return this._executeForGroup(groupId, async () => {
+      const history = await this._getOrInitHistory(groupId);
+      if (!history) return false;
+      if (!history.scopedConversationsBySender || !(history.scopedConversationsBySender instanceof Map)) {
+        history.scopedConversationsBySender = new Map();
+      }
+      const sid = String(senderId || '').trim();
+      if (!sid) return false;
+      const scoped = history.scopedConversationsBySender.get(sid);
+      if (!Array.isArray(scoped) || scoped.length === 0) return false;
+
+      history.conversations.push(...scoped);
+      history.scopedConversationsBySender.delete(sid);
+
+      try {
+        const limit = this.maxConversationPairs;
+        if (Number.isFinite(limit) && limit > 0) {
+          const orderedPairIds = [];
+          const seen = new Set();
+          for (const m of history.conversations) {
+            const pid = m && m.pairId != null ? String(m.pairId) : '';
+            if (!pid) continue;
+            if (seen.has(pid)) continue;
+            seen.add(pid);
+            orderedPairIds.push(pid);
+          }
+          if (orderedPairIds.length > limit) {
+            const drop = new Set(orderedPairIds.slice(0, orderedPairIds.length - limit));
+            history.conversations = history.conversations.filter((m) => {
+              const pid = m && m.pairId != null ? String(m.pairId) : '';
+              return pid && !drop.has(pid);
+            });
+          }
+        }
+      } catch {}
+
+      await saveHistoryToRedis(groupId, history);
+      return true;
+    });
+  }
+
+  async clearScopedConversationsForSender(groupId, senderId) {
+    return this._executeForGroup(groupId, async () => {
+      const history = await this._getOrInitHistory(groupId);
+      if (!history) return false;
+      if (!history.scopedConversationsBySender || !(history.scopedConversationsBySender instanceof Map)) {
+        history.scopedConversationsBySender = new Map();
+      }
+      const sid = String(senderId || '').trim();
+      if (!sid) return false;
+      const existed = history.scopedConversationsBySender.has(sid);
+      if (existed) {
+        history.scopedConversationsBySender.delete(sid);
+        await saveHistoryToRedis(groupId, history);
+      }
+      return existed;
+    });
+  }
+
   /**
    * 清理超时的sender消息（内部方法，不加锁）
    * @param {Object} history - 群组历史对象
@@ -433,8 +520,16 @@ class GroupHistoryManager {
       history.processingMessages = history.processingMessages.filter(pm => String(pm.msgObj.sender_id) !== senderId);
       
       const totalRemoved = removed.length + removedProcessing.length;
+
+      let removedScoped = false;
+      if (history.scopedConversationsBySender && history.scopedConversationsBySender instanceof Map) {
+        if (history.scopedConversationsBySender.has(senderId)) {
+          history.scopedConversationsBySender.delete(senderId);
+          removedScoped = true;
+        }
+      }
       
-      if (totalRemoved > 0) {
+      if (totalRemoved > 0 || removedScoped) {
         // 计算超时时间（在删除前获取）
         const lastTime = history.senderLastMessageTime.get(senderId);
         const timeoutSeconds = Math.floor((now - (lastTime || now)) / 1000);
@@ -443,7 +538,9 @@ class GroupHistoryManager {
         history.senderLastMessageTime.delete(senderId);
         
         cleaned.cleaned++;
-        cleaned.details.push(`sender:${senderId}, 清理${totalRemoved}条消息, 超时${timeoutSeconds}秒`);
+        cleaned.details.push(
+          `sender:${senderId}, 清理${totalRemoved}条消息${removedScoped ? '+scoped' : ''}, 超时${timeoutSeconds}秒`
+        );
       }
     }
     
@@ -921,14 +1018,20 @@ class GroupHistoryManager {
   /**
    * 开始构建助手回复（生成UUID标记本次对话对）（线程安全）
    * @param {string} groupId - 群ID
+   * @param {{ scopeSenderId?: string, commitMode?: 'shared'|'scoped' }=} options
    * @returns {Promise<string>} 本次对话对的UUID
    */
-  async startAssistantMessage(groupId) {
+  async startAssistantMessage(groupId, options = null) {
     return this._executeForGroup(groupId, async () => {
       const history = await this._getOrInitHistory(groupId);
       if (!history.activePairs || !(history.activePairs instanceof Map)) {
         history.activePairs = new Map();
       }
+
+      const scopeSenderIdRaw = options && options.scopeSenderId != null ? String(options.scopeSenderId) : '';
+      const scopeSenderId = scopeSenderIdRaw ? scopeSenderIdRaw : null;
+      const commitModeRaw = options && typeof options.commitMode === 'string' ? options.commitMode : 'shared';
+      const commitMode = commitModeRaw === 'scoped' ? 'scoped' : 'shared';
 
       const pairId = randomUUID();
       const now = Date.now();
@@ -939,7 +1042,9 @@ class GroupHistoryManager {
         messages: [],
         createdAt: now,
         lastUpdatedAt: now,
-        status: 'building'
+        status: 'building',
+        scopeSenderId,
+        commitMode
       });
 
       logger.debug(`生成对话对UUID: ${groupId} ID ${pairId}`);
@@ -1041,6 +1146,10 @@ class GroupHistoryManager {
         history.activePairs = new Map();
       }
 
+      if (!history.scopedConversationsBySender || !(history.scopedConversationsBySender instanceof Map)) {
+        history.scopedConversationsBySender = new Map();
+      }
+
       if (!pairId) {
         logger.warn(`保存跳过: ${groupId} 未传入pairId (调用方状态异常)`);
         return false;
@@ -1114,50 +1223,61 @@ class GroupHistoryManager {
       }
       toSave.push({ role: 'assistant', content: assistantMsg, pairId, timestamp: nowTs });
 
-      history.conversations.push(...toSave);
+      const commitMode = ctx && typeof ctx.commitMode === 'string' ? ctx.commitMode : 'shared';
+      const scopeSenderId = ctx && typeof ctx.scopeSenderId === 'string' ? ctx.scopeSenderId : '';
+      const shouldCommitScoped = commitMode === 'scoped' && scopeSenderId;
 
-      const seenPairIds = new Set();
-      for (const m of history.conversations) {
-        if (!m || !m.pairId) continue;
-        seenPairIds.add(String(m.pairId));
+      if (shouldCommitScoped) {
+        const arr = history.scopedConversationsBySender.get(scopeSenderId) || [];
+        history.scopedConversationsBySender.set(scopeSenderId, [...arr, ...toSave]);
+      } else {
+        history.conversations.push(...toSave);
       }
-      const pairCount = seenPairIds.size;
-      const processingCount = history.processingMessages.length;
-      const pendingCount = history.pendingMessages.length;
 
-      logger.info(
-        `保存成功: ${groupId} pairId ${shortId} 包含${processingCount}条processing, 当前历史${pairCount}组 (上下文限制=${this.maxConversationPairs}), ${pendingCount}条pending`
-      );
+      if (!shouldCommitScoped) {
+        const seenPairIds = new Set();
+        for (const m of history.conversations) {
+          if (!m || !m.pairId) continue;
+          seenPairIds.add(String(m.pairId));
+        }
+        const pairCount = seenPairIds.size;
+        const processingCount = history.processingMessages.length;
+        const pendingCount = history.pendingMessages.length;
 
-      // 清空正在处理的消息，并将该对话对标记为完成后移出活动列表
-      // 注意：只清空 processingMessages，保留 pendingMessages（这些是任务完成后才到达的新消息）
-      history.processingMessages = [];
+        logger.info(
+          `保存成功: ${groupId} pairId ${shortId} 包含${processingCount}条processing, 当前历史${pairCount}组 (上下文限制=${this.maxConversationPairs}), ${pendingCount}条pending`
+        );
+
+        history.processingMessages = [];
+      }
       ctx.status = 'finished';
       ctx.userContent = typeof userContent === 'string' ? userContent : ctx.userContent;
       ctx.messages = [];
       history.activePairs.delete(pairId);
 
-      try {
-        const limit = this.maxConversationPairs;
-        if (Number.isFinite(limit) && limit > 0) {
-          const orderedPairIds = [];
-          const seen = new Set();
-          for (const m of history.conversations) {
-            const pid = m && m.pairId != null ? String(m.pairId) : '';
-            if (!pid) continue;
-            if (seen.has(pid)) continue;
-            seen.add(pid);
-            orderedPairIds.push(pid);
-          }
-          if (orderedPairIds.length > limit) {
-            const drop = new Set(orderedPairIds.slice(0, orderedPairIds.length - limit));
-            history.conversations = history.conversations.filter((m) => {
+      if (!shouldCommitScoped) {
+        try {
+          const limit = this.maxConversationPairs;
+          if (Number.isFinite(limit) && limit > 0) {
+            const orderedPairIds = [];
+            const seen = new Set();
+            for (const m of history.conversations) {
               const pid = m && m.pairId != null ? String(m.pairId) : '';
-              return pid && !drop.has(pid);
-            });
+              if (!pid) continue;
+              if (seen.has(pid)) continue;
+              seen.add(pid);
+              orderedPairIds.push(pid);
+            }
+            if (orderedPairIds.length > limit) {
+              const drop = new Set(orderedPairIds.slice(0, orderedPairIds.length - limit));
+              history.conversations = history.conversations.filter((m) => {
+                const pid = m && m.pairId != null ? String(m.pairId) : '';
+                return pid && !drop.has(pid);
+              });
+            }
           }
-        }
-      } catch {}
+        } catch {}
+      }
       
       await saveHistoryToRedis(groupId, history);
 
@@ -1179,6 +1299,10 @@ class GroupHistoryManager {
       }
       if (!history) {
         return false;
+      }
+
+      if (!history.scopedConversationsBySender || !(history.scopedConversationsBySender instanceof Map)) {
+        history.scopedConversationsBySender = new Map();
       }
 
       if (!history.activePairs || !(history.activePairs instanceof Map)) {
@@ -1207,6 +1331,28 @@ class GroupHistoryManager {
       if (deletedCount > 0) {
         logger.debug(`撤销对话对: ${groupId} pairId ${shortId} 删除${deletedCount}条`);
         touched = true;
+      }
+
+      if (history.scopedConversationsBySender && history.scopedConversationsBySender instanceof Map) {
+        let scopedDeleted = 0;
+        for (const [sid, arr] of history.scopedConversationsBySender.entries()) {
+          if (!Array.isArray(arr) || arr.length === 0) continue;
+          const before = arr.length;
+          const next = arr.filter((m) => m && m.pairId !== pairId);
+          const diff = before - next.length;
+          if (diff > 0) {
+            scopedDeleted += diff;
+            if (next.length > 0) {
+              history.scopedConversationsBySender.set(sid, next);
+            } else {
+              history.scopedConversationsBySender.delete(sid);
+            }
+          }
+        }
+        if (scopedDeleted > 0) {
+          logger.debug(`撤销对话对(scoped): ${groupId} pairId ${shortId} 删除${scopedDeleted}条`);
+          touched = true;
+        }
       }
 
       if (touched) {
@@ -1247,15 +1393,29 @@ class GroupHistoryManager {
    */
   getConversationHistoryForContext(groupId, options = {}) {
     const history = this.histories.get(groupId);
-    if (!history || !Array.isArray(history.conversations) || history.conversations.length === 0) {
+    if (!history) {
       return [];
     }
 
-    const { timeStart, timeEnd = 0, recentPairs, maxTokens } = options;
+    const { timeStart, timeEnd = 0, recentPairs, maxTokens, senderId } = options;
+
+    const shared = Array.isArray(history.conversations) ? history.conversations : [];
+    const sid = senderId != null ? String(senderId) : '';
+    const scopedArr =
+      sid && history.scopedConversationsBySender && history.scopedConversationsBySender instanceof Map
+        ? (history.scopedConversationsBySender.get(sid) || [])
+        : [];
+
+    const raw = shared.length > 0 || (Array.isArray(scopedArr) && scopedArr.length > 0)
+      ? [...shared, ...(Array.isArray(scopedArr) ? scopedArr : [])]
+      : [];
+
+    if (raw.length === 0) {
+      return [];
+    }
 
     // 将扁平数组按 pairId 聚合为对话对
     const pairMap = new Map();
-    const raw = history.conversations;
 
     for (let idx = 0; idx < raw.length; idx++) {
       const msg = raw[idx];

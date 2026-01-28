@@ -4,7 +4,7 @@ import { getEnv, getEnvInt, getEnvBool, getEnvTimeoutMs, onEnvReload } from './e
 import { initAgentPresetCore } from '../components/AgentPresetInitializer.js';
 import { loadPrompt } from '../prompts/loader.js';
 import { chatWithRetry as chatWithRetryCore } from '../components/ChatWithRetry.js';
-import { parseReplyGateDecisionFromSentraTools, parseSendFusionFromSentraTools, parseSentraResponse } from './protocolUtils.js';
+import { parseReplyGateDecisionFromSentraTools, parseSentraResponse } from './protocolUtils.js';
 
 const logger = createLogger('ReplyIntervention');
 
@@ -66,7 +66,7 @@ export async function decideSendFusionBatch(payload) {
 
     const rdLines = [];
     rdLines.push('<sentra-root-directive>');
-    rdLines.push('  <id>send_fusion_v1</id>');
+    rdLines.push('  <id>send_fusion_v2</id>');
     rdLines.push('  <type>send_fusion</type>');
     rdLines.push('  <scope>assistant_reply</scope>');
     rdLines.push('  <objective>');
@@ -75,10 +75,11 @@ export async function decideSendFusionBatch(payload) {
     rdLines.push('  </objective>');
 
     rdLines.push('  <constraints>');
-    rdLines.push('    <item>禁止输出 <sentra-response>；必须输出一个 tools invoke: send_fusion。</item>');
+    rdLines.push('    <item>你必须且只能输出一个顶层块：<sentra-response>...</sentra-response>；除此之外不要输出任何字符、解释、前后缀。</item>');
     rdLines.push('    <item>融合后的回复要自然像聊天，不要提“候选/融合/工具/系统”等词。</item>');
     rdLines.push('    <item>禁止使用模板化旁白：不要写“根据你的请求…/工具调用…/系统提示…/工作流…”。</item>');
     rdLines.push('    <item>去重冗余，但保留不同候选里重要的事实、步骤、提醒、结论与约束。</item>');
+    rdLines.push('    <item><sentra-response> 内建议仅输出 text1/text2/text3（尽量短），并包含 <resources></resources>（保持为空即可）。</item>');
     rdLines.push('  </constraints>');
 
     rdLines.push('  <send_fusion_input>');
@@ -113,7 +114,7 @@ export async function decideSendFusionBatch(payload) {
     const result = await chatWithRetryCore(
       agent,
       conversations,
-      { model, maxTokens, __sentraExpectedOutput: 'send_fusion_tools' },
+      { model, maxTokens, __sentraExpectedOutput: 'sentra_response' },
       groupId || 'send_fusion'
     );
 
@@ -129,16 +130,26 @@ export async function decideSendFusionBatch(payload) {
         ? result.response
         : String(result.response ?? '');
 
-    const fusion = parseSendFusionFromSentraTools(rawText);
-    if (!fusion || !Array.isArray(fusion.textSegments) || fusion.textSegments.length === 0) {
-      logger.warn('SendFusion: 解析 send_fusion tools 失败，将回退为本地规则', {
+    let parsed = null;
+    try {
+      parsed = parseSentraResponse(rawText);
+    } catch {
+      parsed = null;
+    }
+
+    const segments = parsed && Array.isArray(parsed.textSegments)
+      ? parsed.textSegments.map((t) => (t || '').trim()).filter(Boolean)
+      : [];
+
+    if (segments.length === 0) {
+      logger.warn('SendFusion: 解析 sentra-response 失败或无文本，将回退为本地规则', {
         snippet: rawText.slice(0, 400)
       });
       return null;
     }
 
-    logger.info(`SendFusion: 融合完成，segments=${fusion.textSegments.length}, reason=${fusion.reason || ''}`);
-    return { textSegments: fusion.textSegments, reason: fusion.reason || '', raw: rawText };
+    logger.info(`SendFusion: 融合完成，segments=${segments.length}`);
+    return { textSegments: segments, raw: rawText };
   } catch (e) {
     logger.warn('SendFusion: 调用 LLM 融合失败，将回退为本地规则', { err: String(e) });
     return null;

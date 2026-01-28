@@ -296,6 +296,7 @@ function buildConfigFromEnv() {
     historySummaryTrigger: int(process.env.HISTORY_SUMMARY_TRIGGER, 8000),
     enableVerboseSteps: bool(process.env.ENABLE_VERBOSE_STEPS, false),
     verbosePreviewMax: int(process.env.VERBOSE_PREVIEW_MAX, 400),
+    toolPreReplySingleSkipTools: parseCsv(process.env.TOOL_PREREPLY_SINGLE_SKIP_TOOLS),
     // Context summarization controls for step argument generation
     contextMaxDepth: int(process.env.CONTEXT_MAX_DEPTH, 2),
     contextStringMax: int(process.env.CONTEXT_STRING_MAX, 160),

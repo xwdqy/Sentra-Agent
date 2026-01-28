@@ -3,7 +3,8 @@ import { tokenCounter } from '../src/token-counter.js';
 import { repairSentraResponse } from '../utils/formatRepair.js';
 import { getEnv, getEnvInt, getEnvBool } from '../utils/envHotReloader.js';
 import { extractAllFullXMLTags } from '../utils/xmlUtils.js';
-import { parseReplyGateDecisionFromSentraTools, parseSendFusionFromSentraTools, parseSentraResponse } from '../utils/protocolUtils.js';
+import { preprocessPlainModelOutput } from './OutputPreprocessor.js';
+import { parseReplyGateDecisionFromSentraTools, parseSentraResponse } from '../utils/protocolUtils.js';
 
 const logger = createLogger('ChatWithRetry');
 
@@ -72,37 +73,11 @@ function validateReplyGateDecisionToolsFormat(response) {
   };
 }
 
-function validateSendFusionToolsFormat(response) {
-  if (!response || typeof response !== 'string') {
-    return { valid: false, reason: '响应为空或非字符串' };
-  }
-
-  const normalized = extractOnlySentraToolsBlock(response);
-  if (!normalized) {
-    return { valid: false, reason: '缺少或不唯一的 <sentra-tools> 融合输出块' };
-  }
-
-  if (normalized.includes('<sentra-response>')) {
-    return { valid: false, reason: '融合输出不允许包含 <sentra-response>' };
-  }
-
-  const fusion = parseSendFusionFromSentraTools(normalized);
-  if (!fusion || !Array.isArray(fusion.textSegments) || fusion.textSegments.length === 0) {
-    return { valid: false, reason: '缺少 send_fusion 或至少一个 textN 参数' };
-  }
-
-  return { valid: true, normalized };
-}
-
 function validateResponseFormat(response, expectedOutput = 'sentra_response') {
   const expected = expectedOutput;
 
   if (expected === 'reply_gate_decision_tools') {
     return validateReplyGateDecisionToolsFormat(response);
-  }
-
-  if (expected === 'send_fusion_tools') {
-    return validateSendFusionToolsFormat(response);
   }
 
   if (!response || typeof response !== 'string') {
@@ -241,16 +216,6 @@ function buildReplyGateDecisionToolsReminder() {
   ].join('\n');
 }
 
-function buildSendFusionToolsReminder() {
-  return [
-    'CRITICAL OUTPUT RULES:',
-    '1) 你必须且只能输出一个 <sentra-tools>...</sentra-tools> 融合块，且块内必须包含一个 <invoke name="send_fusion">',
-    '2) invoke 必须包含至少一个参数：text1(string)，可选 text2/text3/...；可额外包含 reason(string)',
-    '3) 严禁输出 <sentra-response> 或任何额外文本',
-    '4) 禁止使用 ``` 等 markdown 代码块包裹 XML'
-  ].join('\n');
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function getResponsePreview(payload, limit = 400) {
@@ -294,9 +259,7 @@ export async function chatWithRetry(agent, conversations, modelOrOptions, groupI
         const reminder =
           expectedOutput === 'reply_gate_decision_tools'
             ? buildReplyGateDecisionToolsReminder()
-            : (expectedOutput === 'send_fusion_tools'
-              ? buildSendFusionToolsReminder()
-              : buildProtocolReminder(expectedOutput, lastFormatReason));
+            : buildProtocolReminder(expectedOutput, lastFormatReason);
         convThisTry = Array.isArray(conversations)
           ? [...conversations, { role: 'system', content: reminder }]
           : conversations;
@@ -305,6 +268,9 @@ export async function chatWithRetry(agent, conversations, modelOrOptions, groupI
 
       let response = await agent.chat(convThisTry, chatOptions);
       const rawResponse = response;
+      if (typeof response === 'string') {
+        response = preprocessPlainModelOutput(response);
+      }
       lastResponse = response;
 
       if (strictFormatCheck) {
@@ -321,7 +287,7 @@ export async function chatWithRetry(agent, conversations, modelOrOptions, groupI
             continue;
           }
 
-          const isToolsOnly = expectedOutput === 'reply_gate_decision_tools' || expectedOutput === 'send_fusion_tools';
+          const isToolsOnly = expectedOutput === 'reply_gate_decision_tools';
           if (!isToolsOnly && formatRepairEnabled && typeof response === 'string' && response.trim()) {
             try {
               const repaired = await repairSentraResponse(response, {
@@ -368,9 +334,6 @@ export async function chatWithRetry(agent, conversations, modelOrOptions, groupI
       if (expectedOutput === 'reply_gate_decision_tools') {
         const decision = parseReplyGateDecisionFromSentraTools(response);
         tokenText = decision && typeof decision.reason === 'string' ? decision.reason : '';
-      } else if (expectedOutput === 'send_fusion_tools') {
-        const fusion = parseSendFusionFromSentraTools(response);
-        tokenText = fusion && Array.isArray(fusion.textSegments) ? fusion.textSegments.join(' ') : '';
       } else {
         tokenText = extractAndCountTokens(response).text;
       }
@@ -397,7 +360,7 @@ export async function chatWithRetry(agent, conversations, modelOrOptions, groupI
         };
       }
 
-      const noReply = (expectedOutput === 'reply_gate_decision_tools' || expectedOutput === 'send_fusion_tools')
+      const noReply = expectedOutput === 'reply_gate_decision_tools'
         ? false
         : (tokens === 0 && !hasNonTextPayload(response));
       if (noReply) {

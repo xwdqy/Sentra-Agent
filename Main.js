@@ -539,7 +539,8 @@ async function runProactiveReply(candidate) {
 
 	let emoXml = '';
 	try {
-	  if (emo && userid) {
+	  const emoEnabled = getEnvBool('SENTRA_EMO_ENABLED', false);
+	  if (emoEnabled && emo && userid) {
 	    const ua = await emo.userAnalytics(userid, { days: 7 });
 	    emoXml = buildSentraEmoSection(ua);
 	  }

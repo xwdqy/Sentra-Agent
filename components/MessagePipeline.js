@@ -17,6 +17,8 @@ const swallowOnceStateByConversation = new Map();
 
 const ragCacheByConversation = new Map();
 
+const toolPreReplyLastSentAtByUser = new Map();
+
 let ragEnvLoaded = false;
 function ensureRagEnvLoaded() {
   if (ragEnvLoaded) return;
@@ -32,7 +34,8 @@ function ensureRagEnvLoaded() {
 function getToolPreReplyRuntimeConfig() {
   return {
     enabled: getEnvBool('ENABLE_TOOL_PREREPLY', true),
-    waitToolResultMs: getEnvInt('TOOL_PREREPLY_WAIT_TOOL_RESULT_MS', 45000)
+    waitToolResultMs: getEnvInt('TOOL_PREREPLY_WAIT_TOOL_RESULT_MS', 45000),
+    cooldownMs: getEnvInt('TOOL_PREREPLY_COOLDOWN_MS', 60000)
   };
 }
 
@@ -686,9 +689,11 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
 
     const contextTokensLimit = getEnvInt('MCP_MAX_CONTEXT_TOKENS', 0) || 0;
 
+    const isGroupChat = String(groupId || '').startsWith('G:');
     let historyConversations = historyManager.getConversationHistoryForContext(groupId, {
       recentPairs: contextPairsLimit,
-      maxTokens: contextTokensLimit
+      maxTokens: contextTokensLimit,
+      senderId: isGroupChat ? userid : null
     });
     try {
       if (timeText) {
@@ -707,7 +712,8 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               timeStart: start,
               timeEnd: end,
               recentPairs: contextPairsLimit,
-              maxTokens: contextTokensLimit
+              maxTokens: contextTokensLimit,
+              senderId: isGroupChat ? userid : null
             });
             if (Array.isArray(enhancedHistory)) {
               if (enhancedHistory.length > 0) {
@@ -778,11 +784,17 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
     // 获取近期情绪（用于 <sentra-emo>）
     let emoXml = '';
     try {
-      if (userid) {
+      const emoEnabled = getEnvBool('SENTRA_EMO_ENABLED', false);
+      if (emoEnabled && emo && userid) {
+        const emoStartAt = Date.now();
+        logger.debug('Emo: start userAnalytics', { userid });
         const ua = await emo.userAnalytics(userid, { days: 7 });
         emoXml = buildSentraEmoSection(ua);
+        logger.debug('Emo: userAnalytics done', { userid, ms: Date.now() - emoStartAt });
       }
-    } catch {}
+    } catch (e) {
+      logger.warn('Emo: userAnalytics failed (ignored)', { err: String(e) });
+    }
 
     const agentPresetXml = AGENT_PRESET_XML || '';
 
@@ -1303,6 +1315,11 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               await historyManager.cancelConversationPairById(groupId, pairId);
               pairId = null;
             }
+            if (isGroupChat && userid) {
+              try {
+                await historyManager.clearScopedConversationsForSender(groupId, userid);
+              } catch {}
+            }
             return;
           }
 
@@ -1345,7 +1362,12 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
 
               try {
                 if (pairId) {
-                  await historyManager.finishConversationPair(groupId, pairId, null);
+                  const savedForced = await historyManager.finishConversationPair(groupId, pairId, null);
+                  if (savedForced && isGroupChat) {
+                    try {
+                      await historyManager.promoteScopedConversationsToShared(groupId, userid);
+                    } catch {}
+                  }
                 }
               } catch {}
               pairId = null;
@@ -1438,6 +1460,11 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
 
           if (isCancelled) {
             logger.info(`任务已取消: ${groupId} 跳过发送Judge阶段`);
+            if (isGroupChat && userid) {
+              try {
+                await historyManager.clearScopedConversationsForSender(groupId, userid);
+              } catch {}
+            }
             return;
           }
 
@@ -1530,6 +1557,31 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
             const toolNames = Array.isArray(ev.toolNames) ? ev.toolNames.filter(Boolean) : [];
             const toolCount = toolNames.length;
 
+            const cooldownMs = Number(cfg.cooldownMs);
+            const bypassCooldown = toolCount >= 3;
+            const senderKey = String(userid || '');
+            const nowMs = Date.now();
+            const lastSentAt = senderKey ? Number(toolPreReplyLastSentAtByUser.get(senderKey) || 0) : 0;
+            const inCooldown =
+              !bypassCooldown &&
+              senderKey &&
+              Number.isFinite(cooldownMs) &&
+              cooldownMs > 0 &&
+              lastSentAt > 0 &&
+              nowMs - lastSentAt < cooldownMs;
+
+            if (inCooldown) {
+              continue;
+            }
+
+            const singleSkipTools = Array.isArray(ev.toolPreReplySingleSkipTools)
+              ? ev.toolPreReplySingleSkipTools.map((s) => String(s || '').trim()).filter(Boolean)
+              : [];
+            const shouldSkipPreReplyForSingleTool =
+              toolCount === 1 &&
+              singleSkipTools.length > 0 &&
+              singleSkipTools.includes(String(toolNames[0] || '').trim());
+
             const baseUserContentNoRoot = (() => {
               if (isProactive && !isProactiveFirst) return '';
               const pendingContextXml = historyManager.getPendingMessagesContext(groupId, userid);
@@ -1539,17 +1591,20 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                 : userQuestionXml;
             })();
 
-            const preReplyPromise = generateToolPreReply({
-              chatWithRetry,
-              model: MAIN_AI_MODEL,
-              groupId,
-              baseConversations: conversations,
-              userContentNoRoot: baseUserContentNoRoot,
-              judgeSummary: ev.summary,
-              toolNames: ev.toolNames,
-              originalRootXml: proactiveRootXml,
-              timeoutMs: getEnvTimeoutMs('TOOL_PREREPLY_TIMEOUT_MS', 180000, 900000)
-            });
+            const preReplyPromise = shouldSkipPreReplyForSingleTool
+              ? null
+              : generateToolPreReply({
+                  chatWithRetry,
+                  model: MAIN_AI_MODEL,
+                  groupId,
+                  baseConversations: conversations,
+                  userContentNoRoot: baseUserContentNoRoot,
+                  judgeSummary: ev.summary,
+                  toolNames: ev.toolNames,
+                  skipToolNames: singleSkipTools,
+                  originalRootXml: proactiveRootXml,
+                  timeoutMs: getEnvTimeoutMs('TOOL_PREREPLY_TIMEOUT_MS', 180000, 900000)
+                });
 
             (async () => {
               const shouldSend = (() => {
@@ -1561,6 +1616,8 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                 const arrived = await waitForToolResultOrTimeout(cfg.waitToolResultMs);
                 if (arrived) return;
               }
+
+              if (!preReplyPromise) return;
 
               if (isCancelled || hasToolPreReplied) return;
 
@@ -1581,8 +1638,17 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                 { hasTool: true, immediate: true }
               );
 
+              if (senderKey) {
+                toolPreReplyLastSentAtByUser.set(senderKey, Date.now());
+              }
+
               try {
-                const preReplyPairId = await historyManager.startAssistantMessage(groupId);
+                const preReplyPairId = isGroupChat
+                  ? await historyManager.startAssistantMessage(groupId, {
+                      commitMode: 'scoped',
+                      scopeSenderId: userid
+                    })
+                  : await historyManager.startAssistantMessage(groupId);
                 const preReplyForHistory = normalizeAssistantContentForHistory(preReply);
                 await historyManager.appendToAssistantMessage(
                   groupId,
@@ -1590,13 +1656,14 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                   preReplyPairId
                 );
 
+                const preReplyUserForHistory = buildSentraUserQuestionBlock(latestMsgJudgeNeed);
                 const savedPreReply = await historyManager.finishConversationPair(
                   groupId,
                   preReplyPairId,
-                  baseUserContentNoRoot
+                  preReplyUserForHistory
                 );
 
-                if (savedPreReply) {
+                if (savedPreReply && !isGroupChat) {
                   const chatType = msg?.group_id ? 'group' : 'private';
                   const userIdForMemory = userid || '';
 
@@ -2135,6 +2202,11 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
             await historyManager.cancelConversationPairById(groupId, pairId);
             pairId = null;
           }
+          if (isGroupChat && userid) {
+            try {
+              await historyManager.clearScopedConversationsForSender(groupId, userid);
+            } catch {}
+          }
           break;
         }
 
@@ -2339,6 +2411,11 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
           if (saved) {
             const chatType = msg?.group_id ? 'group' : 'private';
             const userIdForMemory = userid || '';
+            if (isGroupChat && userid) {
+              try {
+                await historyManager.promoteScopedConversationsToShared(groupId, userid);
+              } catch {}
+            }
             triggerContextSummarizationIfNeeded({ groupId, chatType, userId: userIdForMemory }).catch(
               (e) => {
                 logger.debug(`ContextMemory: 异步摘要触发失败 ${groupId}`, { err: String(e) });
@@ -2384,6 +2461,12 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
     if (pairId) {
       logger.debug(`取消pairId-异常: ${groupId} pairId ${pairId.substring(0, 8)}`);
       await historyManager.cancelConversationPairById(groupId, pairId);
+    }
+
+    if (String(groupId || '').startsWith('G:') && userid) {
+      try {
+        await historyManager.clearScopedConversationsForSender(groupId, userid);
+      } catch {}
     }
   } finally {
     if (currentTaskId) {

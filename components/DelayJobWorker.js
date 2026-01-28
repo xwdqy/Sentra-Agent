@@ -1,4 +1,5 @@
 import { createLogger } from '../utils/logger.js';
+import { getEnvBool } from '../utils/envHotReloader.js';
 
 const logger = createLogger('DelayJobWorker');
 
@@ -55,7 +56,8 @@ export function createDelayJobRunJob(ctx) {
     }
     let emoXml = '';
     try {
-      if (emo && senderId) {
+      const emoEnabled = getEnvBool('SENTRA_EMO_ENABLED', false);
+      if (emoEnabled && emo && senderId) {
         const ua = await emo.userAnalytics(senderId, { days: 7 });
         emoXml = buildSentraEmoSection(ua);
       }
@@ -273,6 +275,11 @@ export function createDelayJobRunJob(ctx) {
                 `保存进度对话对失败: ${groupIdKey} pairId ${String(progressPairId).substring(0, 8)}`
               );
             } else {
+              if (String(groupIdKey || '').startsWith('G:') && senderId) {
+                try {
+                  await historyManager.promoteScopedConversationsToShared(groupIdKey, senderId);
+                } catch {}
+              }
               triggerContextSummarizationIfNeeded({
                 groupId: groupIdKey,
                 chatType,
@@ -377,6 +384,11 @@ export function createDelayJobRunJob(ctx) {
             `保存延迟任务对话对失败: ${groupIdKey} pairId ${String(pairId).substring(0, 8)}`
           );
         } else {
+          if (String(groupIdKey || '').startsWith('G:') && senderId) {
+            try {
+              await historyManager.promoteScopedConversationsToShared(groupIdKey, senderId);
+            } catch {}
+          }
           triggerContextSummarizationIfNeeded({
             groupId: groupIdKey,
             chatType,
@@ -493,6 +505,11 @@ export function createDelayJobRunJob(ctx) {
           `保存延迟任务对话对失败: ${groupIdKey} pairId ${String(pairId).substring(0, 8)}`
         );
       } else {
+        if (String(groupIdKey || '').startsWith('G:') && senderId) {
+          try {
+            await historyManager.promoteScopedConversationsToShared(groupIdKey, senderId);
+          } catch {}
+        }
         triggerContextSummarizationIfNeeded({
           groupId: groupIdKey,
           chatType,

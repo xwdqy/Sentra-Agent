@@ -1444,7 +1444,17 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
     // 步骤2：判断是否需要工具（使用原始工具列表）
     const judgeFunc = (config.llm?.toolStrategy || 'auto') === 'fc' ? judgeToolNecessityFC : judgeToolNecessity;
     const judge = await judgeFunc(objective, manifest0, conversation, ctx);
-    await HistoryStore.append(runId, { type: 'judge', need: judge.need, summary: judge.summary, toolNames: judge.toolNames, ok: judge.ok !== false });
+    const toolPreReplySingleSkipTools = Array.isArray(config.flags?.toolPreReplySingleSkipTools)
+      ? config.flags.toolPreReplySingleSkipTools
+      : [];
+    await HistoryStore.append(runId, {
+      type: 'judge',
+      need: judge.need,
+      summary: judge.summary,
+      toolNames: judge.toolNames,
+      ok: judge.ok !== false,
+      toolPreReplySingleSkipTools
+    });
     if (judge && judge.ok === false) {
       const plan = { manifest: manifest0, steps: [] };
       await HistoryStore.setPlan(runId, plan);
@@ -1613,8 +1623,25 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       // 步骤2：判断是否需要工具（使用原始工具列表）
       const judgeFunc = (config.llm?.toolStrategy || 'auto') === 'fc' ? judgeToolNecessityFC : judgeToolNecessity;
       const judge = await judgeFunc(objective, manifest0, conversation, ctx);
-      emitRunEvent(runId, { type: 'judge', need: judge.need, summary: judge.summary, toolNames: judge.toolNames, ok: judge.ok !== false });
-      await HistoryStore.append(runId, { type: 'judge', need: judge.need, summary: judge.summary, toolNames: judge.toolNames, ok: judge.ok !== false });
+      const toolPreReplySingleSkipTools = Array.isArray(config.flags?.toolPreReplySingleSkipTools)
+        ? config.flags.toolPreReplySingleSkipTools
+        : [];
+      emitRunEvent(runId, {
+        type: 'judge',
+        need: judge.need,
+        summary: judge.summary,
+        toolNames: judge.toolNames,
+        ok: judge.ok !== false,
+        toolPreReplySingleSkipTools
+      });
+      await HistoryStore.append(runId, {
+        type: 'judge',
+        need: judge.need,
+        summary: judge.summary,
+        toolNames: judge.toolNames,
+        ok: judge.ok !== false,
+        toolPreReplySingleSkipTools
+      });
       if (judge && judge.ok === false) {
         const plan = { manifest: manifest0, steps: [] };
         await HistoryStore.setPlan(runId, plan);
