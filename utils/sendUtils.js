@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import mimeTypes from 'mime-types';
+import fetch from 'node-fetch';
 import { parseSentraResponse } from './protocolUtils.js';
 import { parseTextSegments, buildSegmentMessage } from './messageUtils.js';
 import { updateConversationHistory } from './conversationUtils.js';
@@ -16,6 +17,144 @@ import { getEnv, getEnvBool, getEnvInt, onEnvReload } from './envHotReloader.js'
 import { randomUUID } from 'crypto';
 
 const logger = createLogger('SendUtils');
+
+const _httpMimeCache = new Map();
+
+function _normalizeContentType(ct) {
+  const s = String(ct || '').trim().toLowerCase();
+  if (!s) return '';
+  return s.split(';')[0].trim();
+}
+
+function _extFromMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (!m) return '';
+  if (m === 'image/jpeg') return '.jpg';
+  if (m === 'image/jpg') return '.jpg';
+  if (m === 'image/png') return '.png';
+  if (m === 'image/gif') return '.gif';
+  if (m === 'image/webp') return '.webp';
+  if (m === 'image/svg+xml') return '.svg';
+  if (m === 'image/bmp') return '.bmp';
+  if (m === 'image/x-icon') return '.ico';
+  return '';
+}
+
+async function _readFirstBytesFromResponse(res, maxBytes) {
+  try {
+    const cap = Math.max(0, Number(maxBytes) || 0);
+    if (!cap) return Buffer.alloc(0);
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of res.body) {
+      const b = Buffer.from(chunk);
+      chunks.push(b);
+      total += b.length;
+      if (total >= cap) break;
+    }
+    try { res.body?.destroy?.(); } catch {}
+    const buf = Buffer.concat(chunks);
+    return buf.length > cap ? buf.subarray(0, cap) : buf;
+  } catch {
+    try { res.body?.destroy?.(); } catch {}
+    return Buffer.alloc(0);
+  }
+}
+
+function _sniffMimeFromBytes(buf) {
+  try {
+    if (!buf || !buf.length) return '';
+    if (buf.length >= 8) {
+      const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      if (buf.subarray(0, 8).equals(png)) return 'image/png';
+    }
+    if (buf.length >= 3) {
+      if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+    }
+    if (buf.length >= 6) {
+      const h = buf.toString('ascii', 0, 6);
+      if (h === 'GIF87a' || h === 'GIF89a') return 'image/gif';
+    }
+    if (buf.length >= 12) {
+      const a = buf.toString('ascii', 0, 4);
+      const b = buf.toString('ascii', 8, 12);
+      if (a === 'RIFF' && b === 'WEBP') return 'image/webp';
+    }
+    if (buf.length >= 2) {
+      if (buf[0] === 0x42 && buf[1] === 0x4d) return 'image/bmp';
+    }
+    if (buf.length >= 4) {
+      if (buf[0] === 0x00 && buf[1] === 0x00 && (buf[2] === 0x01 || buf[2] === 0x02) && buf[3] === 0x00) return 'image/x-icon';
+    }
+    const head = buf.toString('utf8', 0, Math.min(512, buf.length)).trimStart().toLowerCase();
+    if (head.startsWith('<svg') || head.startsWith('<?xml') || head.startsWith('<!doctype')) {
+      if (head.includes('<svg')) return 'image/svg+xml';
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+async function _probeHttpMime(source) {
+  const key = String(source || '').trim();
+  if (!key) return '';
+  if (_httpMimeCache.has(key)) return _httpMimeCache.get(key) || '';
+
+  const controller = new AbortController();
+  const t = setTimeout(() => {
+    try { controller.abort(); } catch {}
+  }, 3500);
+
+  const setCache = (v) => {
+    const out = String(v || '').trim().toLowerCase();
+    _httpMimeCache.set(key, out);
+    return out;
+  };
+
+  const commonHeaders = {
+    Accept: '*/*',
+    'User-Agent': 'Mozilla/5.0 (compatible; Sentra-Agent/1.0; +https://github.com/)',
+  };
+
+  try {
+    try {
+      const r = await fetch(key, { method: 'HEAD', redirect: 'follow', headers: commonHeaders, signal: controller.signal });
+      const ct = _normalizeContentType(r?.headers?.get?.('content-type'));
+      if (ct && ct !== 'text/html' && !ct.startsWith('text/')) {
+        // Only trust HEAD when it is explicit media type; otherwise keep sniffing.
+        if (ct.startsWith('image/') || ct.startsWith('video/') || ct.startsWith('audio/')) {
+          clearTimeout(t);
+          return setCache(ct);
+        }
+      }
+    } catch {}
+
+    try {
+      const r2 = await fetch(key, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: { ...commonHeaders, Range: 'bytes=0-1023' },
+        signal: controller.signal
+      });
+      const ct2 = _normalizeContentType(r2?.headers?.get?.('content-type'));
+      if (ct2 && ct2 !== 'text/html' && ct2.startsWith('image/')) {
+        clearTimeout(t);
+        return setCache(ct2);
+      }
+      const buf = await _readFirstBytesFromResponse(r2, 1024);
+      const sniffed = _sniffMimeFromBytes(buf);
+      clearTimeout(t);
+      return setCache(sniffed);
+    } catch {
+      clearTimeout(t);
+      return setCache('');
+    }
+  } catch {
+    clearTimeout(t);
+    return setCache('');
+  }
+}
 
 let _cfgCache = null;
 function _getCfg() {
@@ -315,7 +454,7 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
   const protocolFiles = [];
   const linkSegments = [];
   const segmentCountHint = Array.isArray(textSegments) ? textSegments.length : 0;
-  protocolResources.forEach(res => {
+  for (const res of protocolResources) {
     const parsedRoute = _extractRoutePrefix(String(res.source || ''));
     const routeTarget = _resolveRouteTargetWithDefault(msg, parsedRoute, defaultRoute);
     const source = parsedRoute.rest;
@@ -352,13 +491,21 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
         }
 
         const inferredMime = mimeTypes.lookup(urlPath);
-        const mime = typeof inferredMime === 'string' ? inferredMime : '';
+        let mime = typeof inferredMime === 'string' ? inferredMime : '';
         const isHtml = mime === 'text/html';
-
         if (!mime || isHtml) {
+          const probed = await _probeHttpMime(source);
+          if (probed) mime = probed;
+        }
+
+        if (!mime || mime === 'text/html') {
           logger.warn(`HTTP 资源无法推断有效文件 MIME，已跳过: ${source}`, { mime: mime || '(unknown)' });
           return;
         }
+
+        try {
+          res._resolvedMime = mime;
+        } catch {}
       }
       
       // 本地文件：检查是否存在
@@ -378,11 +525,17 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
       } else {
         ext = path.extname(resolvedLocalPath || source).toLowerCase();
       }
+
+      if (isHttpUrl && !ext) {
+        const m = String(res?._resolvedMime || '').trim();
+        const guessed = _extFromMime(m);
+        if (guessed) ext = guessed;
+      }
       
       // 根据扩展名判断文件类型
       let fileType = 'file';
       {
-        const inferredMime = mimeTypes.lookup(isHttpUrl ? (source.split('?')[0]) : (resolvedLocalPath || source));
+        const inferredMime = String(res?._resolvedMime || '') || mimeTypes.lookup(isHttpUrl ? (source.split('?')[0]) : (resolvedLocalPath || source));
         const mime = typeof inferredMime === 'string' ? inferredMime : '';
         if (mime.startsWith('image/')) fileType = 'image';
         else if (mime.startsWith('video/')) fileType = 'video';
@@ -395,6 +548,9 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
         // 从 URL 中提取文件名
         const urlPath = source.split('?')[0];
         fileName = path.basename(urlPath) || 'download' + ext;
+        if (ext && fileName && !fileName.toLowerCase().endsWith(ext)) {
+          fileName = `${fileName}${ext}`;
+        }
       } else {
         fileName = path.basename(resolvedLocalPath || source);
       }
@@ -415,7 +571,7 @@ async function _smartSendInternal(msg, response, sendAndWaitResult, allowReply =
         logger.debug(`添加本地文件: ${fileType} ${fileName}`);
       }
     }
-  });
+  }
   
   // 解析文本段落
   const segments = parseTextSegments(textSegments)

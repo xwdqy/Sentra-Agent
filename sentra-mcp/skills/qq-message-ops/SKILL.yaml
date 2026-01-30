@@ -1,0 +1,19 @@
+name: qq-message-ops
+description: QQ 消息级操作（撤回/贴表情/最近联系人）：先定位 message_id，再执行；避免用 schema examples 里的占位 ID。
+enabled: true
+priority: 65
+keywords:
+  - 撤回
+  - 表情
+  - 点赞
+  - reaction
+  - emoji
+  - 最近联系人
+  - message_id
+  - 消息ID
+tool_policy:
+  allow:
+    - local__qq_message_recall
+    - local__qq_message_emojiLike
+    - local__qq_message_recentContact
+  deny: []

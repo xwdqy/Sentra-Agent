@@ -1,0 +1,14 @@
+name: arggen-strict-schema
+description: 用于提高工具参数生成/纠错的准确性，强调严格遵循 schema、从上下文提取真实值、避免猜测。
+enabled: true
+priority: 90
+keywords:
+  - 参数
+  - schema
+  - 必填
+  - 类型
+  - 校验
+  - ajv
+  - 纠错
+  - arggen
+  - function call

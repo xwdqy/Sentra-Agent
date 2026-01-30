@@ -1,0 +1,13 @@
+name: message-ops-general
+description: 通用消息/会话操作工作流：发送前先定位对象，修改/撤回前先确认 id，失败时给出可恢复策略。
+enabled: false
+priority: 60
+keywords:
+  - 消息
+  - 发送
+  - 回复
+  - 引用
+  - 撤回
+  - 群
+  - 会话
+  - chat

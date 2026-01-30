@@ -1,0 +1,17 @@
+name: qq-send-messages
+description: QQ消息发送（群聊/私聊）：用最少文字完成发送；不编造“已访问/已打开某网页”等细节；ID 必须来自上下文或工具结果。
+enabled: true
+priority: 75
+keywords:
+  - 群聊
+  - 私聊
+  - 私信
+  - 群消息
+  - 发消息
+  - 发送
+  - 回复
+tool_policy:
+  allow:
+    - local__send_group_message
+    - local__send_private_message
+  deny: []

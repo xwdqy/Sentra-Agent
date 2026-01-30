@@ -1,0 +1,26 @@
+name: web-research-local
+description: 本地可用的检索/解析/读取工作流：先 search，再 parser/read；引用结论必须对应工具证据。
+enabled: true
+priority: 60
+keywords:
+  - 搜索
+  - 实时
+  - 资料
+  - 网页
+  - 解析
+  - repo
+  - GitHub
+  - bilibili
+  - 天气
+  - 阅读
+  - 文档
+tool_policy:
+  allow:
+    - local__realtime_search
+    - local__web_parser
+    - local__web_render_image
+    - local__document_read
+    - local__github_repo_info
+    - local__bilibili_search
+    - local__weather
+  deny: []

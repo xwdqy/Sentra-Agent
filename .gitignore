@@ -97,7 +97,6 @@ downloads/
 pm2.log
 
 # Docker
-.dockerignore
 docker-compose.override.yml
 
 # OS

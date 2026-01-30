@@ -1,0 +1,31 @@
+name: qq-account-system-user
+description: QQ 账号/系统/用户操作（资料/头像/状态/戳一戳/点赞/删好友）：默认先查询再修改，涉及真实动作要简短回执。
+enabled: true
+priority: 55
+keywords:
+  - QQ资料
+  - 头像
+  - 状态
+  - 在线状态
+  - 资料卡
+  - longnick
+  - 点赞
+  - 戳一戳
+  - 删好友
+tool_policy:
+  allow:
+    - local__qq_account_getQQProfile
+    - local__qq_account_setQQAvatar
+    - local__qq_account_setQQProfile
+    - local__qq_account_setSelfLongnick
+    - local__qq_avatar_get
+    - local__qq_system_getUserStatus
+    - local__qq_system_setOnlineStatus
+    - local__qq_system_setDiyOnlineStatus
+    - local__qq_system_getModelShow
+    - local__qq_system_setModelShow
+    - local__qq_user_getProfileLike
+    - local__qq_user_sendLike
+    - local__qq_user_sendPoke
+    - local__qq_user_deleteFriend
+  deny: []

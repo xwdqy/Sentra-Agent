@@ -1,0 +1,111 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: sentra-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - sentra_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: sentra-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: "neo4j/please_change_me"
+      NEO4J_server_memory_pagecache_size: "1G"
+      NEO4J_server_memory_heap_initial__size: "1G"
+      NEO4J_server_memory_heap_max__size: "1G"
+    volumes:
+      - sentra_neo4j_data:/data
+      - sentra_neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  sentra-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sentra-agent
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: "INFO"
+      WS_HOST: "host.docker.internal"
+      WS_PORT: "6702"
+
+      REDIS_ENABLED: "true"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+
+      SENTRA_EMO_ENABLED: "false"
+      SENTRA_EMO_URL: "http://sentra-emo:7200"
+
+      RAG_NEO4J_URI: "bolt://neo4j:7687"
+      RAG_NEO4J_USERNAME: "neo4j"
+      RAG_NEO4J_PASSWORD: "please_change_me"
+      RAG_NEO4J_DATABASE: "neo4j"
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  sentra-emo:
+    build:
+      context: ./sentra-emo
+      dockerfile: Dockerfile
+    container_name: sentra-emo
+    restart: unless-stopped
+    profiles: ["emo"]
+    ports:
+      - "7200:7200"
+    environment:
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "7200"
+      UVICORN_RELOAD: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7200/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  sentra-config-ui:
+    build:
+      context: ./sentra-config-ui
+      dockerfile: Dockerfile
+    container_name: sentra-config-ui
+    restart: unless-stopped
+    profiles: ["ui"]
+    ports:
+      - "7245:7245"
+    environment:
+      NODE_ENV: "production"
+      SERVER_PORT: "7245"
+      CORS_ORIGIN: "*"
+      PACKAGE_MANAGER: "pnpm"
+      SENTRA_ROOT: "/repo"
+      SECURITY_TOKEN: "CHANGE_ME"
+    volumes:
+      - ./:/repo
+
+volumes:
+  sentra_redis_data:
+  sentra_neo4j_data:
+  sentra_neo4j_logs:

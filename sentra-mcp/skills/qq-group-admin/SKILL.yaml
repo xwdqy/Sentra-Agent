@@ -1,0 +1,28 @@
+name: qq-group-admin
+description: QQ 群管理（列表/信息/成员/禁言/踢人/改名/退群）：先确认 group_id、user_id，再执行高风险操作。
+enabled: true
+priority: 70
+keywords:
+  - 群管理
+  - 群列表
+  - 群信息
+  - 群成员
+  - 禁言
+  - 全员禁言
+  - 踢人
+  - 退群
+  - 群名片
+  - 群名
+tool_policy:
+  allow:
+    - local__qq_group_list
+    - local__qq_group_info
+    - local__qq_group_memberList
+    - local__qq_group_memberInfo
+    - local__qq_group_setName
+    - local__qq_group_setCard
+    - local__qq_group_ban
+    - local__qq_group_wholeBan
+    - local__qq_group_kick
+    - local__qq_group_leave
+  deny: []

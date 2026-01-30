@@ -13,6 +13,8 @@ import { searchToolMemories } from '../../memory/index.js';
 import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
 import { compactMessages } from '../utils/messages.js';
 import { parseFunctionCalls, buildFunctionCallInstruction, buildFCPolicy, formatSentraUserQuestion } from '../../utils/fc.js';
+ import { buildSelectedSkillsInstructionsText } from '../../skills/index.js';
+ import { emitRunEvent } from '../utils/events.js';
 
 /**
  * 生成工具调用参数
@@ -147,6 +149,20 @@ export async function generateToolArgs(params) {
     // FC 模式：也保留原始对话，确保能看到用户上下文（如 QQ 群消息），与 Plan 阶段保持一致
     // 历史工具调用通过 buildToolDialogueMessages 提供（XML 格式）
     const convWrapped = conv;
+
+    const selected = Array.isArray(context?.selectedSkills) ? context.selectedSkills : [];
+    const skillsText = buildSelectedSkillsInstructionsText({ selected });
+    if (skillsText) {
+      try {
+        emitRunEvent(runId, {
+          type: 'skill_materialized',
+          stage: 'arggen',
+          stepIndex,
+          aiName,
+          skills: selected.map((s) => ({ id: s?.id, name: s?.name, dirName: s?.dirName }))
+        });
+      } catch {}
+    }
     
     const taskInstruction = renderTemplate(ap.user_task, {
       objective: objectiveText,
@@ -167,7 +183,7 @@ export async function generateToolArgs(params) {
       { role: 'system', content: systemContent },
       ...convWrapped,
       ...dialogueMsgs,
-      ...(useFC ? [] : [{ role: 'user', content: [taskInstruction, depAppendText || ''].filter(Boolean).join('\n\n') }])
+      ...(useFC ? [] : [{ role: 'user', content: [taskInstruction, skillsText || '', depAppendText || ''].filter(Boolean).join('\n\n') }])
     ]);
 
     const useAuto = String(config.llm?.toolStrategy || 'auto') === 'auto';
@@ -192,6 +208,7 @@ export async function generateToolArgs(params) {
         // FC 模式：构建最终 user 消息，包含任务上下文 + 依赖结果 + 重试失败上下文 + 调用指令 + 重试强化
         const finalUserContent = [
           taskInstruction,
+          skillsText || '',
           depAppendText || '',
           reinforce,
           instruction
@@ -538,10 +555,24 @@ export async function fixToolArgs(params) {
     const dialogueMsgs = await buildToolDialogueMessages(runId, stepIndex, useFC);
     const depAppendText = await buildDependentContextText(runId, step.dependsOn, useFC);
 
+    const selected = Array.isArray(context?.selectedSkills) ? context.selectedSkills : [];
+    const skillsText = buildSelectedSkillsInstructionsText({ selected });
+    if (skillsText) {
+      try {
+        emitRunEvent(runId, {
+          type: 'skill_materialized',
+          stage: 'arggen_fix',
+          stepIndex,
+          aiName,
+          skills: selected.map((s) => ({ id: s?.id, name: s?.name, dirName: s?.dirName }))
+        });
+      } catch {}
+    }
+
     const messagesFix = compactMessages([
       { role: 'system', content: sysFix },
       ...dialogueMsgs,
-      { role: 'user', content: [taskInstructionFix, depAppendText || ''].filter(Boolean).join('\n\n') }
+      { role: 'user', content: [taskInstructionFix, skillsText || '', depAppendText || ''].filter(Boolean).join('\n\n') }
     ]);
 
     let fixedArgs = params.toolArgs;

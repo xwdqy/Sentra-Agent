@@ -311,8 +311,14 @@ function buildConfigFromEnv() {
     summaryUsePreThought: bool(process.env.SUMMARY_USE_PRETHOUGHT, false),
     // Whether to run preThought in planning stages (native & FC)
     planUsePreThought: bool(process.env.PLAN_USE_PRETHOUGHT, false),
+    enableStepReflection: bool(process.env.ENABLE_STEP_REFLECTION, false),
+    stepReflectionMode: bool(process.env.STEP_REFLECTION_MODE, false),
+    // If initial plan steps < this value, disable ALL reflection (stepwise + global) for this run
+    stepReflectionMinPlanSteps: int(process.env.STEP_REFLECTION_MIN_PLAN_STEPS, 3),
+    stepReflectionConfidenceThreshold: Number(process.env.STEP_REFLECTION_CONFIDENCE_THRESHOLD || 0.55),
+    stepReflectionMaxReplans: int(process.env.STEP_REFLECTION_MAX_REPLANS, 2),
     // Reflection (task completeness check before summary)
-    enableReflection: bool(process.env.ENABLE_REFLECTION, true),
+    enableReflection: bool(process.env.ENABLE_REFLECTION, bool(process.env.ENABLE_STEP_REFLECTION, false) ? false : true),
     reflectionMaxSupplements: int(process.env.REFLECTION_MAX_SUPPLEMENTS, 3),
   },
   logging: {

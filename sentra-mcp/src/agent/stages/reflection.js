@@ -6,6 +6,7 @@ import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js'
 import { parseFunctionCalls, buildFunctionCallInstruction, buildFCPolicy, formatSentraResult } from '../../utils/fc.js';
 import { clip } from '../../utils/text.js';
 import { manifestToXmlToolsCatalog } from '../plan/manifest.js';
+import { buildSelectedSkillsInstructionsText } from '../../skills/index.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -70,11 +71,16 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
     const overlayGlobal = overlays.global?.system || overlays.global || '';
     const overlayReflection = overlays.reflection?.system || overlays.reflection || '';
     const sys = composeSystem(rfPrompt.system, [overlayGlobal, overlayReflection].filter(Boolean).join('\n\n'));
+
+    const skillsText = buildSelectedSkillsInstructionsText({
+      selected: Array.isArray(context?.selectedSkills) ? context.selectedSkills : []
+    });
     
     // 构建消息数组（使用 Sentra XML 格式传递工具历史）
     const baseMsgs = [
       { role: 'system', content: sys },
       { role: 'user', content: renderTemplate(rfPrompt.user_objective, { objective: objective || '无明确目标' }) },
+      ...(skillsText ? [{ role: 'user', content: skillsText }] : []),
       { role: 'user', content: rfPrompt.user_history_intro },
       { role: 'assistant', content: toolHistoryXML },
       { role: 'user', content: renderTemplate(rfPrompt.user_available_tools, { availableTools }) },

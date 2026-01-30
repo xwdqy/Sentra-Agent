@@ -1,0 +1,35 @@
+name: vision-and-media
+description: 图像/视频理解与生成：读图先用 vision_read；生成类只输出用户要的成品提示词/参数，不输出长篇幻想。
+enabled: true
+priority: 55
+keywords:
+  - 图片
+  - 识图
+  - 视觉
+  - 修图
+  - 生成图片
+  - 视频
+  - 生成视频
+  - 转视频
+  - 转录
+  - 音频
+  - 作曲
+  - PPT
+  - 思维导图
+tool_policy:
+  allow:
+    - local__image_vision_read
+    - local__image_vision_edit
+    - local__image_search
+    - local__image_draw
+    - local__image_to_video
+    - local__video_generate
+    - local__video_vision_read
+    - local__av_transcribe
+    - local__suno_music_generate
+    - local__music_card
+    - local__custom_music_card
+    - local__ppt_gen
+    - local__mindmap_gen
+    - local__html_to_app
+  deny: []

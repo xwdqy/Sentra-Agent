@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "Decision for how to proceed with execution.",
+      "enum": [
+        "proceed",
+        "patch_args",
+        "replace_step",
+        "insert_steps_before",
+        "replan_remaining",
+        "abort"
+      ]
+    },
+    "rationale": {
+      "type": "string",
+      "description": "Short rationale (1-4 sentences) explaining why this action is chosen."
+    },
+    "args_patch": {
+      "type": "object",
+      "description": "Shallow merge patch applied onto current step.draftArgs BEFORE arg generation.",
+      "additionalProperties": true
+    },
+    "replace_step": {
+      "type": "object",
+      "description": "If action=replace_step, replace the current step with this object.",
+      "properties": {
+        "aiName": { "type": "string" },
+        "reason": { "type": "array", "items": { "type": "string" } },
+        "nextStep": { "type": "string" },
+        "draftArgs": { "type": "object", "additionalProperties": true }
+      },
+      "required": ["aiName"],
+      "additionalProperties": true
+    },
+    "insert_steps": {
+      "type": "array",
+      "description": "If action=insert_steps_before, insert these steps before current step. Include necessary prerequisite steps. You MAY include dependsOn to express ordering/dependencies.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "aiName": { "type": "string" },
+          "reason": { "type": "array", "items": { "type": "string" } },
+          "nextStep": { "type": "string" },
+          "draftArgs": { "type": "object", "additionalProperties": true },
+          "dependsOn": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "Optional dependencies for this inserted step. Use either: (A) indices within the inserted block (0-based), or (B) absolute indices referring to already-executed prefix steps in the existing plan. Dependencies pointing to future/unavailable steps will be ignored."
+          }
+        },
+        "required": ["aiName"],
+        "additionalProperties": true
+      }
+    },
+    "replan_objective": {
+      "type": "string",
+      "description": "If action=replan_remaining, provide a concise objective for replanning remaining work (do not restate the whole original objective)."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence score 0-1."
+    }
+  },
+  "required": ["action", "rationale"],
+  "additionalProperties": true
+}

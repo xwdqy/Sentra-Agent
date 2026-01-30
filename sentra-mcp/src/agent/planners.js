@@ -9,7 +9,7 @@ import { clip } from '../utils/text.js';
 import { timeParser } from '../utils/timing.js';
 // 规划期与工具清单相关的辅助函数
 import { buildPlanningManifest, manifestToBulletedText, buildToolContextSystem } from './plan/manifest.js';
-import { buildDependentContextText } from './plan/history.js';
+import { buildDependentContextText, buildToolDialogueMessages } from './plan/history.js';
 import { loadPrompt, renderTemplate, composeSystem } from './prompts/loader.js';
 // 向量记忆：规划/工具检索与写入
 import { upsertPlanMemory, upsertToolMemory, searchPlanMemories } from '../memory/index.js';
@@ -26,6 +26,8 @@ import { getPreThought } from './stages/prethought.js';
 import { generateToolArgs, validateArgs, fixToolArgs } from './stages/arggen.js';
 import { evaluateRun } from './stages/evaluate.js';
 import { checkTaskCompleteness } from './stages/reflection.js';
+import { stepReflect } from './stages/step_reflection.js';
+import { loadSkills, selectSkills, buildSkillsOverlayText, toPublicSkillMeta, buildSelectedSkillsInstructionsText } from '../skills/index.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -659,15 +661,23 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   const startIndex = Math.max(0, Number(opts.startIndex) || 0);
   // 中文：重试模式 - 仅执行指定的失败步骤
   const retrySteps = Array.isArray(opts.retrySteps) ? new Set(opts.retrySteps.map(Number)) : null;
+  const minPlanSteps = Math.max(0, Number(config.flags?.stepReflectionMinPlanSteps ?? 3));
+  const initialStepsCount = Array.isArray(plan?.steps) ? plan.steps.length : 0;
+  const stepReflectionEnabled = Boolean(config.flags?.enableStepReflection) && !opts.disableStepReflection && !(minPlanSteps > 0 && initialStepsCount > 0 && initialStepsCount < minPlanSteps);
+  const stepReflectionMaxReplans = Math.max(0, Number(config.flags?.stepReflectionMaxReplans ?? 2));
+  const stepReflectionAlways = Boolean(config.flags?.stepReflectionMode);
+  const stepReflectionConfidenceThreshold = Number(config.flags?.stepReflectionConfidenceThreshold ?? 0.55);
+  const stepReplans = Math.max(0, Number(opts.stepReplans) || 0);
+  let abortAll = false;
   const used = [];
   let succeeded = 0;
   const conv = normalizeConversation(opts.conversation);
   
-  // 重试模式下，跟踪已执行步骤的成功/失败状态，用于智能跳过依赖失败的步骤
   const stepStatus = new Map(); // stepIndex -> { success: boolean, reason: string }
 
   const total = plan.steps.length;
-  const maxConc = Math.max(1, Number(config.planner?.maxConcurrency ?? 3));
+  let maxConc = Math.max(1, Number(config.planner?.maxConcurrency ?? 3));
+  if (stepReflectionEnabled) maxConc = 1;
   const finished = new Set();
   const started = new Set();
   const delayUntil = new Map(); // stepIndex -> epochMs when it becomes schedulable
@@ -905,36 +915,29 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       if (config.flags.enableVerboseSteps) {
         logger.info?.('步骤在运行取消后被跳过', { label: 'STEP', stepIndex: i, aiName });
       }
-      if (retrySteps) {
-        stepStatus.set(i, { success: false, reason: res.message });
-      }
+      stepStatus.set(i, { success: false, reason: res.message });
       return { usedEntry: { aiName, elapsedMs: elapsed, success: false, code: res.code }, succeeded: 0 };
     }
     
-    // 重试模式下，检查依赖步骤是否失败
-    if (retrySteps) {
+    if (retrySteps || stepReflectionEnabled) {
       const deps = Array.isArray(step.dependsOn) ? step.dependsOn : [];
-      const failedDeps = deps.filter(d => {
+      const failedDeps = deps.filter((d) => {
         const status = stepStatus.get(Number(d));
         return status && !status.success;
       });
-      
       if (failedDeps.length > 0) {
-        // 依赖步骤失败，跳过此步骤以避免浪费
         const elapsed = now() - stepStart;
-        const failedDepReasons = failedDeps.map(d => {
+        const failedDepReasons = failedDeps.map((d) => {
           const st = stepStatus.get(d);
           return `步骤${d}(${plan.steps[d]?.aiName}): ${st?.reason || '失败'}`;
         }).join('; ');
-        const res = { 
-          success: false, 
-          code: 'SKIP_UPSTREAM_FAILED', 
-          data: null, 
-          message: `跳过：上游依赖步骤失败 - ${failedDepReasons}` 
+        const res = {
+          success: false,
+          code: 'SKIP_UPSTREAM_FAILED',
+          data: null,
+          message: `跳过：上游依赖步骤失败 - ${failedDepReasons}`
         };
-        
         stepStatus.set(i, { success: false, reason: res.message });
-        
         const depOn = depsArr[i] || [];
         const depBy = revDepsArr[i] || [];
         const gid = groupOf[i];
@@ -957,16 +960,6 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         };
         emitToolResultGrouped(ev, i);
         await HistoryStore.append(runId, ev);
-        
-        if (config.flags.enableVerboseSteps) {
-          logger.info(`跳过步骤（上游失败）`, { 
-            label: 'STEP', 
-            stepIndex: i, 
-            aiName, 
-            failedDeps: failedDepReasons 
-          });
-        }
-        
         return { usedEntry: { aiName, elapsedMs: elapsed, success: false, code: res.code }, succeeded: 0 };
       }
     }
@@ -1012,6 +1005,361 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       inputSchema: manifestItem?.inputSchema || { type: 'object', properties: {} }
     };
     const schema = currentToolFull.inputSchema || manifestItem?.inputSchema || { type: 'object', properties: {} };
+
+    const emitStepReflection = async (decision, phase) => {
+      if (!decision || typeof decision !== 'object') return;
+      try {
+        const ev = {
+          type: 'reflection',
+          scope: 'step',
+          phase: String(phase || 'before_step'),
+          stepIndex: i,
+          aiName,
+          action: decision.action,
+          confidence: decision.confidence,
+          rationale: decision.rationale,
+        };
+        emitRunEvent(runId, ev);
+        await HistoryStore.append(runId, ev);
+      } catch {}
+    };
+
+    const refreshRecentResultsFromHistory = async () => {
+      try {
+        const hist = await HistoryStore.list(runId, 0, -1);
+        const all = hist
+          .filter((h) => h.type === 'tool_result')
+          .map((h) => ({ aiName: h.aiName, args: h.args, result: h.result, data: h.result?.data }));
+        const limit = Math.max(1, Number(config.flags?.recentContextLimit ?? 5));
+        recentResults.length = 0;
+        const tail = all.slice(-limit);
+        for (const t of tail) recentResults.push(t);
+      } catch {}
+    };
+
+    const runInsertStepsBefore = async (insertSteps, phase) => {
+      const stepsArr = Array.isArray(insertSteps) ? insertSteps : [];
+      const cleaned = stepsArr
+        .filter((s) => s && typeof s === 'object' && s.aiName)
+        .map((s) => {
+          const obj = (s && typeof s === 'object') ? s : {};
+          return {
+            aiName: String(obj.aiName || '').trim(),
+            reason: normalizeReason(obj.reason),
+            nextStep: obj.nextStep || '',
+            draftArgs: (obj.draftArgs && typeof obj.draftArgs === 'object') ? obj.draftArgs : {},
+            dependsOn: Array.isArray(obj.dependsOn) ? obj.dependsOn : undefined
+          };
+        })
+        .filter((s) => s.aiName);
+
+      const hardMax = 12;
+      const limited = cleaned.slice(0, hardMax);
+      if (limited.length === 0) return false;
+
+      try {
+        try {
+          if (context && typeof context === 'object') {
+            const sig = limited.map((s) => s.aiName).join(',');
+            const key = `${i}|${aiName}|${sig}`.slice(0, 240);
+            const prev = Array.isArray(context.__stepInsertKeys) ? context.__stepInsertKeys : [];
+            if (prev.includes(key)) {
+              if (config.flags.enableVerboseSteps) {
+                logger.info?.('StepReflection: ignore duplicated insert_steps_before', { label: 'REFLECTION', runId, stepIndex: i, phase });
+              }
+              return false;
+            }
+            const next = prev.slice(-19);
+            next.push(key);
+            context.__stepInsertKeys = next;
+          }
+        } catch {}
+
+        const prefix = Array.isArray(plan?.steps) ? plan.steps.slice(0, Math.max(0, i)) : [];
+        const suffix = Array.isArray(plan?.steps) ? plan.steps.slice(Math.max(0, i)) : [];
+        const offset = prefix.length;
+        const insertCount = limited.length;
+
+        const mapInsertedDeps = (rawDeps, localIdx) => {
+          const deps = Array.isArray(rawDeps) ? rawDeps : [];
+          const out = [];
+          for (const d0 of deps) {
+            const d = Number(d0);
+            if (!Number.isFinite(d) || d < 0) continue;
+            // Heuristic: if d < insertCount treat as relative to inserted block (0-based)
+            if (d < insertCount) {
+              const mappedRel = offset + d;
+              if (mappedRel !== offset + localIdx && mappedRel < offset + localIdx) out.push(mappedRel);
+              // Ambiguous case: d might also be an absolute dependency to already-executed prefix step
+              if (d < offset) out.push(d);
+              continue;
+            }
+            // Otherwise allow absolute reference to already-executed prefix steps
+            if (d < offset) out.push(d);
+          }
+          return out.length ? Array.from(new Set(out)).sort((a, b) => a - b) : undefined;
+        };
+
+        const inserted = limited.map((s, idx2) => {
+          const mappedDeps = mapInsertedDeps(s.dependsOn, idx2);
+          const { dependsOn, ...rest } = s;
+          return mappedDeps && mappedDeps.length ? { ...rest, dependsOn: mappedDeps } : { ...rest };
+        });
+
+        const shiftSuffixDeps = (stepObj, isFirstSuffix) => {
+          const raw = Array.isArray(stepObj?.dependsOn) ? stepObj.dependsOn : [];
+          const out = [];
+          for (const d0 of raw) {
+            const d = Number(d0);
+            if (!Number.isFinite(d) || d < 0) continue;
+            if (d < offset) { out.push(d); continue; }
+            out.push(d + insertCount);
+          }
+          // Ensure the original current step depends on inserted prerequisites
+          if (isFirstSuffix && insertCount > 0) {
+            for (let k = 0; k < insertCount; k++) out.push(offset + k);
+          }
+          const mapped = Array.from(new Set(out)).sort((a, b) => a - b);
+          const { dependsOn, ...rest } = (stepObj && typeof stepObj === 'object') ? stepObj : {};
+          return mapped.length ? { ...rest, dependsOn: mapped } : { ...rest };
+        };
+
+        const shiftedSuffix = suffix.map((s, idx2) => shiftSuffixDeps(s, idx2 === 0)).filter((s) => s && s.aiName);
+
+        const mergedPlan = {
+          manifest: plan.manifest,
+          steps: [...prefix, ...inserted, ...shiftedSuffix],
+        };
+
+        try {
+          await HistoryStore.setPlan(runId, mergedPlan);
+          await HistoryStore.append(runId, { type: 'plan_patch', mode: 'step_insert', stepIndex: i, phase, insertedSteps: inserted, plan: mergedPlan });
+          emitRunEvent(runId, { type: 'plan_patch', mode: 'step_insert', stepIndex: i, phase, plan: mergedPlan });
+        } catch {}
+
+        await executePlan(runId, objective, mcpcore, mergedPlan, {
+          seedRecent: recentResults,
+          conversation: opts.conversation,
+          context,
+          disableStepReflection: false,
+          stepReplans,
+          startIndex: i,
+        });
+        abortAll = true;
+        return true;
+      } catch (e) {
+        logger.warn?.('StepReflection: insert_steps_before failed (continue)', { label: 'REFLECTION', runId, stepIndex: i, phase, error: String(e) });
+        return false;
+      }
+    };
+
+    const runReplanRemaining = async (replanObjective, phase) => {
+      if (stepReplans >= stepReflectionMaxReplans) {
+        if (config.flags.enableVerboseSteps) {
+          logger.warn?.('StepReflection: max replans reached, ignore replan_remaining', { label: 'REFLECTION', runId, stepIndex: i, phase, stepReplans, stepReflectionMaxReplans });
+        }
+        return false;
+      }
+      try {
+        try {
+          if (context && typeof context === 'object') {
+            const key = `${i}|${aiName}|${String(replanObjective || '').slice(0, 160)}`;
+            const prev = Array.isArray(context.__stepReplanKeys) ? context.__stepReplanKeys : [];
+            if (prev.includes(key)) {
+              if (config.flags.enableVerboseSteps) {
+                logger.info?.('StepReflection: ignore duplicated replan_remaining', { label: 'REFLECTION', runId, stepIndex: i, phase });
+              }
+              return false;
+            }
+            const next = prev.slice(-19);
+            next.push(key);
+            context.__stepReplanKeys = next;
+          }
+        } catch {}
+
+        const skillsText = buildSelectedSkillsInstructionsText({ selected: Array.isArray(context?.selectedSkills) ? context.selectedSkills : [] });
+        const reObj = String(replanObjective || '').trim();
+        const hint = reObj ? `\n\n重规划指令: ${reObj}` : '';
+        const remainingPlanned = Array.isArray(plan?.steps)
+          ? plan.steps.slice(Math.max(0, i)).map((s, idx) => {
+            const n = String(s?.nextStep || '');
+            return `${i + 1 + idx}. ${String(s?.aiName || '')}${n ? ` -> ${n}` : ''}`;
+          }).join('\n')
+          : '';
+        const replObjective = `${objective}\n\n【逐步反思：仅重规划剩余步骤】\n- 当前步骤: #${i + 1}\n- 工具: ${aiName}${hint}\n\n${remainingPlanned ? `原计划剩余步骤(供参考):\n${remainingPlanned}\n\n` : ''}${skillsText ? `${skillsText}\n\n` : ''}要求：不要重做已完成步骤；充分利用已执行步骤的结果（已在上下文中提供）；重规划从当前步骤开始的剩余步骤，控制在 1-6 步。`;
+
+        const useFC = String(config.llm?.toolStrategy || 'auto') === 'fc';
+        const toolCtx = await buildToolDialogueMessages(runId, i, useFC, true);
+        const replConversation = compactMessages([
+          ...normalizeConversation(opts.conversation),
+          ...toolCtx,
+        ]);
+
+        const replPlan = await generatePlan(replObjective, mcpcore, { ...context, runId, isStepReplan: true, replanPhase: String(phase || '') }, replConversation);
+        if (Array.isArray(replPlan?.steps) && replPlan.steps.length > 0) {
+          const prefix = Array.isArray(plan?.steps) ? plan.steps.slice(0, Math.max(0, i)) : [];
+          const offset = prefix.length;
+          const replCount = replPlan.steps.length;
+          const mergedTail = replPlan.steps.map((s) => {
+            const rawDeps = Array.isArray(s?.dependsOn) ? s.dependsOn : null;
+            let mappedDeps = undefined;
+            if (rawDeps && rawDeps.length) {
+              const out = [];
+              for (const d0 of rawDeps) {
+                const d = Number(d0);
+                if (!Number.isFinite(d) || d < 0) continue;
+                if (d < offset) { out.push(d); continue; }
+                if (d < replCount) { out.push(offset + d); continue; }
+              }
+              mappedDeps = Array.from(new Set(out)).sort((a, b) => a - b);
+            }
+            const { dependsOn, ...rest } = (s && typeof s === 'object') ? s : {};
+            return mappedDeps && mappedDeps.length ? { ...rest, dependsOn: mappedDeps } : { ...rest };
+          }).filter((s) => s && s.aiName);
+
+          const mergedPlan = {
+            manifest: replPlan.manifest || plan.manifest,
+            steps: [...prefix, ...mergedTail],
+          };
+          try {
+            await HistoryStore.setPlan(runId, mergedPlan);
+            await HistoryStore.append(runId, { type: 'plan_patch', mode: 'step_replan', stepIndex: i, phase, replanObjective: String(replanObjective || ''), plan: mergedPlan });
+            emitRunEvent(runId, { type: 'plan_patch', mode: 'step_replan', stepIndex: i, phase, plan: mergedPlan });
+          } catch {}
+
+          await executePlan(runId, objective, mcpcore, mergedPlan, {
+            seedRecent: recentResults,
+            conversation: opts.conversation,
+            context,
+            disableStepReflection: false,
+            stepReplans: stepReplans + 1,
+            startIndex: i,
+          });
+          abortAll = true;
+          return true;
+        }
+      } catch (e) {
+        logger.warn?.('StepReflection: replan_remaining failed (continue)', { label: 'REFLECTION', runId, stepIndex: i, phase, error: String(e) });
+      }
+      return false;
+    };
+
+    const applyArgsPatch = (patch) => {
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return;
+      try {
+        const base = (step.draftArgs && typeof step.draftArgs === 'object') ? step.draftArgs : {};
+        step.draftArgs = { ...base, ...patch };
+      } catch {}
+    };
+
+    const maybeStepReflectBefore = async () => {
+      if (!stepReflectionEnabled) return null;
+      if (stepReflectionAlways) {
+        return stepReflect({
+          runId,
+          objective,
+          phase: 'before_step',
+          stepIndex: i,
+          step,
+          planSteps: plan.steps,
+          manifest: plan.manifest,
+          context,
+        });
+      }
+      if (!stepReflectionAlways) {
+        const hasDraft = step.draftArgs && typeof step.draftArgs === 'object' && Object.keys(step.draftArgs).length > 0;
+        const required = Array.isArray(schema?.required) ? schema.required : [];
+        const risk = (!hasDraft && required.length > 0) || required.length >= 3;
+        if (!risk) return null;
+        return stepReflect({
+          runId,
+          objective,
+          phase: 'before_step',
+          stepIndex: i,
+          step,
+          planSteps: plan.steps,
+          manifest: plan.manifest,
+          context,
+        });
+      }
+      return null;
+    };
+
+    const decision0 = await maybeStepReflectBefore();
+    if (decision0) {
+      await emitStepReflection(decision0, 'before_step');
+      const conf = Number.isFinite(Number(decision0.confidence)) ? Number(decision0.confidence) : null;
+      const allowStrong = !(Number.isFinite(stepReflectionConfidenceThreshold) && stepReflectionConfidenceThreshold > 0 && conf !== null && conf < stepReflectionConfidenceThreshold);
+      if (decision0.action === 'abort' && allowStrong) {
+        const elapsed = now() - stepStart;
+        const res = { success: false, code: 'ABORTED_BY_REFLECTION', data: null, message: decision0.rationale || 'aborted by step reflection' };
+        stepStatus.set(i, { success: false, reason: res.message });
+        const depOn = depsArr[i] || [];
+        const depBy = revDepsArr[i] || [];
+        const gid = groupOf[i];
+        const toolMetaInherited = (toolMetaMap.get(aiName) || manifestItem?.meta || currentToolFull?.meta || {});
+        const ev = {
+          type: 'tool_result',
+          plannedStepIndex: i,
+          executionIndex: nextExecutionIndex++,
+          aiName,
+          reason: formatReason(step.reason),
+          nextStep: step.nextStep || '',
+          args: step.draftArgs || {},
+          result: res,
+          elapsedMs: elapsed,
+          dependsOn: depOn,
+          dependedBy: depBy,
+          dependsNote: buildDependsNote(i),
+          groupId: (gid ?? null),
+          groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
+          toolMeta: toolMetaInherited,
+        };
+        emitToolResultGrouped(ev, i);
+        await HistoryStore.append(runId, ev);
+        abortAll = true;
+        return { usedEntry: { aiName, elapsedMs: elapsed, success: false, code: res.code }, succeeded: 0 };
+      }
+      if (decision0.action === 'patch_args' && decision0.args_patch && allowStrong) {
+        applyArgsPatch(decision0.args_patch);
+      }
+      if (decision0.action === 'replace_step' && decision0.replace_step && allowStrong) {
+        try {
+          const repl = decision0.replace_step;
+          const replAiName = String(repl?.aiName || '').trim();
+          if (replAiName) {
+            plan.steps[i] = {
+              ...step,
+              aiName: replAiName,
+              reason: normalizeReason(repl?.reason),
+              nextStep: repl?.nextStep || step.nextStep || '',
+              draftArgs: (repl?.draftArgs && typeof repl.draftArgs === 'object') ? repl.draftArgs : (step.draftArgs || {}),
+            };
+          }
+        } catch {}
+      }
+      if (decision0.action === 'insert_steps_before' && Array.isArray(decision0.insert_steps)) {
+        const okIns = await runInsertStepsBefore(decision0.insert_steps, 'before_step');
+        if (okIns) {
+          return { usedEntry: { aiName, elapsedMs: now() - stepStart, success: true, code: 'INSERTED' }, succeeded: 0 };
+        }
+      }
+      if (decision0.action === 'replan_remaining' && allowStrong) {
+        const hasRemainingPlanned = Array.isArray(plan?.steps) && plan.steps.length > (i + 1);
+        const hasEvidence = Array.isArray(recentResults) && recentResults.length > 0;
+        const allowBeforeFirstEvidence = !(i === 0 && hasRemainingPlanned && !hasEvidence);
+        if (!allowBeforeFirstEvidence) {
+          if (config.flags.enableVerboseSteps) {
+            logger.info?.('StepReflection: ignore replan_remaining before any evidence when multi-step plan already exists', { label: 'REFLECTION', runId, stepIndex: i, totalSteps: plan.steps.length });
+          }
+        } else {
+        const okRepl = await runReplanRemaining(decision0.replan_objective, 'before_step');
+        if (okRepl) {
+          return { usedEntry: { aiName, elapsedMs: now() - stepStart, success: true, code: 'REPLANNED' }, succeeded: 0 };
+        }
+        }
+      }
+    }
 
     // 生成参数（包含复用逻辑）
     // 重试模式下禁用参数复用，强制重新生成，避免复用之前失败的参数
@@ -1060,6 +1408,10 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         totalSteps: plan.steps.length,
         context
       });
+      const validateResult2 = await validateArgs({ schema, toolArgs, aiName });
+      ajvValid = validateResult2.valid;
+      ajvErrors = validateResult2.errors;
+      toolArgs = validateResult2.args;
     }
 
     if (config.flags.enableVerboseSteps) logger.info(`参数确定`, { label: 'ARGS', aiName, toolArgsPreview: clip(toolArgs) });
@@ -1181,7 +1533,15 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
 
     let res;
     let elapsed;
-    if (scheduleDetected && delayMs > 0) {
+    if (!ajvValid) {
+      res = {
+        success: false,
+        code: 'ARGS_INVALID',
+        data: null,
+        message: `参数校验失败：${String(ajvErrors?.[0]?.message || ajvErrors?.[0]?.keyword || 'invalid args')}`
+      };
+      elapsed = now() - stepStart;
+    } else if (scheduleDetected && delayMs > 0) {
       const scheduleEvent = {
         type: 'tool_choice',
         stepIndex: i,
@@ -1288,6 +1648,44 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     }
     if (config.flags.enableVerboseSteps) logger.info('执行结果', { label: 'RESULT', aiName, success: res.success, code: res.code, dataPreview: clip(res?.data) });
 
+    stepStatus.set(i, {
+      success: Boolean(res?.success),
+      reason: Boolean(res?.success) ? '成功' : (res?.message || res?.error || `失败: ${res?.code}`)
+    });
+
+    if (stepReflectionEnabled && !res?.success) {
+      try {
+        const errText = String(res?.message || res?.error || res?.code || 'UNKNOWN_ERROR');
+        const decisionFail = await stepReflect({
+          runId,
+          objective,
+          phase: 'on_failure',
+          stepIndex: i,
+          step,
+          planSteps: plan.steps,
+          manifest: plan.manifest,
+          context,
+        });
+        if (decisionFail) {
+          await emitStepReflection(decisionFail, 'on_failure');
+          const conf = Number.isFinite(Number(decisionFail.confidence)) ? Number(decisionFail.confidence) : null;
+          const allowStrong = !(Number.isFinite(stepReflectionConfidenceThreshold) && stepReflectionConfidenceThreshold > 0 && conf !== null && conf < stepReflectionConfidenceThreshold);
+          if (decisionFail.action === 'insert_steps_before' && Array.isArray(decisionFail.insert_steps)) {
+            const okIns = await runInsertStepsBefore(decisionFail.insert_steps, 'on_failure');
+            if (okIns) {
+              return { usedEntry: { aiName, elapsedMs: elapsed, success: false, code: res.code }, succeeded: 0 };
+            }
+          }
+          if (decisionFail.action === 'replan_remaining' && allowStrong) {
+            const okRepl = await runReplanRemaining(decisionFail.replan_objective || errText, 'on_failure');
+            if (okRepl) {
+              return { usedEntry: { aiName, elapsedMs: elapsed, success: false, code: res.code }, succeeded: 0 };
+            }
+          }
+        }
+      } catch {}
+    }
+
     // 冷却命中：返回调度级延迟重排信息
     if (!res.success && res.code === 'COOLDOWN_ACTIVE') {
       const remainMs = Number(res.remainMs || (res.ttl ? res.ttl * 1000 : (config.planner?.cooldownDefaultMs || 1000)));
@@ -1296,14 +1694,6 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       return { usedEntry: { aiName, elapsedMs: elapsed, success: res.success, code: res.code }, succeeded: 0, requeueMs };
     }
 
-    // 重试模式下记录执行状态
-    if (retrySteps) {
-      stepStatus.set(i, { 
-        success: res.success, 
-        reason: res.success ? '成功' : (res.message || res.error || `失败: ${res.code}`) 
-      });
-    }
-    
     return { usedEntry: { aiName, elapsedMs: elapsed, success: res.success, code: res.code }, succeeded: res.success ? 1 : 0 };
   };
 
@@ -1335,6 +1725,19 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   const track = (i, p) => p.finally(() => { inFlight.delete(i); });
 
   while (finished.size < total) {
+    if (abortAll) {
+      for (let i = startIndex; i < total; i++) {
+        if (!finished.has(i)) {
+          finished.add(i);
+          const gid2 = groupOf[i];
+          if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
+            groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
+          }
+        }
+      }
+      for (const g of groups) flushGroupIfReady(g.id);
+      break;
+    }
     if (isRunCancelled(runId)) {
       if (config.flags.enableVerboseSteps) {
         logger.info?.('执行计划检测到取消信号，提前结束调度', { label: 'RUN', runId });
@@ -1438,6 +1841,10 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
   try {
     await HistoryStore.append(runId, { type: 'start', objective, context: sanitizeContextForLog(ctx) });
 
+    const skillsAll = loadSkills();
+    const skillsMeta = (skillsAll || []).map(toPublicSkillMeta).filter(Boolean);
+    await HistoryStore.append(runId, { type: 'skills_loaded', skills: skillsMeta });
+
     // 步骤1：构建工具清单
     let manifest0 = buildPlanningManifest(mcpcore);
     
@@ -1455,6 +1862,12 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
       ok: judge.ok !== false,
       toolPreReplySingleSkipTools
     });
+
+    const selectedSkills = selectSkills({ objective, judge, skills: skillsAll, topN: 6 });
+    const selectedMeta = (selectedSkills || []).map(toPublicSkillMeta).filter(Boolean);
+    await HistoryStore.append(runId, { type: 'skills_selected', skills: selectedMeta });
+    const skillsOverlay = buildSkillsOverlayText({ skills: skillsAll, selected: selectedSkills });
+    const ctxWithSkills = { ...mergeGlobalOverlay(ctx, skillsOverlay), selectedSkills };
     if (judge && judge.ok === false) {
       const plan = { manifest: manifest0, steps: [] };
       await HistoryStore.setPlan(runId, plan);
@@ -1479,11 +1892,11 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
       return ok({ runId, plan, exec, eval: evalObj, summary });
     }
 
-    const plan = await generatePlan(objective, mcpcore, { ...ctx, runId, judge }, conversation);
+    const plan = await generatePlan(objective, mcpcore, { ...ctxWithSkills, runId, judge, selectedSkills }, conversation);
     await HistoryStore.setPlan(runId, plan);
     await HistoryStore.append(runId, { type: 'plan', plan });
 
-    let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
+    let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctxWithSkills });
     let evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
 
     // Global repair loop (circuit breaker): limit the number of repair cycles
@@ -1617,6 +2030,11 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       emitRunEvent(runId, { type: 'start', objective, context: sanitizedCtx });
       await HistoryStore.append(runId, { type: 'start', objective, context: sanitizedCtx });
 
+      const skillsAll = loadSkills();
+      const skillsMeta = (skillsAll || []).map(toPublicSkillMeta).filter(Boolean);
+      emitRunEvent(runId, { type: 'skills_loaded', skills: skillsMeta });
+      await HistoryStore.append(runId, { type: 'skills_loaded', skills: skillsMeta });
+
       // 步骤1：构建工具清单
       let manifest0 = buildPlanningManifest(mcpcore);
       
@@ -1642,6 +2060,13 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
         ok: judge.ok !== false,
         toolPreReplySingleSkipTools
       });
+
+      const selectedSkills = selectSkills({ objective, judge, skills: skillsAll, topN: 6 });
+      const selectedMeta = (selectedSkills || []).map(toPublicSkillMeta).filter(Boolean);
+      emitRunEvent(runId, { type: 'skills_selected', skills: selectedMeta });
+      await HistoryStore.append(runId, { type: 'skills_selected', skills: selectedMeta });
+      const skillsOverlay = buildSkillsOverlayText({ skills: skillsAll, selected: selectedSkills });
+      const ctxWithSkills = { ...mergeGlobalOverlay(ctx, skillsOverlay), selectedSkills };
       if (judge && judge.ok === false) {
         const plan = { manifest: manifest0, steps: [] };
         await HistoryStore.setPlan(runId, plan);
@@ -1672,13 +2097,13 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       }
 
       // Plan (after judge)
-      const plan = await generatePlan(objective, mcpcore, { ...ctx, runId, judge }, conversation);
+      const plan = await generatePlan(objective, mcpcore, { ...ctxWithSkills, runId, judge, selectedSkills }, conversation);
       await HistoryStore.setPlan(runId, plan);
       emitRunEvent(runId, { type: 'plan', plan });
       await HistoryStore.append(runId, { type: 'plan', plan });
 
       // Execute concurrently (existing executor emits args/tool_result events)
-      let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
+      let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctxWithSkills });
 
       // 若运行在执行阶段被取消，则跳过后续评估/补救/总结，仅发出取消型 done/summary 事件
       if (isRunCancelled(runId)) {
@@ -1786,10 +2211,17 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       
       // Reflection：基于 evaluation 的 incomplete 字段判断是否需要补充遗漏的操作
       // success 表示已执行步骤是否成功，incomplete 表示任务是否有遗漏步骤
-      const shouldReflect = config.flags.enableReflection && evalObj?.result?.incomplete === true;
+      const minPlanSteps = Math.max(0, Number(config.flags?.stepReflectionMinPlanSteps ?? 3));
+      const initialStepsCount = Array.isArray(plan?.steps) ? plan.steps.length : 0;
+      const reflectionDisabledByShortPlan = (minPlanSteps > 0 && initialStepsCount > 0 && initialStepsCount < minPlanSteps);
+      const shouldReflect = !reflectionDisabledByShortPlan && config.flags.enableReflection && evalObj?.result?.incomplete === true;
       if (!config.flags.enableReflection) {
         if (config.flags.enableVerboseSteps) {
           logger.info('Reflection: 未启用 enableReflection，跳过完整性检查', { label: 'REFLECTION', runId });
+        }
+      } else if (reflectionDisabledByShortPlan) {
+        if (config.flags.enableVerboseSteps) {
+          logger.info('Reflection: 初始计划步骤数过少，禁用完整性检查', { label: 'REFLECTION', runId, initialStepsCount, minPlanSteps });
         }
       } else if (evalObj?.result?.incomplete === false) {
         if (config.flags.enableVerboseSteps) {
@@ -1812,7 +2244,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
           });
         }
         try {
-          const reflection = await checkTaskCompleteness(runId, objective, plan.manifest, ctx);
+          const reflection = await checkTaskCompleteness(runId, objective, plan.manifest, ctxWithSkills);
           
           emitRunEvent(runId, {
             type: 'reflection',

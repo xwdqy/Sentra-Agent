@@ -1,0 +1,20 @@
+name: desktop-and-file
+description: 桌面控制/系统信息/写文件：对真实系统动作保持谨慎，先确认目标路径与期望效果。
+enabled: true
+priority: 50
+keywords:
+  - 桌面
+  - 控制
+  - 系统
+  - 信息
+  - 写文件
+  - 保存
+  - 导出
+  - 路径
+  - 文件
+tool_policy:
+  allow:
+    - local__desktop_control
+    - local__system_info
+    - local__write_file
+  deny: []

@@ -8,6 +8,7 @@ import { getRedis, isRedisReady } from '../redis/client.js';
 import { config } from '../config/index.js';
 import { Governance } from '../governance/policy.js';
 import { embedTexts } from '../openai/client.js';
+import { loadSkills, toPublicSkillMeta } from '../skills/index.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -94,6 +95,7 @@ export class MCPCore {
     this.externalMgr = new MCPExternalManager();
     this.externalTools = []; // { name, description, inputSchema, __provider: external:<id> }
     this.toolIndex = new Map(); // aiName -> descriptor
+    this.skills = [];
     this._initialized = false;
     this._initPromise = null;
   }
@@ -134,6 +136,24 @@ export class MCPCore {
     this._initPromise = (async () => {
       // Load local plugins
       this.localTools = await loadPlugins();
+
+      try {
+        const skillsAll = loadSkills();
+        this.skills = Array.isArray(skillsAll) ? skillsAll : [];
+        const enabled = this.skills.filter((s) => s && s.enabled).length;
+        logger.info?.('Skills 加载完成', { label: 'SKILL', total: this.skills.length, enabled });
+        if (config.flags?.enableVerboseSkills) {
+          for (const s of this.skills) {
+            const meta = toPublicSkillMeta(s);
+            if (!meta) continue;
+            logger.info?.('Skill', { label: 'SKILL', ...meta });
+          }
+        }
+      } catch (e) {
+        try { logger.warn?.('Skills 加载失败（将不影响插件工具）', { label: 'SKILL', error: String(e) }); } catch {}
+        this.skills = [];
+      }
+
       // Connect external servers and fetch their tools
       await this.externalMgr.connectAll();
       this.externalTools = await this.externalMgr.listAllTools();

@@ -1,0 +1,13 @@
+name: plan-completeness
+description: 用于改进规划完整性与执行顺序。适用于任务容易遗漏步骤、需要分解子任务、需要在执行中补充关键动作的场景。
+enabled: true
+priority: 80
+keywords:
+  - 规划
+  - 计划
+  - 漏掉
+  - 遗漏
+  - 步骤
+  - 完整性
+  - 补充
+  - checklist

@@ -426,6 +426,14 @@ flowchart LR
 
 - `.env.example`
 
+Docker 部署（推荐）：
+
+- [Docker 部署（Neo4j + Redis + Sentra Agent）](docs/DOCKER.md)
+
+面板（可选）：
+
+- Config UI 可通过 Docker profile 启动，用于可视化管理各模块配置与 Redis。
+
 更多模块文档：
 
 - [Sentra MCP](sentra-mcp/README.md) - 工具生态与协议说明

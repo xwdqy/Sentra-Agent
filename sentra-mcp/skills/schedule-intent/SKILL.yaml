@@ -1,0 +1,13 @@
+name: schedule-intent
+description: 用于识别用户的延时/定时/周期意图，并在工具 schema 支持 schedule 字段时生成可解析的 schedule 对象。
+enabled: true
+priority: 70
+keywords:
+  - 定时
+  - 延时
+  - 稍后
+  - 等会
+  - 明天
+  - 下周
+  - 每天
+  - schedule
