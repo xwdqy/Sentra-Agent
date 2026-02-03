@@ -118,6 +118,8 @@ export async function scriptRoutes(fastify: FastifyInstance) {
             exitCode: process.exitCode,
             startTime: process.startTime,
             endTime: process.endTime,
+            baseCursor: (process as any).outputBaseCursor ?? 0,
+            cursor: (process as any).totalCursor ?? (Array.isArray(process.output) ? process.output.length : 0),
             output: process.output,
         };
     });
@@ -149,6 +151,47 @@ export async function scriptRoutes(fastify: FastifyInstance) {
         // Kick-start the SSE stream with an initial comment to open the pipe immediately
         reply.raw.write(`: stream-open\n\n`);
 
+        let pending = '';
+        let flushTimer: NodeJS.Timeout | null = null;
+        let paused = false;
+
+        const flushNow = () => {
+            if (paused) return;
+            if (!pending) return;
+            const chunk = pending;
+            pending = '';
+            try {
+                const ok = reply.raw.write(chunk);
+                if (!ok) {
+                    paused = true;
+                    try {
+                        reply.raw.once('drain', () => {
+                            paused = false;
+                            flushNow();
+                        });
+                    } catch { }
+                }
+            } catch { }
+        };
+
+        const scheduleFlush = () => {
+            if (flushTimer) return;
+            flushTimer = setTimeout(() => {
+                flushTimer = null;
+                flushNow();
+            }, 20);
+        };
+
+        const queueFrame = (frame: string) => {
+            if (!frame) return;
+            pending += frame;
+            if (pending.length >= 64_000) {
+                flushNow();
+                return;
+            }
+            scheduleFlush();
+        };
+
         // Heartbeat to keep the connection alive and help certain renderers repaint timely
         const heartbeat = setInterval(() => {
             try {
@@ -157,29 +200,45 @@ export async function scriptRoutes(fastify: FastifyInstance) {
         }, 15000);
 
         const rawCursor = request.query?.cursor;
-        const cursor = Math.max(0, Math.min(process.output.length, Number.parseInt(String(rawCursor ?? '0'), 10) || 0));
+        const cursorAbs = Number.parseInt(String(rawCursor ?? '0'), 10);
+        const clientCursor = Number.isFinite(cursorAbs) ? Math.max(0, cursorAbs) : 0;
+
+        const baseCursor = Number((process as any).outputBaseCursor ?? 0);
+        const totalCursor = Number((process as any).totalCursor ?? (Array.isArray(process.output) ? process.output.length : 0));
+        const startCursor = Math.max(baseCursor, Math.min(totalCursor, clientCursor));
+        const sliceIndex = Math.max(0, startCursor - baseCursor);
+
+        queueFrame(`data: ${JSON.stringify({ type: 'init', baseCursor, cursor: totalCursor })}\n\n`);
 
         // Send existing output
-        for (const line of process.output.slice(cursor)) {
-            reply.raw.write(`data: ${JSON.stringify({ type: 'output', data: line })}\n\n`);
+        for (let i = sliceIndex; i < process.output.length; i += 1) {
+            const line = process.output[i];
+            const c = baseCursor + i + 1;
+            queueFrame(`data: ${JSON.stringify({ type: 'output', stream: 'replay', data: line, cursor: c })}\n\n`);
         }
+        flushNow();
 
         // Subscribe to new output
         const unsubscribeOutput = scriptRunner.subscribeToOutput(id, (data) => {
             // Do not spread to avoid overriding the top-level 'type'.
             // Normalize into { type: 'output', stream: 'stdout'|'stderr', data: string }
-            const payload = { type: 'output', stream: data.type, data: data.data };
-            reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+            const payload = { type: 'output', stream: data.type, data: data.data, cursor: (data as any).cursor };
+            queueFrame(`data: ${JSON.stringify(payload)}\n\n`);
         });
 
         const unsubscribeExit = scriptRunner.subscribeToExit(id, (data) => {
             try {
-                reply.raw.write(`data: ${JSON.stringify({ type: 'exit', ...data })}\n\n`);
+                queueFrame(`data: ${JSON.stringify({ type: 'exit', ...data, cursor: totalCursor })}\n\n`);
+                flushNow();
                 if (typeof (reply.raw as any).flush === 'function') {
                     try { (reply.raw as any).flush(); } catch { }
                 }
             } finally {
                 clearInterval(heartbeat);
+                if (flushTimer) {
+                    try { clearTimeout(flushTimer); } catch { }
+                    flushTimer = null;
+                }
                 setTimeout(() => {
                     try { reply.raw.end(); } catch { }
                 }, 30);
@@ -190,6 +249,10 @@ export async function scriptRoutes(fastify: FastifyInstance) {
             if (unsubscribeOutput) unsubscribeOutput();
             if (unsubscribeExit) unsubscribeExit();
             clearInterval(heartbeat);
+            if (flushTimer) {
+                try { clearTimeout(flushTimer); } catch { }
+                flushTimer = null;
+            }
         });
     });
 

@@ -95,6 +95,11 @@ export type UIStore = {
   terminalManagerMinimized: boolean;
   setTerminalManagerMinimized: (min: boolean) => void;
 
+  qqSandboxOpen: boolean;
+  setQqSandboxOpen: (open: boolean) => void;
+  qqSandboxMinimized: boolean;
+  setQqSandboxMinimized: (min: boolean) => void;
+
   utilityFocusRequestId: string | null;
   utilityFocusRequestNonce: number;
   requestUtilityFocus: (id: string) => void;
@@ -315,6 +320,17 @@ export const useUIStore = create<UIStore>((set: SetState<UIStore>) => {
     setTerminalManagerMinimized: (min: boolean) => {
       storage.setBool('sentra_terminal_manager_minimized', min);
       set({ terminalManagerMinimized: min });
+    },
+
+    qqSandboxOpen: readBool('sentra_qq_sandbox_open', false),
+    setQqSandboxOpen: (open: boolean) => {
+      storage.setBool('sentra_qq_sandbox_open', open);
+      set({ qqSandboxOpen: open });
+    },
+    qqSandboxMinimized: readBool('sentra_qq_sandbox_minimized', false),
+    setQqSandboxMinimized: (min: boolean) => {
+      storage.setBool('sentra_qq_sandbox_minimized', min);
+      set({ qqSandboxMinimized: min });
     },
 
     utilityFocusRequestId: null,

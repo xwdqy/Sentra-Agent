@@ -5,6 +5,12 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import https from 'https';
+import { scriptRunner } from '../scriptRunner';
+
+let uiSeenOnce = false;
+let lastUiHeartbeat = 0;
+let cleanupArmed = false;
+let cleanupTimer: NodeJS.Timeout | null = null;
 
 function fetchJson(url: string): Promise<any> {
     return new Promise((resolve, reject) => {
@@ -31,6 +37,37 @@ function fetchJson(url: string): Promise<any> {
 }
 
 export async function systemRoutes(fastify: FastifyInstance) {
+    if (!cleanupTimer) {
+        cleanupTimer = setInterval(() => {
+            if (!uiSeenOnce) return;
+            if (!cleanupArmed) return;
+            const now = Date.now();
+            const STALE_MS = 60_000;
+            if (!lastUiHeartbeat || (now - lastUiHeartbeat) <= STALE_MS) return;
+            cleanupArmed = false;
+            try {
+                const res = scriptRunner.cleanupAll({ includePm2: true });
+                fastify.log.warn({ res }, '[System] UI heartbeat stale; auto-cleaned processes.');
+            } catch (e) {
+                fastify.log.warn({ err: e }, '[System] Auto-cleanup failed.');
+            }
+        }, 15_000);
+    }
+
+    fastify.post<{
+        Body: { scope?: string; ts?: number };
+    }>('/api/system/ui/heartbeat', async (_request) => {
+        uiSeenOnce = true;
+        cleanupArmed = true;
+        lastUiHeartbeat = Date.now();
+        return { success: true, ts: lastUiHeartbeat };
+    });
+
+    fastify.post('/api/system/cleanup', async () => {
+        const res = scriptRunner.cleanupAll({ includePm2: true });
+        return { success: true, res };
+    });
+
     fastify.get('/api/system/network', async (_request, reply) => {
         const clientPort = process.env.CLIENT_PORT || '7244';
         const serverPort = process.env.SERVER_PORT || '7245';
@@ -114,6 +151,12 @@ export async function systemRoutes(fastify: FastifyInstance) {
         const scriptPath = path.resolve(process.cwd(), 'scripts', 'reboot.mjs');
 
         fastify.log.warn(`[System] Initiating restart... Ports: ${ports}, Cmd: ${restartCmd}`);
+
+        try {
+            // Best-effort: stop PM2/terminal processes started from WebUI.
+            scriptRunner.cleanupAll({ includePm2: true });
+        } catch {
+        }
 
         if (isPm2) {
             reply.send({ success: true, message: 'System restarting...' });

@@ -2,27 +2,10 @@ import { FastifyInstance } from 'fastify';
 import { join, resolve } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { TextDecoder } from 'util';
-import dotenv from 'dotenv';
+import { XMLParser } from 'fast-xml-parser';
 
 function getRootDir(): string {
   return resolve(process.cwd(), process.env.SENTRA_ROOT || '..');
-}
-
-let cachedRootEnv: Record<string, string> | null = null;
-function getRootEnvValue(key: string): string {
-  try {
-    if (!cachedRootEnv) {
-      const envPath = join(getRootDir(), '.env');
-      if (existsSync(envPath)) {
-        cachedRootEnv = dotenv.parse(readFileSync(envPath));
-      } else {
-        cachedRootEnv = {};
-      }
-    }
-    return (cachedRootEnv && typeof cachedRootEnv[key] === 'string') ? String(cachedRootEnv[key] || '') : '';
-  } catch {
-    return '';
-  }
 }
 
 function extractFirstTagBlock(text: string, tagName: string): string {
@@ -32,14 +15,133 @@ function extractFirstTagBlock(text: string, tagName: string): string {
   return m ? m[0] : '';
 }
 
-function extractWorldbookPayloadText(xmlBlock: string): string {
-  const m = xmlBlock.match(/<!\[CDATA\[([\s\S]*?)\]\]>/i);
-  if (m) return String(m[1] || '').trim();
-  const stripped = xmlBlock
-    .replace(/^<sentra-worldbook[^>]*>/i, '')
-    .replace(/<\/sentra-worldbook\s*>$/i, '')
-    .trim();
-  return stripped;
+const sentraWorldbookXmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '',
+  allowBooleanAttributes: true,
+  textNodeName: '#text',
+  trimValues: true,
+  parseTagValue: false,
+  parseAttributeValue: false,
+  isArray: (_name: string, jpath: string) => {
+    return (
+      jpath === 'sentra-worldbook.entries.entry'
+      || jpath === 'sentra-worldbook.entries.entry.keywords.keyword'
+      || jpath === 'sentra-worldbook.entries.entry.tags.tag'
+      || jpath === 'sentra-worldbook.meta.tags.tag'
+    );
+  },
+});
+
+function asArray<T>(v: T | T[] | undefined | null): T[] {
+  if (v == null) return [];
+  return Array.isArray(v) ? v : [v];
+}
+
+function getTextLoose(v: any): string {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (typeof v === 'object' && typeof v['#text'] === 'string') return v['#text'];
+  return String(v ?? '');
+}
+
+function parseBoolLoose(v: any): boolean | undefined {
+  if (v == null) return undefined;
+  const s = String(v).trim().toLowerCase();
+  if (s === 'true' || s === '1') return true;
+  if (s === 'false' || s === '0') return false;
+  return undefined;
+}
+
+function parseNumberLoose(v: any): number | undefined {
+  if (v == null) return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return undefined;
+  return n;
+}
+
+function splitLooseList(text: string): string[] {
+  const s = String(text || '').trim();
+  if (!s) return [];
+  return s
+    .split(/[,，;；\n\r\t]+/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+function parseStringListNode(parent: any, containerKey: string, itemKey: string): string[] {
+  const container = parent?.[containerKey];
+  if (container == null) return [];
+  const fromItems = asArray<any>(container?.[itemKey])
+    .map((x) => getTextLoose(x).trim())
+    .filter(Boolean);
+  if (fromItems.length > 0) return fromItems;
+  const inline = getTextLoose(container).trim();
+  if (inline) return splitLooseList(inline);
+  return [];
+}
+
+function parseSentraWorldbookXml(xml: string): any {
+  if (!xml) return null;
+  let parsed: any;
+  try {
+    parsed = sentraWorldbookXmlParser.parse(xml);
+  } catch {
+    return null;
+  }
+
+  const root = parsed && typeof parsed === 'object' ? (parsed['sentra-worldbook'] || parsed) : null;
+  if (!root || typeof root !== 'object') return null;
+
+  const metaNode = root.meta && typeof root.meta === 'object' ? root.meta : {};
+  const meta: any = {
+    title: getTextLoose(metaNode.title).trim() || undefined,
+    version: getTextLoose(metaNode.version).trim() || undefined,
+    description: getTextLoose(metaNode.description).trim() || undefined,
+    language: getTextLoose(metaNode.language).trim() || undefined,
+  };
+
+  const metaTags = parseStringListNode(metaNode, 'tags', 'tag');
+  if (metaTags.length > 0) meta.tags = metaTags;
+
+  const entryNodes = asArray<any>(root?.entries?.entry);
+  const entries = entryNodes.map((e) => {
+    const id = getTextLoose(e?.id).trim();
+    const name = getTextLoose(e?.name).trim();
+
+    const keywords = parseStringListNode(e, 'keywords', 'keyword');
+    const tags = parseStringListNode(e, 'tags', 'tag');
+
+    const content = getTextLoose(e?.content);
+    const priority = parseNumberLoose(getTextLoose(e?.priority).trim());
+    const enabled = parseBoolLoose(getTextLoose(e?.enabled).trim());
+
+    const out: any = {};
+    if (id) out.id = id;
+    if (name) out.name = name;
+    if (keywords.length > 0) out.keywords = keywords;
+    if (typeof content === 'string' && content.trim()) out.content = content;
+    if (priority != null) out.priority = priority;
+    if (enabled != null) out.enabled = enabled;
+    if (tags.length > 0) out.tags = tags;
+    return out;
+  }).filter((x) => x && typeof x === 'object' && Object.keys(x).length > 0);
+
+  const result: any = {};
+  if (meta && Object.values(meta).some((x) => x != null && String(x).trim())) result.meta = meta;
+  result.entries = entries;
+  return result;
+}
+
+function normalizeWorldbookJson(obj: any) {
+  const base = obj && typeof obj === 'object' ? { ...obj } : {};
+  if (!base.meta || typeof base.meta !== 'object') base.meta = {};
+  if (!Array.isArray(base.entries)) {
+    if (base.entries && typeof base.entries === 'object') base.entries = [base.entries];
+    else base.entries = [];
+  }
+  return base;
 }
 
 async function callChatCompletions(params: {
@@ -80,9 +182,9 @@ async function callChatCompletions(params: {
 
 function writeSse(reply: any, payload: any, event?: string) {
   if (event) {
-    reply.raw.write(`event: ${event}\\n`);
+    reply.raw.write(`event: ${event}\n`);
   }
-  reply.raw.write(`data: ${JSON.stringify(payload)}\\n\\n`);
+  reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
   if (typeof reply.raw.flush === 'function') {
     try { reply.raw.flush(); } catch { }
   }
@@ -172,20 +274,28 @@ async function callChatCompletionsStream(params: {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true } as any);
-      let idx;
-      while ((idx = buffer.indexOf('\\n\\n')) >= 0) {
-        const frame = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
+      while (true) {
+        const n1 = buffer.indexOf('\n\n');
+        const n2 = buffer.indexOf('\r\n\r\n');
+        if (n1 < 0 && n2 < 0) break;
+        const useIdx = n1 < 0 ? n2 : (n2 < 0 ? n1 : Math.min(n1, n2));
+        const sepLen = useIdx === n2 ? 4 : 2;
+        const frame = buffer.slice(0, useIdx);
+        buffer = buffer.slice(useIdx + sepLen);
         handleFrame(frame);
       }
     }
   } else if (body && (Symbol.asyncIterator in body)) {
     for await (const chunk of body) {
       buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true } as any);
-      let idx;
-      while ((idx = buffer.indexOf('\\n\\n')) >= 0) {
-        const frame = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
+      while (true) {
+        const n1 = buffer.indexOf('\n\n');
+        const n2 = buffer.indexOf('\r\n\r\n');
+        if (n1 < 0 && n2 < 0) break;
+        const useIdx = n1 < 0 ? n2 : (n2 < 0 ? n1 : Math.min(n1, n2));
+        const sepLen = useIdx === n2 ? 4 : 2;
+        const frame = buffer.slice(0, useIdx);
+        buffer = buffer.slice(useIdx + sepLen);
         handleFrame(frame);
       }
     }
@@ -239,38 +349,26 @@ export async function worldbookRoutes(fastify: FastifyInstance) {
         return reply.code(500).send({ error: 'Invalid worldbook_generator prompt', message: 'Missing system prompt' });
       }
 
-      const apiBaseUrl = (typeof body.apiBaseUrl === 'string' ? body.apiBaseUrl : '')
-        || getRootEnvValue('API_BASE_URL')
-        || process.env.API_BASE_URL
-        || '';
-      const apiKey = (typeof body.apiKey === 'string' ? body.apiKey : '')
-        || getRootEnvValue('API_KEY')
-        || process.env.API_KEY
-        || '';
+      const apiBaseUrl = typeof body.apiBaseUrl === 'string' ? body.apiBaseUrl.trim() : '';
+      const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
 
       if (!apiBaseUrl || !apiKey) {
-        return reply.code(500).send({
-          error: 'Worldbook generator backend not configured',
-          message: 'Missing apiBaseUrl/apiKey (either request override or root .env API_BASE_URL/API_KEY)',
+        return reply.code(400).send({
+          error: 'Missing apiBaseUrl/apiKey',
+          message: 'Please fill apiBaseUrl and apiKey in UI (no .env fallback)',
         });
       }
 
       const model = (typeof body.model === 'string' && body.model.trim())
         ? body.model.trim()
-        : (getRootEnvValue('WORLDBOOK_GENERATOR_MODEL')
-          || getRootEnvValue('MAIN_AI_MODEL')
-          || getRootEnvValue('MODEL_NAME')
-          || process.env.MAIN_AI_MODEL
-          || process.env.MODEL_NAME
-          || 'gpt-4o-mini');
+        : 'gpt-4o-mini';
 
       const temperature = typeof body.temperature === 'number' ? body.temperature : 0.4;
 
       const maxTokensFromBody = typeof body.maxTokens === 'number' ? body.maxTokens : undefined;
-      const maxTokensFromEnv = Number(getRootEnvValue('WORLDBOOK_GENERATOR_MAX_TOKENS') || process.env.WORLDBOOK_GENERATOR_MAX_TOKENS || '');
       const maxTokens = (Number.isFinite(maxTokensFromBody) && (maxTokensFromBody as number) > 0)
         ? (maxTokensFromBody as number)
-        : (Number.isFinite(maxTokensFromEnv) && maxTokensFromEnv > 0 ? maxTokensFromEnv : undefined);
+        : undefined;
 
       const userContent = rawText;
 
@@ -294,10 +392,10 @@ export async function worldbookRoutes(fastify: FastifyInstance) {
           try { (reply.raw as any).flushHeaders(); } catch { }
         }
 
-        reply.raw.write(`: stream-open\\n\\n`);
+        reply.raw.write(`: stream-open\n\n`);
         const heartbeat = setInterval(() => {
           try {
-            reply.raw.write(`event: ping\\n` + `data: {}\\n\\n`);
+            reply.raw.write(`event: ping\n` + `data: {}\n\n`);
           } catch { }
         }, 15000);
 
@@ -329,17 +427,24 @@ export async function worldbookRoutes(fastify: FastifyInstance) {
           return;
         }
 
-        const jsonText = extractWorldbookPayloadText(wbXml);
-        let worldbookJson: any;
+        let extracted: any;
         try {
-          worldbookJson = JSON.parse(jsonText);
+          extracted = parseSentraWorldbookXml(wbXml);
         } catch (e: any) {
-          writeSse(reply, { type: 'error', message: e?.message || 'Failed to parse worldbook JSON', worldbookXml: wbXml }, 'error');
+          writeSse(reply, { type: 'error', message: e?.message || String(e), worldbookXml: wbXml }, 'error');
           clearInterval(heartbeat);
           reply.raw.end();
           return;
         }
 
+        if (!extracted || typeof extracted !== 'object') {
+          writeSse(reply, { type: 'error', message: 'Failed to parse <sentra-worldbook> block', worldbookXml: wbXml }, 'error');
+          clearInterval(heartbeat);
+          reply.raw.end();
+          return;
+        }
+
+        const worldbookJson = normalizeWorldbookJson(extracted);
         writeSse(reply, { type: 'done', worldbookXml: wbXml, worldbookJson }, 'done');
         clearInterval(heartbeat);
         reply.raw.end();
@@ -364,18 +469,16 @@ export async function worldbookRoutes(fastify: FastifyInstance) {
         });
       }
 
-      const jsonText = extractWorldbookPayloadText(wbXml);
-      let worldbookJson: any;
-      try {
-        worldbookJson = JSON.parse(jsonText);
-      } catch (e: any) {
+      const extracted = parseSentraWorldbookXml(wbXml);
+      if (!extracted || typeof extracted !== 'object') {
         return reply.code(502).send({
           error: 'Invalid upstream response',
-          message: e?.message || 'Failed to parse worldbook JSON',
+          message: 'Failed to parse <sentra-worldbook> block',
           worldbookXml: wbXml,
         });
       }
 
+      const worldbookJson = normalizeWorldbookJson(extracted);
       return { worldbookXml: wbXml, worldbookJson };
     } catch (error) {
       reply.code(500).send({

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import styles from './PresetImporter.module.css';
 import type { PresetsEditorState } from '../hooks/usePresetsEditor';
 import { convertPresetText, convertPresetTextStream, fetchPresetFile, savePresetFile } from '../services/api';
-import { Button, Collapse, Input, InputNumber, Segmented, Select, Switch, Upload } from 'antd';
+import { Button, Drawer, Input, InputNumber, Select, Switch, Upload } from 'antd';
 import { storage } from '../utils/storage';
 import {
   CloseOutlined,
@@ -102,38 +102,8 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
   const [temperature, setTemperature] = useState<string>(() => storage.getString('preset_importer.temperature', { fallback: '0' }));
   const [maxTokens, setMaxTokens] = useState<string>(() => storage.getString('preset_importer.maxTokens', { fallback: '-1' }));
   const [advancedOpen, setAdvancedOpen] = useState<boolean>(() => storage.getBool('preset_importer.advancedOpen', { fallback: false }));
-
-  const [streamDebugOpen, setStreamDebugOpen] = useState<boolean>(() => storage.getBool('preset_importer.streamDebugOpen', { fallback: false }));
-  const [streamDebugEvents, setStreamDebugEvents] = useState<Array<{ type: string; at: number; message?: string }>>([]);
-  const [streamDebugMeta, setStreamDebugMeta] = useState<{ status?: number; contentType?: string; bytes?: number; frames?: number; tokens?: number; lastAt?: number }>({});
-  const [liveOutputOpen, setLiveOutputOpen] = useState<boolean>(() => storage.getBool('preset_importer.liveOutputOpen', { fallback: true }));
-
-  const liveBoxRef = useRef<HTMLDivElement | null>(null);
-  const debugLogRef = useRef<HTMLDivElement | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
   const previewRef = useRef<HTMLPreElement | null>(null);
-
-  useEffect(() => {
-    storage.setBool('preset_importer.streamDebugOpen', streamDebugOpen);
-  }, [streamDebugOpen]);
-
-  useEffect(() => {
-    storage.setBool('preset_importer.liveOutputOpen', liveOutputOpen);
-  }, [liveOutputOpen]);
-
-  useEffect(() => {
-    if (!liveOutputOpen) return;
-    const el = liveBoxRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [liveOutputOpen, streamText, convertedXml, isStreaming]);
-
-  useEffect(() => {
-    if (!streamDebugOpen) return;
-    const el = debugLogRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [streamDebugOpen, streamDebugEvents.length]);
 
   useEffect(() => {
     // Migrate older defaults:
@@ -335,6 +305,17 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
       return;
     }
 
+    const apiBaseUrlTrimmed = apiBaseUrl.trim();
+    const apiKeyTrimmed = apiKey.trim();
+    if (!apiBaseUrlTrimmed) {
+      addToast('error', '转换失败', '请填写 API Base URL');
+      return;
+    }
+    if (!apiKeyTrimmed) {
+      addToast('error', '转换失败', '请填写 API Key');
+      return;
+    }
+
     try {
       setSaving(true);
       const tempNum = Number(temperature);
@@ -350,8 +331,6 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
       streamTextRef.current = '';
       setStreamText('');
       setIsStreaming(false);
-      setStreamDebugEvents([]);
-      setStreamDebugMeta({});
 
       const temperatureNum = Number.isFinite(tempNum) ? tempNum : 0;
       const maxTokensNum = Number(maxTokens);
@@ -366,8 +345,8 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
         const result = await convertPresetTextStream({
           text: rawText,
           fileName: effectiveFileName,
-          apiBaseUrl: apiBaseUrl.trim() || undefined,
-          apiKey: apiKey.trim() || undefined,
+          apiBaseUrl: apiBaseUrlTrimmed,
+          apiKey: apiKeyTrimmed,
           model: model.trim() || undefined,
           temperature: temperatureNum,
           maxTokens: maxTokensValue,
@@ -378,24 +357,6 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
             flushRafRef.current = requestAnimationFrame(() => {
               flushRafRef.current = null;
               setStreamText(streamTextRef.current);
-            });
-          },
-          onDebugEvent: (evt) => {
-            setStreamDebugMeta({
-              status: evt.status,
-              contentType: evt.contentType,
-              bytes: evt.bytesReceived,
-              frames: evt.framesReceived,
-              tokens: evt.tokensReceived,
-              lastAt: evt.at,
-            });
-            setStreamDebugEvents((prev) => {
-              const next = prev.concat({
-                type: evt.type,
-                at: evt.at,
-                message: evt.message || (evt.event ? `event=${evt.event}` : undefined),
-              });
-              return next.length > 120 ? next.slice(next.length - 120) : next;
             });
           },
         });
@@ -413,8 +374,8 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
       const result = await convertPresetText({
         text: rawText,
         fileName: effectiveFileName,
-        apiBaseUrl: apiBaseUrl.trim() || undefined,
-        apiKey: apiKey.trim() || undefined,
+        apiBaseUrl: apiBaseUrlTrimmed,
+        apiKey: apiKeyTrimmed,
         model: model.trim() || undefined,
         temperature: temperatureNum,
         maxTokens: maxTokensValue,
@@ -553,348 +514,187 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
         ['--pi-seg-active-fg' as any]: theme === 'dark' ? 'rgba(226, 232, 240, 0.92)' : '#0f172a',
       }}
     >
-      {!embedded ? (
-        <div className={styles.topbar}>
+
+      <div className={styles.topbar}>
+        <div className={styles.topbarLeft}>
           <div className={styles.title}>预设导入</div>
-          <div className={styles.topbarRight}>
-            <Button size="small" onClick={onClose}>关闭</Button>
+
+          <div className={styles.segment} role="tablist" aria-label="导入来源">
+            <button
+              type="button"
+              className={`${styles.segmentBtn} ${sourceMode === 'upload' ? styles.segmentBtnActive : ''}`}
+              aria-selected={sourceMode === 'upload'}
+              disabled={saving}
+              onClick={() => setSourceMode('upload')}
+            >
+              上传
+            </button>
+            <button
+              type="button"
+              className={`${styles.segmentBtn} ${sourceMode === 'presets' ? styles.segmentBtnActive : ''}`}
+              aria-selected={sourceMode === 'presets'}
+              disabled={saving}
+              onClick={() => {
+                setSourceMode('presets');
+                void state.refreshFiles();
+              }}
+            >
+              预设库
+            </button>
+            <button
+              type="button"
+              className={`${styles.segmentBtn} ${sourceMode === 'text' ? styles.segmentBtnActive : ''}`}
+              aria-selected={sourceMode === 'text'}
+              disabled={saving}
+              onClick={() => setSourceMode('text')}
+            >
+              文本
+            </button>
+          </div>
+
+          <div className={styles.segment} role="tablist" aria-label="预览类型">
+            <button
+              type="button"
+              className={`${styles.segmentBtn} ${activePreview === 'raw' ? styles.segmentBtnActive : ''}`}
+              aria-selected={activePreview === 'raw'}
+              onClick={() => setActivePreview('raw')}
+            >
+              文本
+            </button>
+            <button
+              type="button"
+              className={`${styles.segmentBtn} ${activePreview === 'json' ? styles.segmentBtnActive : ''}`}
+              aria-selected={activePreview === 'json'}
+              disabled={!effectiveFileName || (!isJsonFile && !convertedJson)}
+              onClick={() => setActivePreview('json')}
+            >
+              JSON
+            </button>
+            <button
+              type="button"
+              className={`${styles.segmentBtn} ${activePreview === 'xml' ? styles.segmentBtnActive : ''}`}
+              aria-selected={activePreview === 'xml'}
+              disabled={!effectiveFileName || (!convertedXml)}
+              onClick={() => setActivePreview('xml')}
+            >
+              XML
+            </button>
           </div>
         </div>
-      ) : null}
 
-      <div className={styles.layout}>
-        <div className={styles.sidebar}>
-          <div className={styles.card}>
-            <div className={styles.cardTitle}>来源</div>
-            <div className={styles.sourceTabs}>
-              <Segmented
-                size="small"
-                value={sourceMode}
-                onChange={(val) => {
-                  const v = val as any;
-                  setSourceMode(v);
-                  if (v === 'presets') void state.refreshFiles();
-                }}
-                options={[
-                  { label: '上传', value: 'upload' },
-                  { label: '预设库', value: 'presets' },
-                  { label: '文本', value: 'text' },
-                ]}
-                disabled={saving}
-              />
-            </div>
+        <div className={styles.topbarRight}>
+          <Button
+            size="small"
+            icon={<SettingOutlined />}
+            onClick={() => setAdvancedOpen(true)}
+          >
+            高级设置
+          </Button>
+          {!embedded ? (
+            <Button size="small" icon={<CloseOutlined />} onClick={onClose}>关闭</Button>
+          ) : null}
+        </div>
+      </div>
 
-            {sourceMode === 'upload' ? (
-              <>
-                <Upload.Dragger
-                  multiple={false}
-                  showUploadList={false}
-                  accept=".txt,.md,.json,.yaml,.yml,.toml,.ini,.conf,.prompt,.preset,.text"
-                  disabled={saving}
-                  beforeUpload={(f) => {
-                    void handlePickFile(f as any);
-                    return false;
-                  }}
-                  style={{ borderRadius: 14 }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <InboxOutlined />
-                    <div className={styles.fileDropText}>
-                      <div className={styles.fileDropTitle}>{file ? '已选择文件' : '拖拽文件到这里'}</div>
-                      <div className={styles.fileDropSub}>{file ? '点击替换，或拖拽新文件覆盖' : '或点击这里选择文件'}</div>
+      <div className={styles.workspace}>
+        <div className={styles.panel}>
+          <div className={styles.panelHeader}>
+            <div className={styles.panelTitle}>输入</div>
+          </div>
+
+          <div className={styles.panelBody}>
+            <div className={styles.subbar}>
+              {sourceMode === 'upload' ? (
+                <>
+                  <Upload.Dragger
+                    className={`${styles.uploadDragger} ${styles.uploadDraggerInline}`}
+                    multiple={false}
+                    showUploadList={false}
+                    accept=".txt,.md,.json,.yaml,.yml,.toml,.ini,.conf,.prompt,.preset,.text"
+                    disabled={saving}
+                    beforeUpload={(f) => {
+                      void handlePickFile(f as any);
+                      return false;
+                    }}
+                  >
+                    <div className={styles.uploadInlineContent}>
+                      <InboxOutlined />
+                      <div className={styles.uploadInlineText}>
+                        {file ? `已选择：${file.name}` : '拖拽文件到这里，或点击选择'}
+                      </div>
                     </div>
-                  </div>
-                </Upload.Dragger>
+                  </Upload.Dragger>
 
-                {file ? (
-                  <div className={styles.filePill}>
-                    <div className={styles.filePillName}>{file.name}</div>
-                    <div className={styles.filePillMeta}>{Math.max(1, Math.round(file.size / 1024))} KB</div>
+                  {file ? (
                     <Button
                       size="small"
                       icon={<CloseOutlined />}
                       onClick={() => void handlePickFile(null)}
                       disabled={saving}
-                    />
-                  </div>
-                ) : null}
-              </>
-            ) : null}
+                    >
+                      清除
+                    </Button>
+                  ) : null}
+                </>
+              ) : null}
 
-            {sourceMode === 'presets' ? (
-              <div className={styles.field}>
-                <div className={styles.fieldLabel}>从预设文件夹选择</div>
+              {sourceMode === 'presets' ? (
                 <Select
                   size="small"
+                  className={styles.compactControl}
                   value={selectedPresetPath || undefined}
                   onChange={(v) => void handlePickPreset(v || '')}
                   disabled={saving}
                   allowClear
-                  placeholder="请选择..."
+                  placeholder="从预设库选择..."
                   options={presetOptions.map((o) => ({ label: o.label, value: o.path }))}
                 />
-              </div>
-            ) : null}
+              ) : null}
 
-            {sourceMode !== 'upload' ? (
-              <div className={styles.field}>
-                <div className={styles.fieldLabel}>文件名（用于识别类型）</div>
+              {sourceMode !== 'upload' ? (
                 <Input
                   size="small"
+                  className={styles.compactControl}
                   value={inputFileName}
                   onChange={(e) => setInputFileName(e.target.value)}
-                  placeholder="例如: preset.txt / preset.json"
+                  placeholder="文件名（用于识别类型）例如: preset.txt / preset.json"
                   disabled={saving}
                 />
-              </div>
-            ) : null}
+              ) : null}
+            </div>
 
-            {sourceMode === 'text' ? (
-              <div className={styles.field}>
-                <div className={styles.fieldLabel}>输入/粘贴文本</div>
+            <div className={styles.editorPane}>
+              <div className={styles.editorTextAreaWrap}>
                 <Input.TextArea
                   value={rawText}
                   onChange={(e) => setRawText(e.target.value)}
-                  placeholder="直接粘贴预设文本..."
+                  placeholder={effectiveFileName ? '在这里编辑输入内容…' : '请选择文件/预设，或直接输入文本…'}
                   disabled={saving}
-                  autoSize={{ minRows: 6, maxRows: 14 }}
+                  autoSize={false}
                 />
               </div>
-            ) : null}
-          </div>
-
-          <div className={styles.card}>
-            <div className={styles.cardTitle}>保存</div>
-            <div className={styles.field} style={{ marginTop: 0 }}>
-              <div className={styles.fieldLabel}>保存文件名</div>
-              <Input
-                size="small"
-                value={targetName}
-                onChange={(e) => setTargetName(e.target.value)}
-                placeholder="例如: my_preset.json"
-              />
-            </div>
-
-            <div className={styles.miniHint}>
-              最终保存路径：agent-presets/{effectiveFileName ? (isJsonFile ? inferredTargetName : inferredJsonTargetName) : '-'}
-            </div>
-            <div className={styles.miniHint}>
-              同名自动追加 _时间戳
-            </div>
-          </div>
-
-          <div className={styles.card}>
-            <div className={styles.cardTitle}>转换</div>
-            <div className={styles.switchRow}>
-              <div className={styles.fieldLabel}>流式输出</div>
-              <Switch
-                size="small"
-                checked={streamEnabled}
-                onChange={(checked) => {
-                  storage.setBool('preset_importer.streamEnabledUserOverride', true);
-                  setStreamEnabled(checked);
-                }}
-                disabled={saving}
-              />
-            </div>
-
-            <div className={styles.sidebarActions} style={{ marginTop: 10 }}>
-              <Button
-                size="small"
-                icon={<PlayCircleOutlined />}
-                onClick={() => void handleConvert()}
-                disabled={!effectiveFileName || saving || isJsonFile || !isTextPresetFile}
-                loading={saving && !isJsonFile && !isStreaming}
-              >
-                转换
-              </Button>
-              <Button
-                size="small"
-                icon={<PauseOutlined />}
-                onClick={handleStop}
-                disabled={!isStreaming}
-              >
-                停止
-              </Button>
-            </div>
-          </div>
-
-          <div className={styles.card}>
-            <div className={styles.cardTitle}>输出与调试</div>
-            <div className={styles.liveHeader} style={{ marginTop: 0 }}>
-              <div className={styles.liveTitle}>实时输出</div>
-              <Button size="small" type="text" onClick={() => setLiveOutputOpen((v) => !v)}>
-                {liveOutputOpen ? '收起' : '展开'}
-              </Button>
-            </div>
-
-            {liveOutputOpen ? (
-              <div className={styles.liveBox} ref={liveBoxRef}>
-                <pre className={styles.livePre}><code>
-                  {(() => {
-                    if (!effectiveFileName) return '等待输入...';
-                    if (isJsonFile) return 'JSON 文件不需要转换。你可以直接保存。';
-                    const live = streamText || convertedXml;
-                    if (isStreaming) return (live || '') + '\n';
-                    return live || '点击“转换”后这里会实时显示模型生成内容。';
-                  })()}
-                </code></pre>
-              </div>
-            ) : null}
-
-            <div className={styles.debugHeader}>
-              <div className={styles.debugTitle}>流式状态</div>
-              <Button size="small" type="text" onClick={() => setStreamDebugOpen((v) => !v)}>
-                {streamDebugOpen ? '收起' : '展开'}
-              </Button>
-            </div>
-
-            <div className={styles.debugSummary}>
-              <div>content-type: {streamDebugMeta.contentType || '-'}</div>
-              <div>bytes: {typeof streamDebugMeta.bytes === 'number' ? streamDebugMeta.bytes : '-'}</div>
-              <div>frames: {typeof streamDebugMeta.frames === 'number' ? streamDebugMeta.frames : '-'}</div>
-              <div>tokens: {typeof streamDebugMeta.tokens === 'number' ? streamDebugMeta.tokens : '-'}</div>
-            </div>
-
-            {streamDebugOpen ? (
-              <div className={styles.debugLog} ref={debugLogRef}>
-                {streamDebugEvents.length === 0 ? (
-                  <div className={styles.debugEmpty}>尚无事件（点击“转换”后会显示 open/chunk/token/done）。</div>
-                ) : (
-                  streamDebugEvents.map((e, idx) => (
-                    <div key={`${e.at}-${idx}`} className={styles.debugRow}>
-                      <div className={styles.debugTs}>{new Date(e.at).toLocaleTimeString()}</div>
-                      <div className={styles.debugType}>{e.type}</div>
-                      <div className={styles.debugMsg}>{e.message || ''}</div>
-                    </div>
-                  ))
-                )}
-              </div>
-            ) : null}
-          </div>
-
-          <Collapse
-            activeKey={advancedOpen ? ['advanced'] : []}
-            onChange={(keys) => setAdvancedOpen(Array.isArray(keys) ? keys.includes('advanced') : keys === 'advanced')}
-            items={[{
-              key: 'advanced',
-              label: <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><SettingOutlined />高级设置</span>,
-              children: (
-                <div className={styles.advanced}>
-                  <div className={styles.cardTitle}>转换设置</div>
-
-                  <div className={styles.field} style={{ marginTop: 10 }}>
-                    <div className={styles.fieldLabel}>API Base URL</div>
-                    <Input size="small" value={apiBaseUrl} onChange={(e) => setApiBaseUrl(e.target.value)} placeholder="https://xxx 或 https://xxx/v1" />
-                  </div>
-
-                  <div className={styles.field}>
-                    <div className={styles.fieldLabel}>API Key</div>
-                    <Input.Password size="small" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="可留空（使用 root .env）" />
-                  </div>
-
-                  <div className={styles.field}>
-                    <div className={styles.fieldLabel}>模型</div>
-                    <Input size="small" value={model} onChange={(e) => setModel(e.target.value)} placeholder="可留空（使用 root .env）" />
-                  </div>
-
-                  <div className={styles.fieldRow}>
-                    <div className={styles.field} style={{ marginTop: 0 }}>
-                      <div className={styles.fieldLabel}>温度（number）</div>
-                      <InputNumber
-                        size="small"
-                        style={{ width: '100%' }}
-                        step={0.1}
-                        value={Number.isFinite(Number(temperature)) ? Number(temperature) : 0}
-                        onChange={(v) => setTemperature(String(v ?? ''))}
-                        placeholder="0"
-                      />
-                    </div>
-                    <div className={styles.field} style={{ marginTop: 0 }}>
-                      <div className={styles.fieldLabel}>max_tokens（number）</div>
-                      <InputNumber
-                        size="small"
-                        style={{ width: '100%' }}
-                        step={1}
-                        value={Number.isFinite(Number(maxTokens)) ? Number(maxTokens) : -1}
-                        onChange={(v) => setMaxTokens(String(v ?? ''))}
-                        placeholder="-1"
-                      />
-                    </div>
-                  </div>
-
-                  <div className={styles.miniHint}>
-                    max_tokens 过小会导致内容被截断。
-                  </div>
-                </div>
-              )
-            }]}
-          />
-
-          <div className={styles.card}>
-            <div className={styles.cardTitle}>操作</div>
-            <div className={styles.sidebarActions} style={{ marginTop: 10 }}>
-              <Button
-                size="small"
-                onClick={() => { setFile(null); setRawText(''); setTargetName(''); setConvertedJson(null); setConvertedXml(''); }}
-                disabled={saving}
-              >
-                清空
-              </Button>
-              <Button
-                size="small"
-                type="primary"
-                icon={<SaveOutlined />}
-                onClick={() => void handleImport()}
-                disabled={!effectiveFileName || saving}
-              >
-                保存
-              </Button>
             </div>
           </div>
         </div>
 
-        <div className={styles.main}>
-          <div className={styles.mainHeader}>
-            <div className={styles.mainTitle}>预览</div>
-            <div className={styles.segment}>
-              <Segmented
-                size="small"
-                value={activePreview}
-                onChange={(val) => setActivePreview(val as any)}
-                options={[
-                  { label: 'Raw', value: 'raw' },
-                  { label: 'JSON', value: 'json', disabled: !effectiveFileName || (!isJsonFile && !convertedJson) },
-                  { label: 'XML', value: 'xml', disabled: !effectiveFileName || (!convertedXml) },
-                ]}
-              />
-            </div>
+        <div className={styles.panel}>
+          <div className={styles.panelHeader}>
+            <div className={styles.panelTitle}>输出</div>
           </div>
 
-          <div className={styles.mainBody}>
+          <div className={styles.panelBody}>
             {activePreview === 'raw' ? (
-              <div className={styles.rawSplit}>
-                <div className={styles.pane}>
-                  <div className={styles.paneHeader}>输入</div>
-                  <div className={styles.paneBody}>
-                    <pre className={styles.code}><code>{!effectiveFileName ? '请选择文件/预设，或直接输入文本...' : preparedContent}</code></pre>
-                  </div>
-                </div>
-                <div className={styles.pane}>
-                  <div className={styles.paneHeader}>输出</div>
-                  <div className={styles.paneBody} ref={chatRef}>
-                    <pre className={styles.code}><code>
-                      {(() => {
-                        if (!effectiveFileName) return '等待输入...';
-                        if (isJsonFile) return 'JSON 文件不需要转换。你可以直接保存。';
-                        const live = streamText || convertedXml;
-                        if (saving && streamEnabled) return (live || '') + '\n';
-                        return live || '点击“转换”开始生成（支持流式/非流式）。';
-                      })()}
-                    </code></pre>
-                    {isStreaming ? <div className={styles.cursor} /> : null}
-                  </div>
-                </div>
+              <div className={styles.outputScroll} ref={chatRef}>
+                <pre className={styles.code}><code>
+                  {(() => {
+                    if (!effectiveFileName) return '等待输入...';
+                    if (isJsonFile) return 'JSON 文件不需要转换。你可以直接保存。';
+                    const live = streamText || convertedXml;
+                    if (saving && streamEnabled) return (live || '') + '\n';
+                    return live || '点击“转换”开始生成（支持流式/非流式）。';
+                  })()}
+                </code></pre>
+                {isStreaming ? <div className={styles.cursor} /> : null}
               </div>
             ) : (
               <pre className={styles.preview} ref={previewRef}><code>
@@ -908,6 +708,146 @@ export const PresetImporter: React.FC<PresetImporterProps> = ({ onClose, addToas
           </div>
         </div>
       </div>
+
+      <div className={styles.bottomBar}>
+        <div className={styles.bottomBarLeft}>
+          <div className={styles.bottomField}>
+            <div className={styles.bottomFieldLabel}>保存文件名</div>
+            <Input
+              size="small"
+              value={targetName}
+              onChange={(e) => setTargetName(e.target.value)}
+              placeholder="例如: my_preset.json"
+              disabled={saving || isStreaming}
+            />
+          </div>
+          <div className={styles.bottomHint}>
+            保存到：agent-presets/{effectiveFileName ? (isJsonFile ? inferredTargetName : inferredJsonTargetName) : '-'}
+          </div>
+        </div>
+
+        <div className={styles.bottomBarRight}>
+          <div className={styles.inlineToggle}>
+            <div className={styles.inlineToggleLabel}>流式</div>
+            <Switch
+              size="small"
+              checked={streamEnabled}
+              onChange={(checked) => {
+                storage.setBool('preset_importer.streamEnabledUserOverride', true);
+                setStreamEnabled(checked);
+              }}
+              disabled={saving}
+            />
+          </div>
+
+          <Button
+            size="small"
+            onClick={() => {
+              setFile(null);
+              setSelectedPresetPath('');
+              setRawText('');
+              setTargetName('');
+              setConvertedJson(null);
+              setConvertedXml('');
+              setStreamText('');
+              streamTextRef.current = '';
+              setIsStreaming(false);
+            }}
+            disabled={saving || isStreaming}
+          >
+            清空
+          </Button>
+
+          <Button
+            size="small"
+            icon={<PlayCircleOutlined />}
+            onClick={() => void handleConvert()}
+            disabled={!effectiveFileName || saving || isJsonFile || !isTextPresetFile}
+            loading={saving && !isJsonFile && !isStreaming}
+          >
+            转换
+          </Button>
+          <Button
+            size="small"
+            icon={<PauseOutlined />}
+            onClick={handleStop}
+            disabled={!isStreaming}
+          >
+            停止
+          </Button>
+          <Button
+            size="small"
+            type="primary"
+            icon={<SaveOutlined />}
+            onClick={() => void handleImport()}
+            disabled={!effectiveFileName || saving || isStreaming}
+          >
+            保存
+          </Button>
+        </div>
+      </div>
+
+      <Drawer
+        open={advancedOpen}
+        onClose={() => setAdvancedOpen(false)}
+        title={(
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <SettingOutlined />
+            高级设置
+          </span>
+        )}
+        placement="right"
+        width={440}
+        className={styles.advancedDrawer}
+      >
+        <div className={styles.advanced}>
+          <div className={styles.cardTitle}>转换设置</div>
+
+          <div className={styles.field} style={{ marginTop: 10 }}>
+            <div className={styles.fieldLabel}>API Base URL</div>
+            <Input size="small" value={apiBaseUrl} onChange={(e) => setApiBaseUrl(e.target.value)} placeholder="https://xxx 或 https://xxx/v1" />
+          </div>
+
+          <div className={styles.field}>
+            <div className={styles.fieldLabel}>API Key</div>
+            <Input.Password size="small" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-..." />
+          </div>
+
+          <div className={styles.field}>
+            <div className={styles.fieldLabel}>模型</div>
+            <Input size="small" value={model} onChange={(e) => setModel(e.target.value)} placeholder="留空默认 gpt-4o-mini" />
+          </div>
+
+          <div className={styles.fieldRow}>
+            <div className={styles.field} style={{ marginTop: 0 }}>
+              <div className={styles.fieldLabel}>温度（number）</div>
+              <InputNumber
+                size="small"
+                style={{ width: '100%' }}
+                step={0.1}
+                value={Number.isFinite(Number(temperature)) ? Number(temperature) : 0}
+                onChange={(v) => setTemperature(String(v ?? ''))}
+                placeholder="0"
+              />
+            </div>
+            <div className={styles.field} style={{ marginTop: 0 }}>
+              <div className={styles.fieldLabel}>max_tokens（number）</div>
+              <InputNumber
+                size="small"
+                style={{ width: '100%' }}
+                step={1}
+                value={Number.isFinite(Number(maxTokens)) ? Number(maxTokens) : -1}
+                onChange={(v) => setMaxTokens(String(v ?? ''))}
+                placeholder="-1"
+              />
+            </div>
+          </div>
+
+          <div className={styles.miniHint}>
+            max_tokens 过小会导致内容被截断。
+          </div>
+        </div>
+      </Drawer>
     </div>
   );
 };

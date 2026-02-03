@@ -152,6 +152,11 @@ export const DesktopView = (props: DesktopViewProps) => {
     terminalManagerMinimized,
     setTerminalManagerMinimized,
 
+    qqSandboxOpen,
+    setQqSandboxOpen,
+    qqSandboxMinimized,
+    setQqSandboxMinimized,
+
     utilityFocusRequestId,
     utilityFocusRequestNonce,
     clearUtilityFocusRequest,
@@ -239,7 +244,8 @@ export const DesktopView = (props: DesktopViewProps) => {
     (presetsEditorOpen ? 1 : 0) +
     (presetImporterOpen ? 1 : 0) +
     (fileManagerOpen ? 1 : 0) +
-    (terminalManagerOpen ? 1 : 0);
+    (terminalManagerOpen ? 1 : 0) +
+    (qqSandboxOpen ? 1 : 0);
 
   const lowEndDevice = useMemo(() => {
     try {
@@ -430,6 +436,9 @@ export const DesktopView = (props: DesktopViewProps) => {
     } else if (id === 'terminal-manager') {
       setTerminalManagerOpen(true);
       setTerminalManagerMinimized(false);
+    } else if (id === 'qq-sandbox') {
+      setQqSandboxOpen(true);
+      setQqSandboxMinimized(false);
     }
 
     bringUtilityToFront(id);
@@ -459,6 +468,8 @@ export const DesktopView = (props: DesktopViewProps) => {
     setFileManagerMinimized,
     setTerminalManagerOpen,
     setTerminalManagerMinimized,
+    setQqSandboxOpen,
+    setQqSandboxMinimized,
   ]);
 
   const handleOpenDeepWiki = useCallback(() => {
@@ -527,6 +538,12 @@ export const DesktopView = (props: DesktopViewProps) => {
       ensureUtilityZ('terminal-manager');
     }
   }, [terminalManagerOpen, ensureUtilityZ]);
+
+  useEffect(() => {
+    if (qqSandboxOpen) {
+      ensureUtilityZ('qq-sandbox');
+    }
+  }, [qqSandboxOpen, ensureUtilityZ]);
 
   const renderTopTile = useCallback((key: string, label: string, icon: ReactNode, onClick: (e: React.MouseEvent) => void) => {
     return (
@@ -614,6 +631,27 @@ export const DesktopView = (props: DesktopViewProps) => {
         setTerminalManagerOpen(false);
         setTerminalManagerMinimized(false);
         if (activeUtilityId === 'terminal-manager') {
+          setActiveUtilityId(null);
+        }
+      },
+    });
+  }
+
+  if (qqSandboxOpen) {
+    extraTabs.push({
+      id: 'qq-sandbox',
+      title: 'QQ 沙盒',
+      icon: getIconForType('qq-sandbox', 'module'),
+      isActive: activeUtilityId === 'qq-sandbox',
+      onActivate: () => {
+        setQqSandboxOpen(true);
+        setQqSandboxMinimized(false);
+        bringUtilityToFront('qq-sandbox');
+      },
+      onClose: () => {
+        setQqSandboxOpen(false);
+        setQqSandboxMinimized(false);
+        if (activeUtilityId === 'qq-sandbox') {
           setActiveUtilityId(null);
         }
       },
@@ -1049,6 +1087,11 @@ export const DesktopView = (props: DesktopViewProps) => {
           setTerminalManagerOpen={setTerminalManagerOpen}
           terminalManagerMinimized={terminalManagerMinimized}
           setTerminalManagerMinimized={setTerminalManagerMinimized}
+
+          qqSandboxOpen={qqSandboxOpen}
+          setQqSandboxOpen={setQqSandboxOpen}
+          qqSandboxMinimized={qqSandboxMinimized}
+          setQqSandboxMinimized={setQqSandboxMinimized}
         />
 
         {/* 环境变量编辑窗口 */}

@@ -6,7 +6,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import styles from './TerminalWindow.module.css';
 import { storage } from '../utils/storage';
-import { getTerminalSnapshot, removeTerminalSnapshot, setTerminalSnapshot } from '../utils/terminalSnapshotDb';
+import { appendTerminalSnapshotChunk, getTerminalSnapshot, removeTerminalSnapshot } from '../utils/terminalSnapshotDb';
 import { fontFiles } from 'virtual:sentra-fonts';
 
 const TERMINAL_FONT_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Mono", "Courier New", monospace';
@@ -31,11 +31,15 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
     const snapshotRef = useRef('');
     const snapshotSavedAtRef = useRef(0);
     const lastSavedCursorRef = useRef(0);
+    const persistPendingRef = useRef('');
+    const persistPendingCursorRef = useRef(0);
+    const persistFlushTimerRef = useRef<number | null>(null);
     const [uiFontFamily, setUiFontFamily] = useState(TERMINAL_FONT_FALLBACK);
     const [autoScroll, setAutoScroll] = useState(true);
     const autoScrollRef = useRef(true);
     const userScrolledRef = useRef(false);
     const lastScrollPositionRef = useRef(0);
+
     const disconnectedRef = useRef(false);
 
     const reconnectAttemptRef = useRef(0);
@@ -66,6 +70,12 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
         lastSavedCursorRef.current = 0;
         snapshotRef.current = '';
         snapshotSavedAtRef.current = 0;
+        persistPendingRef.current = '';
+        persistPendingCursorRef.current = 0;
+        if (persistFlushTimerRef.current != null) {
+            window.clearTimeout(persistFlushTimerRef.current);
+            persistFlushTimerRef.current = null;
+        }
 
         stoppedRef.current = false;
         openedRef.current = false;
@@ -101,7 +111,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             theme: theme || fallbackTheme,
             allowProposedApi: true,
             convertEol: false,
-            scrollback: 50000,
+            scrollback: 8000,
         });
 
         const pickSentraTermFontFile = () => {
@@ -152,21 +162,53 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
 
         xtermInstance.current = term;
 
-        const persistState = (force = false) => {
-            const now = Date.now();
-            const cursor = outputCursorRef.current;
-            if (!force) {
-                if (cursor - lastSavedCursorRef.current < 25 && now - snapshotSavedAtRef.current < 800) return;
+        const flushPersist = (force = false) => {
+            const pending = persistPendingRef.current;
+            if (!pending) return;
+            persistPendingRef.current = '';
+
+            if (persistFlushTimerRef.current != null) {
+                window.clearTimeout(persistFlushTimerRef.current);
+                persistFlushTimerRef.current = null;
             }
+
+            const now = Date.now();
+            const cursor = force ? outputCursorRef.current : persistPendingCursorRef.current;
             snapshotSavedAtRef.current = now;
             lastSavedCursorRef.current = cursor;
-            void setTerminalSnapshot({
+            void appendTerminalSnapshotChunk({
                 id: String(processId || ''),
                 kind: 'script',
                 ts: now,
                 cursor,
-                snapshot: String(snapshotRef.current || ''),
+                chunk: pending,
             });
+        };
+
+        const queuePersist = (chunk: string, cursor: number, force = false) => {
+            persistPendingCursorRef.current = cursor;
+
+            if (chunk) {
+                persistPendingRef.current = (persistPendingRef.current || '') + chunk;
+            }
+
+            if (force) {
+                flushPersist(true);
+                return;
+            }
+
+            if (!persistPendingRef.current) return;
+
+            if (persistPendingRef.current.length >= 16_000) {
+                flushPersist(false);
+                return;
+            }
+
+            if (persistFlushTimerRef.current != null) return;
+            persistFlushTimerRef.current = window.setTimeout(() => {
+                persistFlushTimerRef.current = null;
+                flushPersist(false);
+            }, 450);
         };
 
         const safeWrite = (data: string) => {
@@ -493,6 +535,20 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             es.onmessage = (event) => {
                 try {
                     const data = JSON.parse(event.data);
+                    if (data.type === 'init') {
+                        const baseCursor = Number(data?.baseCursor);
+                        const cursor = Number(data?.cursor);
+                        if (Number.isFinite(baseCursor)) {
+                            if (outputCursorRef.current < baseCursor) {
+                                outputCursorRef.current = baseCursor;
+                                lastSavedCursorRef.current = outputCursorRef.current;
+                            }
+                        }
+                        if (Number.isFinite(cursor) && cursor > outputCursorRef.current) {
+                            outputCursorRef.current = cursor;
+                        }
+                        return;
+                    }
                     if (data.type === 'output') {
                         const chunk = String(data.data || '');
                         if (chunk) {
@@ -503,13 +559,18 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
                                 snapshotRef.current = snapshotRef.current.slice(-maxChars);
                             }
                         }
-                        outputCursorRef.current += 1;
-                        persistState(false);
+                        const c = Number(data?.cursor);
+                        if (Number.isFinite(c) && c > 0) {
+                            outputCursorRef.current = c;
+                        } else {
+                            outputCursorRef.current += 1;
+                        }
+                        queuePersist(chunk, outputCursorRef.current, false);
                     } else if (data.type === 'exit') {
                         const exitCode = (data?.code ?? data?.exitCode) as any;
                         safeWrite(`\r\n\x1b[32m✓ Process exited with code ${exitCode ?? 'unknown'}\x1b[0m\r\n`);
                         stoppedRef.current = true;
-                        persistState(true);
+                        flushPersist(true);
                         if (reconnectTimerRef.current) {
                             window.clearTimeout(reconnectTimerRef.current);
                             reconnectTimerRef.current = null;
@@ -577,7 +638,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
                     const snapLocal = storage.getString(snapshotKey, { backend: 'local', fallback: '' });
                     restoredSnapshot = snapSession || snapLocal;
                     restoredTs = legacyTs;
-                    void setTerminalSnapshot({ id: pid, kind: 'script', ts: legacyTs, cursor: restoredCursor, snapshot: restoredSnapshot });
+                    void appendTerminalSnapshotChunk({ id: pid, kind: 'script', ts: legacyTs, cursor: restoredCursor, chunk: restoredSnapshot });
                 }
 
                 if (!legacyFresh && legacyTs > 0) {
@@ -612,7 +673,7 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             disposed = true;
             stoppedRef.current = true;
             openedRef.current = false;
-            persistState(true);
+            flushPersist(true);
 
             if (openRaf != null) {
                 cancelAnimationFrame(openRaf);
@@ -621,6 +682,10 @@ export const TerminalWindow: React.FC<TerminalWindowProps> = ({ processId, theme
             if (inputFlushTimerRef.current != null) {
                 window.clearTimeout(inputFlushTimerRef.current);
                 inputFlushTimerRef.current = null;
+            }
+            if (persistFlushTimerRef.current != null) {
+                window.clearTimeout(persistFlushTimerRef.current);
+                persistFlushTimerRef.current = null;
             }
 
             if (reconnectTimerRef.current) {

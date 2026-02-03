@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { join, resolve, relative, dirname, isAbsolute } from 'path';
-import { existsSync, statSync, readdirSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync, rmSync } from 'fs';
+import { existsSync, statSync, readdirSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync, rmSync, createReadStream } from 'fs';
+import { getRuntimeConfig } from '../utils/runtimeConfig.ts';
 
 // Helper to get root directory
 function getRootDir(): string {
@@ -23,6 +24,106 @@ function getAbsolutePath(targetPath: string): string {
     return resolve(getRootDir(), targetPath);
 }
 
+function parseDotEnv(content: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    const lines = String(content || '').split(/\r?\n/);
+    for (const raw of lines) {
+        const line = String(raw || '').trim();
+        if (!line || line.startsWith('#')) continue;
+        const idx = line.indexOf('=');
+        if (idx <= 0) continue;
+        const k = line.slice(0, idx).trim();
+        let v = line.slice(idx + 1).trim();
+        if (!k) continue;
+        if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+            v = v.slice(1, -1);
+        }
+        out[k] = v;
+    }
+    return out;
+}
+
+function getNapcatEnvParsed(): { envPath?: string; vars: Record<string, string> } {
+    const root = getRootDir();
+    const override = String(process.env.NAPCAT_ENV_PATH || '').trim();
+    const candidates = [
+        override,
+        join(root, 'sentra-adapter', 'napcat', '.env'),
+        join(root, 'sentra-adapter', 'napcat', '.env.example'),
+    ].filter(Boolean);
+
+    for (const p of candidates) {
+        try {
+            const full = resolve(p);
+            if (!existsSync(full)) continue;
+            const content = readFileSync(full, 'utf-8');
+            return { envPath: full, vars: parseDotEnv(content) };
+        } catch {
+        }
+    }
+    return { vars: {} };
+}
+
+function normalizeAbs(p: string): string {
+    try {
+        return resolve(p);
+    } catch {
+        return p;
+    }
+}
+
+function normalizeAbsCompare(p: string): string {
+    const abs = normalizeAbs(p);
+    const norm = abs.replace(/\//g, '\\');
+    if (process.platform === 'win32') return norm.toLowerCase();
+    return norm;
+}
+
+function isAllowedAbsolutePath(absPath: string): boolean {
+    const absRaw = normalizeAbs(absPath);
+    const abs = normalizeAbsCompare(absRaw);
+    const root = getRootDir();
+    const allow: string[] = [];
+
+    // Always allow Sentra-root relative by default (handled elsewhere)
+
+    // Allow napcat cache dirs (env-driven)
+    try {
+        const { vars } = getNapcatEnvParsed();
+        const imgDir = String(vars.IMAGE_CACHE_DIR || '').trim();
+        const fileDir = String(vars.FILE_CACHE_DIR || '').trim();
+        if (imgDir) allow.push(normalizeAbs(imgDir));
+        if (fileDir) allow.push(normalizeAbs(fileDir));
+    } catch {
+    }
+
+    // Allow default napcat cache under repo
+    allow.push(normalizeAbs(join(root, 'sentra-adapter', 'napcat', 'cache')));
+    allow.push(normalizeAbs(join(root, 'sentra-adapter', 'napcat', 'cache', 'images')));
+    allow.push(normalizeAbs(join(root, 'sentra-adapter', 'napcat', 'cache', 'file')));
+
+    // Extra allowlist via env (comma-separated)
+    // Backward compatibility: also accept semicolon-separated.
+    try {
+        const parts = getRuntimeConfig().filesRawAllowDirs;
+        for (const item of parts) {
+            allow.push(normalizeAbs(item));
+        }
+    } catch {
+    }
+
+    for (const dir of allow) {
+        if (!dir) continue;
+        const d = normalizeAbsCompare(dir);
+        if (abs === d) return true;
+        const d1 = d.endsWith('\\') ? d : (d + '\\');
+        if (abs.startsWith(d1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 const IGNORED_DIRS = ['node_modules', '.git', '.cache', 'dist', 'build', 'coverage', '.idea', '.vscode'];
 const IGNORED_FILES = ['.DS_Store', 'Thumbs.db'];
 
@@ -32,8 +133,21 @@ type CacheEntry<T> = {
     payload: T;
 };
 
-const TREE_CACHE_TTL_MS = clampInt(process.env.FILE_TREE_CACHE_TTL_MS, 0, 60_000, 6_000);
-const SEARCH_CACHE_TTL_MS = clampInt(process.env.FILE_SEARCH_CACHE_TTL_MS, 0, 60_000, 4_000);
+function getTreeCacheTtlMs(): number {
+    try {
+        return getRuntimeConfig().fileTreeCacheTtlMs;
+    } catch {
+        return clampInt(process.env.FILE_TREE_CACHE_TTL_MS, 0, 60_000, 6_000);
+    }
+}
+
+function getSearchCacheTtlMs(): number {
+    try {
+        return getRuntimeConfig().fileSearchCacheTtlMs;
+    } catch {
+        return clampInt(process.env.FILE_SEARCH_CACHE_TTL_MS, 0, 60_000, 4_000);
+    }
+}
 
 const treeCache = new Map<string, CacheEntry<any>>();
 const treeInflight = new Map<string, Promise<{ payload: any; etag: string }>>();
@@ -71,6 +185,80 @@ function clampInt(n: any, min: number, max: number, fallback: number) {
 }
 
 export async function fileRoutes(fastify: FastifyInstance) {
+    fastify.get<{
+        Querystring: { path: string; download?: string };
+    }>('/api/files/raw', async (request, reply) => {
+        try {
+            const path = String(request.query.path || '');
+            if (!path) return reply.code(400).send({ error: 'Missing path' });
+
+            const allowAny = (() => {
+                try {
+                    return !!getRuntimeConfig().filesRawAllowAny;
+                } catch {
+                    const v = String(process.env.FILES_RAW_ALLOW_ANY || '').trim().toLowerCase();
+                    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+                }
+            })();
+
+            const isAbs = isAbsolute(path) || /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('\\\\');
+            const fullPath = isAbs ? normalizeAbs(path) : getAbsolutePath(path);
+
+            if (!allowAny) {
+                if (isAbs) {
+                    if (!isAllowedAbsolutePath(fullPath)) {
+                        return reply.code(403).send({ error: 'Access denied' });
+                    }
+                } else {
+                    if (!isSafePath(path)) {
+                        return reply.code(403).send({ error: 'Access denied' });
+                    }
+                }
+            }
+
+            if (!existsSync(fullPath)) {
+                return reply.code(404).send({ error: 'File not found' });
+            }
+
+            const stat = statSync(fullPath);
+            if (stat.isDirectory()) {
+                return reply.code(400).send({ error: 'Cannot stream directory' });
+            }
+
+            const name = fullPath.split(/[/\\]/).pop() || 'file';
+            const ext = name.toLowerCase().split('.').pop() || '';
+            const type = (() => {
+                if (/(jpg|jpeg)$/i.test(ext)) return 'image/jpeg';
+                if (/png$/i.test(ext)) return 'image/png';
+                if (/gif$/i.test(ext)) return 'image/gif';
+                if (/webp$/i.test(ext)) return 'image/webp';
+                if (/svg$/i.test(ext)) return 'image/svg+xml';
+                if (/mp4$/i.test(ext)) return 'video/mp4';
+                if (/mov$/i.test(ext)) return 'video/quicktime';
+                if (/mkv$/i.test(ext)) return 'video/x-matroska';
+                if (/mp3$/i.test(ext)) return 'audio/mpeg';
+                if (/wav$/i.test(ext)) return 'audio/wav';
+                if (/ogg$/i.test(ext)) return 'audio/ogg';
+                if (/amr$/i.test(ext)) return 'audio/amr';
+                return 'application/octet-stream';
+            })();
+
+            reply.header('Cache-Control', 'private, max-age=0, must-revalidate');
+            reply.type(type);
+            if (String(request.query.download || '') === '1') {
+                reply.header('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"`);
+            }
+
+            const stream = createReadStream(fullPath);
+            return reply.send(stream);
+        } catch (error) {
+            reply.code(500).send({
+                error: 'Failed to stream file',
+                message: error instanceof Error ? error.message : String(error),
+            });
+        }
+    });
+
     // Get file tree
     fastify.get<{
         Querystring: { path?: string };
@@ -96,6 +284,8 @@ export async function fileRoutes(fastify: FastifyInstance) {
             const cacheKey = `tree:${relPath}`;
             const ifNoneMatch = String(request.headers['if-none-match'] || '');
             const now = Date.now();
+
+            const TREE_CACHE_TTL_MS = getTreeCacheTtlMs();
 
             if (TREE_CACHE_TTL_MS > 0) {
                 const cached = treeCache.get(cacheKey);
@@ -270,6 +460,8 @@ export async function fileRoutes(fastify: FastifyInstance) {
             const ifNoneMatch = String(request.headers['if-none-match'] || '');
             const now = Date.now();
 
+            const SEARCH_CACHE_TTL_MS = getSearchCacheTtlMs();
+
             if (SEARCH_CACHE_TTL_MS > 0) {
                 const cached = grepCache.get(cacheKey);
                 if (cached && cached.expiresAt > now) {
@@ -413,6 +605,8 @@ export async function fileRoutes(fastify: FastifyInstance) {
             const cacheKey = `symbols:${relPath}|${maxResults}|${needle}`;
             const ifNoneMatch = String(request.headers['if-none-match'] || '');
             const now = Date.now();
+
+            const SEARCH_CACHE_TTL_MS = getSearchCacheTtlMs();
 
             if (SEARCH_CACHE_TTL_MS > 0) {
                 const cached = symbolsCache.get(cacheKey);

@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { IoCheckmarkCircle, IoAlertCircle, IoInformationCircle } from 'react-icons/io5';
 import { Tooltip } from 'antd';
@@ -19,7 +20,8 @@ interface ToastContainerProps {
 }
 
 export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, removeToast }) => {
-  return (
+  const body = typeof document !== 'undefined' ? document.body : null;
+  const content = (
     <div className={styles.container}>
       <AnimatePresence>
         {toasts.map(toast => (
@@ -28,6 +30,7 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, removeTo
       </AnimatePresence>
     </div>
   );
+  return body ? createPortal(content, body) : content;
 };
 
 function safeJsonParse(text: string) {

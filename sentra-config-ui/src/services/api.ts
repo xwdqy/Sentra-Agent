@@ -3,6 +3,206 @@ import { storage } from '../utils/storage';
 
 const API_BASE = '/api';
 
+type StreamDebugEvent = {
+  type: 'open' | 'chunk' | 'frame' | 'token' | 'done' | 'error';
+  at: number;
+  status?: number;
+  contentType?: string;
+  bytesReceived?: number;
+  framesReceived?: number;
+  tokensReceived?: number;
+  event?: string;
+  dataType?: string;
+  message?: string;
+};
+
+async function consumeJsonSseStream<TDone>(params: {
+  response: Response;
+  onToken?: (delta: string) => void;
+  onDebugEvent?: (evt: StreamDebugEvent) => void;
+  mapJson: (data: any) => TDone;
+  mapDone: (data: any) => TDone;
+}): Promise<TDone> {
+  const contentType = params.response.headers.get('content-type') || '';
+
+  if (!/text\/event-stream/i.test(contentType)) {
+    const data: any = await params.response.json();
+    return params.mapJson(data);
+  }
+
+  if (!params.response.body) {
+    if (params.onDebugEvent) {
+      params.onDebugEvent({
+        type: 'error',
+        at: Date.now(),
+        status: params.response.status,
+        contentType,
+        message: 'Missing response body (stream)',
+      });
+    }
+    throw new Error('Missing response body (stream)');
+  }
+
+  if (params.onDebugEvent) {
+    params.onDebugEvent({
+      type: 'open',
+      at: Date.now(),
+      status: params.response.status,
+      contentType,
+      bytesReceived: 0,
+      framesReceived: 0,
+      tokensReceived: 0,
+    });
+  }
+
+  const reader = params.response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let bytesReceived = 0;
+  let framesReceived = 0;
+  let tokensReceived = 0;
+
+  const findFrameBoundary = (s: string) => {
+    const n1 = s.indexOf('\n\n');
+    const n2 = s.indexOf('\r\n\r\n');
+    if (n1 < 0 && n2 < 0) return { idx: -1, len: 0 };
+    if (n1 < 0) return { idx: n2, len: 4 };
+    if (n2 < 0) return { idx: n1, len: 2 };
+    return n1 < n2 ? { idx: n1, len: 2 } : { idx: n2, len: 4 };
+  };
+
+  const tryParseSseFrame = (frame: string) => {
+    const lines = frame.split(/\r?\n/);
+    let event: string | undefined;
+    const dataLines: string[] = [];
+    for (const l of lines) {
+      if (l.startsWith('event:')) event = l.slice(6).trim();
+      if (l.startsWith('data:')) dataLines.push(l.slice(5).trim());
+    }
+    if (dataLines.length === 0) return null;
+    const dataStr = dataLines.join('\n');
+    if (!dataStr) return null;
+    let data: any;
+    try {
+      data = JSON.parse(dataStr);
+    } catch {
+      return null;
+    }
+    return { event, data };
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    bytesReceived += value?.byteLength || 0;
+    if (params.onDebugEvent) {
+      params.onDebugEvent({
+        type: 'chunk',
+        at: Date.now(),
+        status: params.response.status,
+        contentType,
+        bytesReceived,
+        framesReceived,
+        tokensReceived,
+      });
+    }
+    buffer += decoder.decode(value, { stream: true });
+
+    while (true) {
+      const { idx, len } = findFrameBoundary(buffer);
+      if (idx < 0) break;
+      const frame = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + len);
+
+      const parsed = tryParseSseFrame(frame);
+      if (!parsed) continue;
+      const { event, data } = parsed;
+
+      framesReceived += 1;
+      if (params.onDebugEvent) {
+        params.onDebugEvent({
+          type: 'frame',
+          at: Date.now(),
+          status: params.response.status,
+          contentType,
+          bytesReceived,
+          framesReceived,
+          tokensReceived,
+          event,
+          dataType: typeof data?.type === 'string' ? data.type : undefined,
+        });
+      }
+
+      if (data?.type === 'token') {
+        const delta = String(data.delta || '');
+        tokensReceived += 1;
+        if (delta && params.onToken) params.onToken(delta);
+        if (params.onDebugEvent) {
+          params.onDebugEvent({
+            type: 'token',
+            at: Date.now(),
+            status: params.response.status,
+            contentType,
+            bytesReceived,
+            framesReceived,
+            tokensReceived,
+          });
+        }
+      }
+
+      if (event === 'error' || data?.type === 'error') {
+        if (params.onDebugEvent) {
+          params.onDebugEvent({
+            type: 'error',
+            at: Date.now(),
+            status: params.response.status,
+            contentType,
+            bytesReceived,
+            framesReceived,
+            tokensReceived,
+            event,
+            dataType: typeof data?.type === 'string' ? data.type : undefined,
+            message: String(data?.message || 'Stream error'),
+          });
+        }
+        throw new Error(String(data?.message || 'Stream error'));
+      }
+
+      if (event === 'done' || data?.type === 'done') {
+        if (params.onDebugEvent) {
+          params.onDebugEvent({
+            type: 'done',
+            at: Date.now(),
+            status: params.response.status,
+            contentType,
+            bytesReceived,
+            framesReceived,
+            tokensReceived,
+            event,
+            dataType: typeof data?.type === 'string' ? data.type : undefined,
+          });
+        }
+        return params.mapDone(data);
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const parsed = tryParseSseFrame(buffer);
+    if (parsed) {
+      const { event, data } = parsed;
+      if (event === 'error' || data?.type === 'error') {
+        throw new Error(String(data?.message || 'Stream error'));
+      }
+      if (event === 'done' || data?.type === 'done') {
+        return params.mapDone(data);
+      }
+    }
+  }
+
+  throw new Error('Stream ended without done');
+}
+
 export function getAuthHeaders(options?: { json?: boolean }) {
   const token = storage.getString('sentra_auth_token', { backend: 'session', fallback: '' })
     || storage.getString('sentra_auth_token', { fallback: '' });
@@ -59,18 +259,7 @@ export async function generateWorldbookStream(params: {
   maxTokens?: number;
   signal?: AbortSignal;
   onToken?: (delta: string) => void;
-  onDebugEvent?: (evt: {
-    type: 'open' | 'chunk' | 'frame' | 'token' | 'done' | 'error';
-    at: number;
-    status?: number;
-    contentType?: string;
-    bytesReceived?: number;
-    framesReceived?: number;
-    tokensReceived?: number;
-    event?: string;
-    dataType?: string;
-    message?: string;
-  }) => void;
+  onDebugEvent?: (evt: StreamDebugEvent) => void;
 }): Promise<{ worldbookXml: string; worldbookJson: any }> {
   const body: any = {
     text: params.text,
@@ -103,155 +292,19 @@ export async function generateWorldbookStream(params: {
     throw new Error(text || 'Failed to generate worldbook (stream)');
   }
 
-  if (!response.body) {
-    if (params.onDebugEvent) {
-      params.onDebugEvent({
-        type: 'error',
-        at: Date.now(),
-        status: response.status,
-        contentType: response.headers.get('content-type') || undefined,
-        message: 'Missing response body (stream)',
-      });
-    }
-    throw new Error('Missing response body (stream)');
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (params.onDebugEvent) {
-    params.onDebugEvent({
-      type: 'open',
-      at: Date.now(),
-      status: response.status,
-      contentType,
-      bytesReceived: 0,
-      framesReceived: 0,
-      tokensReceived: 0,
-    });
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let bytesReceived = 0;
-  let framesReceived = 0;
-  let tokensReceived = 0;
-
-  const tryParseSseFrame = (frame: string) => {
-    const lines = frame.split(/\r?\n/);
-    let event: string | undefined;
-    const dataLines: string[] = [];
-    for (const l of lines) {
-      if (l.startsWith('event:')) event = l.slice(6).trim();
-      if (l.startsWith('data:')) dataLines.push(l.slice(5).trim());
-    }
-    if (dataLines.length === 0) return null;
-    const dataStr = dataLines.join('\n');
-    if (!dataStr) return null;
-    let data: any;
-    try {
-      data = JSON.parse(dataStr);
-    } catch {
-      return null;
-    }
-    return { event, data };
-  };
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    bytesReceived += value?.byteLength || 0;
-    if (params.onDebugEvent) {
-      params.onDebugEvent({
-        type: 'chunk',
-        at: Date.now(),
-        status: response.status,
-        contentType,
-        bytesReceived,
-        framesReceived,
-        tokensReceived,
-      });
-    }
-    buffer += decoder.decode(value, { stream: true });
-
-    let idx;
-    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-
-      const parsed = tryParseSseFrame(frame);
-      if (!parsed) continue;
-      const { event, data } = parsed;
-
-      framesReceived += 1;
-      if (params.onDebugEvent) {
-        params.onDebugEvent({
-          type: 'frame',
-          at: Date.now(),
-          status: response.status,
-          contentType,
-          bytesReceived,
-          framesReceived,
-          tokensReceived,
-          event,
-          dataType: typeof data?.type === 'string' ? data.type : undefined,
-        });
-      }
-
-      if (data?.type === 'token') {
-        const delta = String(data.delta || '');
-        tokensReceived += 1;
-        if (delta && params.onToken) params.onToken(delta);
-        if (params.onDebugEvent) {
-          params.onDebugEvent({
-            type: 'token',
-            at: Date.now(),
-            status: response.status,
-            contentType,
-            bytesReceived,
-            framesReceived,
-            tokensReceived,
-          });
-        }
-      }
-
-      if (event === 'error' || data?.type === 'error') {
-        if (params.onDebugEvent) {
-          params.onDebugEvent({
-            type: 'error',
-            at: Date.now(),
-            status: response.status,
-            contentType,
-            bytesReceived,
-            framesReceived,
-            tokensReceived,
-            event,
-            dataType: typeof data?.type === 'string' ? data.type : undefined,
-            message: String(data?.message || 'Stream error'),
-          });
-        }
-        throw new Error(String(data?.message || 'Stream error'));
-      }
-
-      if (event === 'done' || data?.type === 'done') {
-        if (params.onDebugEvent) {
-          params.onDebugEvent({
-            type: 'done',
-            at: Date.now(),
-            status: response.status,
-            contentType,
-            bytesReceived,
-            framesReceived,
-            tokensReceived,
-            event,
-            dataType: typeof data?.type === 'string' ? data.type : undefined,
-          });
-        }
-        return { worldbookXml: data.worldbookXml || '', worldbookJson: data.worldbookJson };
-      }
-    }
-  }
-
-  throw new Error('Stream ended without done');
+  return consumeJsonSseStream({
+    response,
+    onToken: params.onToken,
+    onDebugEvent: params.onDebugEvent,
+    mapJson: (data: any) => ({
+      worldbookXml: data?.worldbookXml || '',
+      worldbookJson: data?.worldbookJson,
+    }),
+    mapDone: (data: any) => ({
+      worldbookXml: data?.worldbookXml || '',
+      worldbookJson: data?.worldbookJson,
+    }),
+  });
 }
 
 export async function verifyToken(token: string): Promise<boolean> {
@@ -311,18 +364,7 @@ export async function convertPresetTextStream(params: {
   maxTokens?: number;
   signal?: AbortSignal;
   onToken?: (delta: string) => void;
-  onDebugEvent?: (evt: {
-    type: 'open' | 'chunk' | 'frame' | 'token' | 'done' | 'error';
-    at: number;
-    status?: number;
-    contentType?: string;
-    bytesReceived?: number;
-    framesReceived?: number;
-    tokensReceived?: number;
-    event?: string;
-    dataType?: string;
-    message?: string;
-  }) => void;
+  onDebugEvent?: (evt: StreamDebugEvent) => void;
 }): Promise<{ presetXml: string; presetJson: any }> {
   const body: any = {
     text: params.text,
@@ -356,155 +398,19 @@ export async function convertPresetTextStream(params: {
     throw new Error(text || 'Failed to convert preset (stream)');
   }
 
-  if (!response.body) {
-    if (params.onDebugEvent) {
-      params.onDebugEvent({
-        type: 'error',
-        at: Date.now(),
-        status: response.status,
-        contentType: response.headers.get('content-type') || undefined,
-        message: 'Missing response body (stream)',
-      });
-    }
-    throw new Error('Missing response body (stream)');
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (params.onDebugEvent) {
-    params.onDebugEvent({
-      type: 'open',
-      at: Date.now(),
-      status: response.status,
-      contentType,
-      bytesReceived: 0,
-      framesReceived: 0,
-      tokensReceived: 0,
-    });
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let bytesReceived = 0;
-  let framesReceived = 0;
-  let tokensReceived = 0;
-
-  const tryParseSseFrame = (frame: string) => {
-    const lines = frame.split(/\r?\n/);
-    let event: string | undefined;
-    const dataLines: string[] = [];
-    for (const l of lines) {
-      if (l.startsWith('event:')) event = l.slice(6).trim();
-      if (l.startsWith('data:')) dataLines.push(l.slice(5).trim());
-    }
-    if (dataLines.length === 0) return null;
-    const dataStr = dataLines.join('\n');
-    if (!dataStr) return null;
-    let data: any;
-    try {
-      data = JSON.parse(dataStr);
-    } catch {
-      return null;
-    }
-    return { event, data };
-  };
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    bytesReceived += value?.byteLength || 0;
-    if (params.onDebugEvent) {
-      params.onDebugEvent({
-        type: 'chunk',
-        at: Date.now(),
-        status: response.status,
-        contentType,
-        bytesReceived,
-        framesReceived,
-        tokensReceived,
-      });
-    }
-    buffer += decoder.decode(value, { stream: true });
-
-    let idx;
-    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-
-      const parsed = tryParseSseFrame(frame);
-      if (!parsed) continue;
-      const { event, data } = parsed;
-
-      framesReceived += 1;
-      if (params.onDebugEvent) {
-        params.onDebugEvent({
-          type: 'frame',
-          at: Date.now(),
-          status: response.status,
-          contentType,
-          bytesReceived,
-          framesReceived,
-          tokensReceived,
-          event,
-          dataType: typeof data?.type === 'string' ? data.type : undefined,
-        });
-      }
-
-      if (data?.type === 'token') {
-        const delta = String(data.delta || '');
-        tokensReceived += 1;
-        if (delta && params.onToken) params.onToken(delta);
-        if (params.onDebugEvent) {
-          params.onDebugEvent({
-            type: 'token',
-            at: Date.now(),
-            status: response.status,
-            contentType,
-            bytesReceived,
-            framesReceived,
-            tokensReceived,
-          });
-        }
-      }
-
-      if (event === 'error' || data?.type === 'error') {
-        if (params.onDebugEvent) {
-          params.onDebugEvent({
-            type: 'error',
-            at: Date.now(),
-            status: response.status,
-            contentType,
-            bytesReceived,
-            framesReceived,
-            tokensReceived,
-            event,
-            dataType: typeof data?.type === 'string' ? data.type : undefined,
-            message: String(data?.message || 'Stream error'),
-          });
-        }
-        throw new Error(String(data?.message || 'Stream error'));
-      }
-
-      if (event === 'done' || data?.type === 'done') {
-        if (params.onDebugEvent) {
-          params.onDebugEvent({
-            type: 'done',
-            at: Date.now(),
-            status: response.status,
-            contentType,
-            bytesReceived,
-            framesReceived,
-            tokensReceived,
-            event,
-            dataType: typeof data?.type === 'string' ? data.type : undefined,
-          });
-        }
-        return { presetXml: data.presetXml || '', presetJson: data.presetJson };
-      }
-    }
-  }
-
-  throw new Error('Stream ended without done');
+  return consumeJsonSseStream({
+    response,
+    onToken: params.onToken,
+    onDebugEvent: params.onDebugEvent,
+    mapJson: (data: any) => ({
+      presetXml: data?.presetXml || '',
+      presetJson: data?.presetJson,
+    }),
+    mapDone: (data: any) => ({
+      presetXml: data?.presetXml || '',
+      presetJson: data?.presetJson,
+    }),
+  });
 }
 
 export async function saveModuleConfig(

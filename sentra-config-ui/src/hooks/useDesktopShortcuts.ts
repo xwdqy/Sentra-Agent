@@ -103,11 +103,20 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     handleRunBootstrap,
     handleRunStart,
     handleRunNapcatBuild,
-    handleRunNapcatStart,
+    handleRunNapcatStartSilent,
     handleRunUpdate,
     handleRunForceUpdate,
     handleRunSentiment,
   } = useTerminals({ addToast, allocateZ });
+
+  const handleOpenQqSandbox = useCallback(() => {
+    requestUtilityFocus('qq-sandbox');
+  }, [requestUtilityFocus]);
+
+  const handleRunNapcatStartForSandbox = useCallback(() => {
+    void handleRunNapcatStartSilent();
+    handleOpenQqSandbox();
+  }, [handleOpenQqSandbox, handleRunNapcatStartSilent]);
 
   const [pendingUpdate, setPendingUpdate] = useState<'update' | 'force' | null>(null);
 
@@ -149,7 +158,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       handleRunBootstrap,
       handleRunStart,
       handleRunNapcatBuild,
-      handleRunNapcatStart,
+      handleRunNapcatStartForSandbox,
       requestUpdateConfirm,
       requestForceUpdateConfirm,
       handleRunSentiment,
@@ -176,7 +185,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
     handleRunBootstrap,
     handleRunForceUpdate,
     handleRunNapcatBuild,
-    handleRunNapcatStart,
+    handleRunNapcatStartForSandbox,
     handleRunSentiment,
     handleRunStart,
     requestUpdateConfirm,
@@ -190,7 +199,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
       handleRunBootstrap,
       handleRunStart,
       handleRunNapcatBuild,
-      handleRunNapcatStart,
+      handleRunNapcatStartForSandbox,
       requestUpdateConfirm,
       requestForceUpdateConfirm,
       handleRunSentiment,
@@ -198,7 +207,7 @@ export function useDesktopShortcuts(params: UseDesktopShortcutsParams) {
   }, [
     handleRunBootstrap,
     handleRunNapcatBuild,
-    handleRunNapcatStart,
+    handleRunNapcatStartForSandbox,
     handleRunSentiment,
     handleRunStart,
     requestForceUpdateConfirm,

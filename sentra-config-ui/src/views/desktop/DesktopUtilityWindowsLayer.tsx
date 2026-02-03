@@ -17,6 +17,7 @@ const McpServersManager = lazy(() => import('../../components/McpServersManager/
 const DevCenterV2 = lazy(() => import('../../components/DevCenterV2').then(module => ({ default: module.DevCenterV2 })));
 const RedisAdminManager = lazy(() => import('../../components/RedisAdminManager/RedisAdminManager').then(module => ({ default: module.RedisAdminManager })));
 const TerminalManager = lazy(() => import('../../components/TerminalManager/TerminalManager').then(module => ({ default: module.default })));
+const QqSandbox = lazy(() => import('../../components/QqSandbox/QqSandbox').then(module => ({ default: module.QqSandbox })));
 
 const LazyWindowFallback = memo((props: { title: string }) => {
   return (
@@ -115,6 +116,11 @@ type DesktopUtilityWindowsLayerProps = {
   setTerminalManagerOpen: (v: boolean) => void;
   terminalManagerMinimized: boolean;
   setTerminalManagerMinimized: (v: boolean) => void;
+
+  qqSandboxOpen: boolean;
+  setQqSandboxOpen: (v: boolean) => void;
+  qqSandboxMinimized: boolean;
+  setQqSandboxMinimized: (v: boolean) => void;
 };
 
 export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProps) {
@@ -172,6 +178,11 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
     setTerminalManagerOpen,
     terminalManagerMinimized,
     setTerminalManagerMinimized,
+
+    qqSandboxOpen,
+    setQqSandboxOpen,
+    qqSandboxMinimized,
+    setQqSandboxMinimized,
   } = props;
 
   const LAYOUT_KEY = 'sentra_utility_window_layouts_v1';
@@ -708,6 +719,41 @@ export function DesktopUtilityWindowsLayer(props: DesktopUtilityWindowsLayerProp
         >
           <Suspense fallback={<LazyWindowFallback title="加载 终端执行器" />}>
             <TerminalManager addToast={addToast as any} />
+          </Suspense>
+        </MacWindow>
+      )}
+
+      {qqSandboxOpen && (
+        <MacWindow
+          id="qq-sandbox"
+          title="QQ 沙盒"
+          icon={getIconForType('qq-sandbox', 'module')}
+          initialPos={getInitialPos('qq-sandbox')}
+          safeArea={desktopSafeArea}
+          zIndex={utilityZMap['qq-sandbox'] ?? 2011}
+          isActive={activeUtilityId === 'qq-sandbox'}
+          isMinimized={qqSandboxMinimized}
+          performanceMode={performanceMode}
+          initialSize={getInitialSize('qq-sandbox', { width: 1120, height: 760 })}
+          initialMaximized={getInitialMaximized('qq-sandbox')}
+          onClose={() => {
+            handleWindowMaximize('qq-sandbox', false);
+            updateLayout('qq-sandbox', { maximized: false });
+            setQqSandboxOpen(false);
+            setQqSandboxMinimized(false);
+          }}
+          onMinimize={() => {
+            handleWindowMaximize('qq-sandbox', false);
+            setQqSandboxMinimized(true);
+            setActiveUtilityId(null);
+          }}
+          onMaximize={handleMaximizePersist('qq-sandbox')}
+          onFocus={() => { bringUtilityToFront('qq-sandbox'); }}
+          onMove={handleMove('qq-sandbox')}
+          onResize={handleResize('qq-sandbox')}
+        >
+          <Suspense fallback={<LazyWindowFallback title="加载 QQ 沙盒" />}>
+            <QqSandbox />
           </Suspense>
         </MacWindow>
       )}

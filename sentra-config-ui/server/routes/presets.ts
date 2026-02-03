@@ -1,7 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { join, resolve, basename, relative } from 'path';
 import { existsSync, statSync, readdirSync, readFileSync, writeFileSync } from 'fs';
-import dotenv from 'dotenv';
 import { TextDecoder } from 'util';
 import { XMLParser } from 'fast-xml-parser';
 
@@ -13,23 +12,6 @@ function getRootDir(): string {
 // Helper to get presets directory
 function getPresetsDir(): string {
     return join(getRootDir(), 'agent-presets');
-}
-
-let cachedRootEnv: Record<string, string> | null = null;
-function getRootEnvValue(key: string): string {
-    try {
-        if (!cachedRootEnv) {
-            const envPath = join(getRootDir(), '.env');
-            if (existsSync(envPath)) {
-                cachedRootEnv = dotenv.parse(readFileSync(envPath));
-            } else {
-                cachedRootEnv = {};
-            }
-        }
-        return (cachedRootEnv && typeof cachedRootEnv[key] === 'string') ? String(cachedRootEnv[key] || '') : '';
-    } catch {
-        return '';
-    }
 }
 
 function extractFirstTagBlock(text: string, tagName: string): string {
@@ -537,40 +519,28 @@ export async function presetRoutes(fastify: FastifyInstance) {
                 return reply.code(500).send({ error: 'Invalid preset_converter prompt', message: 'Missing system prompt' });
             }
 
-            const apiBaseUrl = (typeof body.apiBaseUrl === 'string' ? body.apiBaseUrl : '')
-                || getRootEnvValue('API_BASE_URL')
-                || process.env.API_BASE_URL
-                || '';
-            const apiKey = (typeof body.apiKey === 'string' ? body.apiKey : '')
-                || getRootEnvValue('API_KEY')
-                || process.env.API_KEY
-                || '';
+            const apiBaseUrl = typeof body.apiBaseUrl === 'string' ? body.apiBaseUrl.trim() : '';
+            const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
 
             if (!apiBaseUrl || !apiKey) {
-                return reply.code(500).send({
-                    error: 'Preset convert backend not configured',
-                    message: 'Missing apiBaseUrl/apiKey (either request override or root .env API_BASE_URL/API_KEY)',
+                return reply.code(400).send({
+                    error: 'Missing apiBaseUrl/apiKey',
+                    message: 'Please fill apiBaseUrl and apiKey in UI (no .env fallback)',
                 });
             }
 
             const model = (typeof body.model === 'string' && body.model.trim())
                 ? body.model.trim()
-                : (getRootEnvValue('AGENT_PRESET_CONVERTER_MODEL')
-                    || getRootEnvValue('MAIN_AI_MODEL')
-                    || getRootEnvValue('MODEL_NAME')
-                    || process.env.MAIN_AI_MODEL
-                    || process.env.MODEL_NAME
-                    || 'gpt-4o-mini');
+                : 'gpt-4o-mini';
 
             const temperature = typeof body.temperature === 'number'
                 ? body.temperature
                 : 0;
 
             const maxTokensFromBody = typeof body.maxTokens === 'number' ? body.maxTokens : undefined;
-            const maxTokensFromEnv = Number(getRootEnvValue('AGENT_PRESET_CONVERTER_MAX_TOKENS') || process.env.AGENT_PRESET_CONVERTER_MAX_TOKENS || '');
             const maxTokens = (Number.isFinite(maxTokensFromBody) && (maxTokensFromBody as number) > 0)
                 ? (maxTokensFromBody as number)
-                : (Number.isFinite(maxTokensFromEnv) && maxTokensFromEnv > 0 ? maxTokensFromEnv : undefined);
+                : undefined;
 
             const userContent = rawText;
 

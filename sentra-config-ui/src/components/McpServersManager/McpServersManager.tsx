@@ -956,7 +956,7 @@ export default function McpServersManager(props: Props) {
         title={editingId ? '编辑外部 MCP' : '新增外部 MCP'}
         onClose={() => setEditorOpen(false)}
         width={520}
-        destroyOnClose
+        destroyOnHidden
         extra={(
           <Space>
             <Button onClick={() => setEditorOpen(false)}>取消</Button>
@@ -1083,7 +1083,7 @@ export default function McpServersManager(props: Props) {
         onCancel={() => setMarketOpen(false)}
         footer={null}
         width={720}
-        destroyOnClose
+        destroyOnHidden
       >
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           {marketItems.map((it) => (
@@ -1095,7 +1095,7 @@ export default function McpServersManager(props: Props) {
                   <Button
                     icon={<LinkOutlined />}
                     onClick={() => {
-                      try { window.open(it.href, '_blank'); } catch {}
+                      try { window.open(it.href, '_blank'); } catch { }
                     }}
                   />
                 </Tooltip>

@@ -71,9 +71,9 @@ export interface FormattedMessage {
       videos: Array<{ file?: string; url?: string; size?: string | number; path?: string }>;
       files: Array<{ name?: string; url?: string; size?: string | number; path?: string }>;
       records: Array<{ file?: string; format?: string; path?: string }>;
-      forwards: Array<{ 
-        id?: string | number; 
-        count?: number; 
+      forwards: Array<{
+        id?: string | number;
+        count?: number;
         preview?: string[];
         /** 转发节点详情（如果成功获取） */
         nodes?: Array<{
@@ -97,19 +97,19 @@ export interface FormattedMessage {
   /** 语音列表 */
   records: Array<{ file?: string; url?: string; path?: string; file_size?: string | number }>;
   /** 卡片消息列表 */
-  cards: Array<{ 
-    type: 'json' | 'xml' | 'app' | 'share' | string; 
-    title?: string; 
-    url?: string; 
-    content?: string; 
-    image?: string; 
-    raw?: any; 
-    preview?: string; 
+  cards: Array<{
+    type: 'json' | 'xml' | 'app' | 'share' | string;
+    title?: string;
+    url?: string;
+    content?: string;
+    image?: string;
+    raw?: any;
+    preview?: string;
   }>;
   /** 转发消息列表 */
-  forwards: Array<{ 
-    id?: string; 
-    count?: number; 
+  forwards: Array<{
+    id?: string;
+    count?: number;
     preview?: string[];
     /** 转发节点详情（如果成功获取） */
     nodes?: Array<{
@@ -285,7 +285,7 @@ export class MessageStream {
     if (msgType === 'group' && groupId && this.getGroupNameFn) {
       try {
         groupName = await this.getGroupNameFn(groupId);
-      } catch {}
+      } catch { }
     }
 
     let senderName = String(senderId || '');
@@ -319,7 +319,7 @@ export class MessageStream {
             senderName = nick || String(senderId);
           }
         }
-      } catch {}
+      } catch { }
     }
 
     let targetName: string | undefined;
@@ -347,7 +347,7 @@ export class MessageStream {
             targetName = nick || String(targetId);
           }
         }
-      } catch {}
+      } catch { }
     }
     if (!targetName) targetName = String(targetId);
 
@@ -360,12 +360,12 @@ export class MessageStream {
     const senderRoleLabel =
       msgType === 'group'
         ? (senderRole === 'owner'
-            ? '群主'
-            : senderRole === 'admin'
-              ? '管理员'
-              : senderRole === 'member'
-                ? '成员'
-                : '')
+          ? '群主'
+          : senderRole === 'admin'
+            ? '管理员'
+            : senderRole === 'member'
+              ? '成员'
+              : '')
         : '';
 
     const senderDisplayFull =
@@ -508,7 +508,7 @@ export class MessageStream {
         }
         try {
           log.warn({ label, reqId, attempt, nextDelayMs: interval, error: e?.message || String(e) }, 'RPC 调用失败，等待重试');
-        } catch {}
+        } catch { }
         await new Promise((r) => setTimeout(r, interval));
       }
     }
@@ -555,7 +555,7 @@ export class MessageStream {
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        this.wss = new WebSocketServer({ 
+        this.wss = new WebSocketServer({
           port: this.port,
           host: '0.0.0.0'
         });
@@ -732,7 +732,7 @@ export class MessageStream {
       }
 
       const formatted = await this.formatMessage(ev, replyContext);
-      
+
       // 检查是否需要跳过动画表情
       if (this.skipAnimatedEmoji) {
         // 条件：1) 没有引用消息 2) 没有文本或只有图片占位符 3) 有图片 4) 图片summary包含"[动画表情]"
@@ -740,13 +740,13 @@ export class MessageStream {
         const hasNoMeaningfulText = !formatted.text || formatted.text.trim() === '' || /^\[CQ:image[^\]]*\]$/.test(formatted.text.trim());
         const hasImages = formatted.images.length > 0;
         const isAnimatedEmoji = hasImages && formatted.images.some(img => img.summary === '[动画表情]');
-        
+
         if (hasNoReply && hasNoMeaningfulText && hasImages && isAnimatedEmoji) {
           log.debug({ message_id: formatted.message_id, sender_id: formatted.sender_id }, '跳过动画表情图片消息');
           return; // 跳过，不推送
         }
       }
-      
+
       const payload = JSON.stringify({
         type: 'message',
         data: formatted,
@@ -814,7 +814,7 @@ export class MessageStream {
           target_id: poke.target_id,
           target_name: poke.target_name,
         }, '收到戳一戳通知，准备推送到消息流');
-      } catch {}
+      } catch { }
 
       const payload = JSON.stringify({
         type: 'message',
@@ -842,10 +842,243 @@ export class MessageStream {
     const time = ev.time ?? Math.floor(Date.now() / 1000);
     const timeStr = formatEventTimeStr(time);
 
+    const ctx = {
+      messageType: ev.message_type,
+      groupId: (ev as any).group_id as number | undefined,
+      userId: (ev as any).user_id as number | undefined,
+    };
+
+    const segments = (Array.isArray(ev.message) ? ev.message : []).map((seg: any) => ({
+      type: seg?.type,
+      data: seg?.data ? { ...seg.data } : {},
+    }));
+
+    try {
+      await this.enrichSegmentsMedia(segments, ctx);
+    } catch {
+    }
+
+    const stringifyRaw = (v: any): string => {
+      if (typeof v === 'string') return v;
+      if (v === undefined) return '';
+      if (v === null) return '';
+      try {
+        return JSON.stringify(v);
+      } catch {
+        try {
+          return String(v);
+        } catch {
+          return '';
+        }
+      }
+    };
+
+    const tryParseJsonAny = (v: any): any | undefined => {
+      if (!v) return undefined;
+      if (typeof v === 'object') return v;
+      if (typeof v !== 'string') return undefined;
+      const s = v.trim();
+      if (!s) return undefined;
+      if (!(s.startsWith('{') || s.startsWith('['))) return undefined;
+      try {
+        return JSON.parse(s);
+      } catch {
+        return undefined;
+      }
+    };
+
+    const compactText = (s: string, maxLen = 140): string => {
+      const one = String(s || '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+      if (!one) return '';
+      return one.length > maxLen ? `${one.slice(0, maxLen)}...` : one;
+    };
+
+    const pickUrlLike = (v: any, depth = 0): string | undefined => {
+      if (v == null) return undefined;
+      if (depth > 2) return undefined;
+      if (typeof v === 'string') {
+        const s = v.trim();
+        return s ? s : undefined;
+      }
+      if (Array.isArray(v)) {
+        for (const it of v) {
+          const got = pickUrlLike(it, depth + 1);
+          if (got) return got;
+        }
+        return undefined;
+      }
+      if (typeof v === 'object') {
+        const obj: any = v;
+        const keys = [
+          'url',
+          'src',
+          'srcUrl',
+          'src_url',
+          'preview',
+          'previewUrl',
+          'preview_url',
+          'cover',
+          'coverUrl',
+          'cover_url',
+          'image',
+          'imageUrl',
+          'image_url',
+          'pic',
+          'picUrl',
+          'pic_url',
+          'picture',
+          'thumb',
+          'thumbUrl',
+          'thumb_url',
+          'thumbnail',
+          'thumbnailUrl',
+          'thumbnail_url',
+          'icon',
+          'iconUrl',
+          'icon_url',
+        ];
+        for (const k of keys) {
+          const got = pickUrlLike(obj?.[k], depth + 1);
+          if (got) return got;
+        }
+      }
+      return undefined;
+    };
+
+    const buildCardFromRaw = (type: string, rawInput: any): any => {
+      const rawStr = stringifyRaw(rawInput);
+      const obj = tryParseJsonAny(rawInput) ?? tryParseJsonAny(rawStr);
+
+      const metaData = obj?.metaData || obj?.meta_data || obj?.meta || undefined;
+      const details = [
+        metaData?.detail_1,
+        metaData?.detail1,
+        metaData?.detail_0,
+        metaData?.detail0,
+        metaData?.detail_2,
+        metaData?.detail2,
+        metaData?.detail_3,
+        metaData?.detail3,
+        metaData?.news,
+      ].filter(Boolean);
+      const detail1 = (details[0] as any) || undefined;
+
+      const title =
+        detail1?.title ||
+        metaData?.title ||
+        obj?.prompt ||
+        obj?.title ||
+        obj?.meta?.title ||
+        obj?.appName ||
+        undefined;
+
+      const content =
+        detail1?.desc ||
+        metaData?.desc ||
+        obj?.desc ||
+        obj?.meta?.desc ||
+        obj?.appView ||
+        obj?.ver ||
+        undefined;
+
+      const url =
+        detail1?.url ||
+        detail1?.jumpUrl ||
+        detail1?.qqdocurl ||
+        detail1?.jump_url ||
+        metaData?.jumpUrl ||
+        metaData?.jump_url ||
+        obj?.jumpUrl ||
+        obj?.webUrl ||
+        obj?.url ||
+        obj?.jump_url ||
+        obj?.web_url ||
+        obj?.meta?.url ||
+        obj?.meta?.news?.jumpUrl ||
+        obj?.meta?.news?.url ||
+        undefined;
+
+      const image =
+        pickUrlLike(detail1?.preview) ||
+        pickUrlLike(detail1?.previewUrl) ||
+        pickUrlLike(detail1?.preview_url) ||
+        pickUrlLike(detail1?.cover) ||
+        pickUrlLike(detail1?.coverUrl) ||
+        pickUrlLike(detail1?.cover_url) ||
+        pickUrlLike(detail1?.image) ||
+        pickUrlLike(detail1?.imageUrl) ||
+        pickUrlLike(detail1?.image_url) ||
+        pickUrlLike(detail1?.pic) ||
+        pickUrlLike(detail1?.picUrl) ||
+        pickUrlLike(detail1?.pic_url) ||
+        pickUrlLike(detail1?.icon) ||
+        pickUrlLike(detail1?.iconUrl) ||
+        pickUrlLike(detail1?.icon_url) ||
+        pickUrlLike(metaData?.preview) ||
+        pickUrlLike(metaData?.previewUrl) ||
+        pickUrlLike(metaData?.cover) ||
+        pickUrlLike(metaData?.coverUrl) ||
+        pickUrlLike(metaData?.image) ||
+        pickUrlLike(metaData?.imageUrl) ||
+        pickUrlLike(metaData?.icon) ||
+        pickUrlLike(metaData?.iconUrl) ||
+        pickUrlLike(obj?.picUrl) ||
+        pickUrlLike(obj?.pic_url) ||
+        pickUrlLike(obj?.image) ||
+        pickUrlLike(obj?.imageUrl) ||
+        pickUrlLike(obj?.image_url) ||
+        pickUrlLike(obj?.meta?.preview) ||
+        pickUrlLike(obj?.meta?.news?.preview) ||
+        pickUrlLike(obj?.meta?.news?.image) ||
+        pickUrlLike(obj?.cover) ||
+        pickUrlLike(obj?.coverUrl) ||
+        pickUrlLike(obj?.cover_url) ||
+        undefined;
+
+      const source =
+        detail1?.source ||
+        detail1?.sourceName ||
+        detail1?.tag ||
+        detail1?.app ||
+        detail1?.appName ||
+        metaData?.source ||
+        metaData?.tag ||
+        metaData?.app ||
+        metaData?.appName ||
+        obj?.meta?.source ||
+        obj?.meta?.tag ||
+        obj?.meta?.news?.tag ||
+        obj?.appName ||
+        obj?.app ||
+        undefined;
+
+      const preview = (() => {
+        const pieces: string[] = [];
+        if (title) pieces.push(String(title));
+        const c = content ? String(content) : '';
+        if (c && (!title || c !== String(title))) pieces.push(c);
+        if (pieces.length) return compactText(pieces.join(' - '));
+        if (obj?.config?.type) return compactText(`类型: ${obj.config.type}`);
+        if (obj?.config?.token) return compactText(`类型: ${obj?.config?.type || 'ark'}`);
+        return compactText(rawStr);
+      })();
+
+      return {
+        type,
+        raw: rawStr,
+        title,
+        content,
+        url,
+        image,
+        source,
+        preview,
+      };
+    };
+
     // 提取纯文本
-    const text = ev.message
-      .filter((seg) => seg.type === 'text')
-      .map((seg) => String(seg.data?.text ?? ''))
+    const text = segments
+      .filter((seg: any) => seg.type === 'text')
+      .map((seg: any) => String(seg.data?.text ?? ''))
       .join('');
 
     // 提取多媒体
@@ -859,66 +1092,71 @@ export class MessageStream {
     const atUsers: number[] = [];
     let atAll = false;
 
-    for (const seg of ev.message) {
+    for (const seg of segments) {
       if (seg.type === 'image') {
-        images.push({ 
-          file: seg.data?.file, 
-          url: seg.data?.url, 
+        images.push({
+          file: seg.data?.file,
+          url: seg.data?.url,
           path: seg.data?.cache_path || seg.data?.path,
-          summary: seg.data?.summary 
+          summary: seg.data?.summary
         });
       } else if (seg.type === 'video') {
-        videos.push({ file: seg.data?.file, url: seg.data?.url, path: seg.data?.path });
+        videos.push({ file: seg.data?.file, url: seg.data?.url, path: seg.data?.cache_path || seg.data?.path });
       } else if (seg.type === 'file') {
-        files.push({ 
-          name: seg.data?.file || seg.data?.name, 
-          file_id: seg.data?.file_id,
-          size: seg.data?.file_size || seg.data?.size,
+        const name = seg.data?.name || seg.data?.file_name || seg.data?.file || seg.data?.filename;
+        files.push({
+          name,
+          file_id: seg.data?.file_id || seg.data?.file_unique || seg.data?.id,
+          size: seg.data?.file_size ?? seg.data?.size,
           url: seg.data?.url,
-          path: seg.data?.path,
+          path: seg.data?.cache_path || seg.data?.path,
         });
       } else if (seg.type === 'record') {
         records.push({
           file: seg.data?.file,
           url: seg.data?.url,
-          path: seg.data?.path,
+          path: seg.data?.cache_path || seg.data?.path,
           file_size: seg.data?.file_size,
         });
       } else if (seg.type === 'forward') {
-        forwards.push({ id: seg.data?.id, message_id: seg.data?.id });
+        const id = seg.data?.message_id ?? seg.data?.id;
+        const nodes = Array.isArray(seg.data?.nodes) ? seg.data.nodes : [];
+        const preview = nodes
+          .map((n: any) => {
+            const name = n?.sender_name || `用户${n?.sender_id || ''}`;
+            const t = String(n?.message_text || '').trim();
+            return `${name}: ${t || '[空消息]'}`;
+          })
+          .slice(0, 30);
+        forwards.push({
+          id: id ? String(id) : undefined,
+          count: typeof seg.data?.count === 'number' ? seg.data.count : nodes.length,
+          preview,
+          nodes: nodes.length ? nodes : undefined,
+        });
       } else if (seg.type === 'face') {
         faces.push({ id: seg.data?.id, text: seg.data?.text });
       } else if (seg.type === 'json') {
-        const raw = seg.data?.data ?? seg.data?.json ?? seg.data?.content ?? '';
-        let preview = '';
-        try {
-          const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
-          preview = obj?.prompt || obj?.desc || obj?.meta?.detail_1?.desc || obj?.meta?.news?.desc || obj?.view || obj?.title || '';
-          if (!preview && obj?.config?.type) preview = `类型: ${obj.config.type}`;
-          if (!preview) preview = typeof raw === 'string' ? raw : JSON.stringify(raw);
-        } catch {
-          preview = typeof raw === 'string' ? raw : '';
-        }
-        cards.push({ type: 'json', raw, preview });
+        const raw = seg.data?.data ?? seg.data?.json ?? seg.data?.content ?? seg.data ?? '';
+        cards.push(buildCardFromRaw('json', raw));
       } else if (seg.type === 'xml') {
         const raw = seg.data?.data ?? seg.data?.xml ?? '';
-        const m = typeof raw === 'string' ? raw.match(/<title>([^<]{1,64})<\/title>/i) : null;
-        const preview = m?.[1] || (typeof raw === 'string' ? raw : '');
-        cards.push({ type: 'xml', raw, preview });
+        const rawStr = stringifyRaw(raw);
+        const m = rawStr ? rawStr.match(/<title>([^<]{1,64})<\/title>/i) : null;
+        const title = m?.[1];
+        const preview = compactText(title || rawStr);
+        cards.push({ type: 'xml', raw: rawStr, title, preview });
       } else if (seg.type === 'share') {
-        cards.push({ type: 'share', title: seg.data?.title, url: seg.data?.url, content: seg.data?.content, image: seg.data?.image, preview: seg.data?.title || seg.data?.url });
+        const title = seg.data?.title;
+        const url = seg.data?.url;
+        const content = seg.data?.content;
+        const image = seg.data?.image;
+        const source = seg.data?.source || seg.data?.app || seg.data?.origin;
+        const preview = compactText(String(title || content || url || ''));
+        cards.push({ type: 'share', title, url, content, image, source, preview });
       } else if (seg.type === 'app') {
-        const raw = seg.data?.content ?? seg.data?.data ?? '';
-        let title: string | undefined; let url: string | undefined; let image: string | undefined; let content: string | undefined;
-        try {
-          const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
-          title = obj?.meta?.news?.title || obj?.meta?.detail_1?.title || obj?.prompt || obj?.meta?.title || obj?.title;
-          content = obj?.meta?.news?.desc || obj?.meta?.detail_1?.desc || obj?.desc || obj?.meta?.desc;
-          url = obj?.meta?.news?.jumpUrl || obj?.meta?.detail_1?.qqdocurl || obj?.meta?.news?.url || obj?.url;
-          image = obj?.meta?.news?.preview || obj?.meta?.detail_1?.preview || obj?.meta?.preview || obj?.cover;
-        } catch {}
-        const preview = title || (typeof raw === 'string' ? raw : '');
-        cards.push({ type: 'app', title, url, image, content, raw, preview });
+        const raw = seg.data?.content ?? seg.data?.data ?? seg.data ?? '';
+        cards.push(buildCardFromRaw('app', raw));
       } else if (seg.type === 'at') {
         const qq = seg.data?.qq;
         if (qq === 'all') {
@@ -938,10 +1176,10 @@ export class MessageStream {
       self_id: (ev as any).self_id,
       summary: '', // 稍后生成
       objective: '', // 稍后生成
-      sender_id: ev.user_id ?? 0,
-      sender_name: ev.sender?.nickname || String(ev.user_id ?? 0),
+      sender_id: ev.user_id ?? ev.sender?.user_id ?? 0,
+      sender_name: ev.sender?.nickname || String(ev.user_id ?? ev.sender?.user_id ?? 0),
       text,
-      segments: ev.message.map((seg) => ({ type: seg.type, data: seg.data })),
+      segments,
       images,
       videos,
       files,
@@ -1060,81 +1298,6 @@ export class MessageStream {
         } catch (err) {
           log.error({ err }, '批量获取引用消息转发失败');
         }
-      }
-    }
-
-    // 获取转发消息详情（正文，无需引用也应执行）
-    if (forwards.length > 0 && this.invoker) {
-      try {
-        const tasks = forwards.map(async (fwd) => {
-          try {
-            const messageId = (fwd as any).message_id ?? (fwd as any).id;
-            log.info({ messageId }, 'get_forward_msg(正文) 请求');
-            const call = async () => await this.invoker!.data('get_forward_msg', { message_id: messageId, id: messageId });
-            const detail: any = this.rpcRetryEnabled
-              ? await this.withRpcRetry(call, 'get_forward_msg', messageId as any)
-              : await call();
-            const data = detail?.data ?? detail;
-            const nodes: any[] =
-              (detail?.messages as any[]) ||
-              (detail?.data as any)?.messages ||
-              (data as any)?.message ||
-              (data as any)?.messages ||
-              (data as any)?.data?.messages ||
-              (data as any)?.data?.message ||
-              [];
-            const nodesLen = Array.isArray(nodes) ? nodes.length : 0;
-            if (nodesLen === 0) {
-              log.warn({ messageId, detail }, 'get_forward_msg(正文) nodes为空');
-            } else {
-              log.info(
-                {
-                  messageId,
-                  topKeys: detail ? Object.keys(detail) : [],
-                  dataKeys: detail?.data ? Object.keys(detail.data) : [],
-                  nodesLen,
-                },
-                'get_forward_msg(正文) 响应',
-              );
-            }
-            fwd.count = nodes.length;
-            const nodesOut = await Promise.all(nodes.map(async (node: any) => {
-              const merged: any[] = [];
-              if (Array.isArray(node?.message)) merged.push(...node.message);
-              if (Array.isArray(node?.content)) merged.push(...node.content);
-              if (Array.isArray(node?.data?.content)) merged.push(...node.data.content);
-              if (Array.isArray(node?.data?.message)) merged.push(...node.data.message);
-              if (merged.length === 0) {
-                if (typeof node?.content === 'string') merged.push({ type: 'text', data: { text: node.content } });
-                else if (typeof node?.message === 'string') merged.push({ type: 'text', data: { text: node.message } });
-              }
-              const baseSegs = merged;
-              await this.enrichSegmentsMedia(baseSegs, {
-                messageType: ev.message_type,
-                groupId: ev.group_id,
-                userId: ev.user_id,
-              });
-              return {
-                sender_id: node.sender_id || node.user_id || node.sender?.user_id,
-                sender_name: node.sender_name || node.nickname || node.sender?.nickname,
-                time: node.time,
-                message: baseSegs,
-                message_text: this.renderSegmentsMarkdownInline(baseSegs),
-              };
-            }));
-            fwd.nodes = nodesOut;
-            fwd.preview = nodesOut.map((node: any) => {
-              const name = node.sender_name || `用户${node.sender_id || ''}`;
-              const msgText = String(node.message_text || '');
-              return `${name}: ${msgText || '[空消息]'}`;
-            });
-          } catch (err) {
-            log.error({ err, fwd }, 'get_forward_msg(正文) 失败');
-          }
-        });
-        await Promise.all(tasks);
-      } catch (err) {
-        log.error({ err }, '批量获取转发消息失败');
       }
     }
 
@@ -1780,7 +1943,7 @@ export class MessageStream {
   private formatFileSize(size: string | number): string {
     const bytes = typeof size === 'string' ? parseInt(size) : size;
     if (isNaN(bytes)) return '未知大小';
-    
+
     if (bytes < 1024) return `${bytes}B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
@@ -1880,19 +2043,73 @@ export class MessageStream {
 
       if (s.type === 'json' || s.type === 'app') {
         const raw = s.data?.content ?? s.data?.data ?? s.data?.json ?? '';
-        let title = '';
-        let desc = '';
-        let url = '';
-        try {
-          const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
-          title = obj?.meta?.news?.title || obj?.meta?.detail_1?.title || obj?.prompt || obj?.meta?.title || obj?.title || '';
-          desc = obj?.meta?.news?.desc || obj?.meta?.detail_1?.desc || obj?.desc || obj?.meta?.desc || '';
-          url = obj?.meta?.news?.jumpUrl || obj?.meta?.detail_1?.qqdocurl || obj?.meta?.news?.url || obj?.url || '';
-        } catch {
-          title = typeof raw === 'string' ? raw : '';
-        }
         const label = s.type === 'json' ? 'JSON卡片' : '应用卡片';
-        const core = url ? `[${title || '(无标题)'}](${url})` : (title || '(无标题)');
+
+        const asString = (v: any): string => {
+          if (typeof v === 'string') return v;
+          if (v === undefined || v === null) return '';
+          try {
+            return JSON.stringify(v);
+          } catch {
+            try {
+              return String(v);
+            } catch {
+              return '';
+            }
+          }
+        };
+
+        const tryParse = (v: any): any | undefined => {
+          if (!v) return undefined;
+          if (typeof v === 'object') return v;
+          if (typeof v !== 'string') return undefined;
+          const t = v.trim();
+          if (!t) return undefined;
+          if (!(t.startsWith('{') || t.startsWith('['))) return undefined;
+          try {
+            return JSON.parse(t);
+          } catch {
+            return undefined;
+          }
+        };
+
+        const obj = tryParse(raw) ?? tryParse(asString(raw));
+        const detail1 =
+          obj?.metaData?.detail_1 ||
+          obj?.meta_data?.detail_1 ||
+          obj?.meta?.detail_1 ||
+          obj?.meta?.detail1 ||
+          obj?.meta?.news ||
+          undefined;
+
+        const title =
+          detail1?.title ||
+          obj?.prompt ||
+          obj?.title ||
+          obj?.meta?.title ||
+          obj?.appName ||
+          '';
+
+        const desc =
+          detail1?.desc ||
+          obj?.desc ||
+          obj?.meta?.desc ||
+          '';
+
+        const url =
+          detail1?.url ||
+          detail1?.jumpUrl ||
+          detail1?.qqdocurl ||
+          obj?.jumpUrl ||
+          obj?.webUrl ||
+          obj?.url ||
+          obj?.meta?.url ||
+          obj?.meta?.news?.jumpUrl ||
+          obj?.meta?.news?.url ||
+          '';
+
+        const fallbackTitle = title || (typeof raw === 'string' ? raw : asString(raw));
+        const core = url ? `[${fallbackTitle || '(无标题)'}](${url})` : (fallbackTitle || '(无标题)');
         parts.push(desc ? `${label}: ${core}（${desc}）` : `${label}: ${core}`);
         continue;
       }
@@ -1937,9 +2154,9 @@ export class MessageStream {
               // nodes 可能是 get_forward_msg 返回的 node，也可能是 node segment（{type:'node', data:{...}}）
               const segs: any[] =
                 (Array.isArray(n?.message) ? n.message : [])
-                .concat(Array.isArray(n?.content) ? n.content : [])
-                .concat(Array.isArray(n?.data?.content) ? n.data.content : [])
-                .concat(Array.isArray(n?.data?.message) ? n.data.message : []);
+                  .concat(Array.isArray(n?.content) ? n.content : [])
+                  .concat(Array.isArray(n?.data?.content) ? n.data.content : [])
+                  .concat(Array.isArray(n?.data?.message) ? n.data.message : []);
 
               const text = String(n?.message_text || this.renderSegmentsMarkdownInline(segs) || '').trim();
               return `[${idx + 1}/${total}] ${sender}: ${text || '[空消息]'}`;
@@ -2121,7 +2338,7 @@ export class MessageStream {
                   }
                 }),
               );
-            } catch {}
+            } catch { }
             continue;
           }
 
@@ -2175,7 +2392,7 @@ export class MessageStream {
             const errMsg = 'get_forward_msg(嵌套) 调用失败';
             try {
               log.warn({ messageId, depth, error: e?.message || String(e) }, errMsg);
-            } catch {}
+            } catch { }
             detail = undefined;
           }
 

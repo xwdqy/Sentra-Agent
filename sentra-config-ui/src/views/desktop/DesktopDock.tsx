@@ -75,6 +75,10 @@ export function DesktopDock(props: DesktopDockProps) {
     setTerminalManagerOpen,
     setTerminalManagerMinimized,
 
+    qqSandboxOpen,
+    setQqSandboxOpen,
+    setQqSandboxMinimized,
+
     requestUtilityFocus,
   } = useUIStore();
 
@@ -87,6 +91,9 @@ export function DesktopDock(props: DesktopDockProps) {
           break;
         case 'terminal-manager':
           void import('../../components/TerminalManager/TerminalManager');
+          break;
+        case 'qq-sandbox':
+          void import('../../components/QqSandbox/QqSandbox');
           break;
         case 'presets-editor':
           void import('../../components/PresetsEditor');
@@ -158,6 +165,22 @@ export function DesktopDock(props: DesktopDockProps) {
         onClose: () => {
           setTerminalManagerOpen(false);
           setTerminalManagerMinimized(false);
+        },
+      },
+      {
+        id: 'qq-sandbox-app',
+        name: 'QQ 沙盒',
+        icon: getIconForType('qq-sandbox', 'module'),
+        isOpen: qqSandboxOpen,
+        onHover: () => prefetchUtilityChunk('qq-sandbox'),
+        onClick: () => {
+          setQqSandboxOpen(true);
+          setQqSandboxMinimized(false);
+          requestUtilityFocus('qq-sandbox');
+        },
+        onClose: () => {
+          setQqSandboxOpen(false);
+          setQqSandboxMinimized(false);
         },
       },
       {

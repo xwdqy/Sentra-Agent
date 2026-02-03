@@ -6,7 +6,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
 import styles from './TerminalExecutorWindow.module.css';
 import { storage } from '../utils/storage';
-import { getTerminalSnapshot, removeTerminalSnapshot, setTerminalSnapshot } from '../utils/terminalSnapshotDb';
+import { appendTerminalSnapshotChunk, getTerminalSnapshot, removeTerminalSnapshot } from '../utils/terminalSnapshotDb';
 import { fontFiles } from 'virtual:sentra-fonts';
 
 const TERMINAL_FONT_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Noto Sans Mono", "Cascadia Mono", "Courier New", monospace';
@@ -30,8 +30,13 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
   const snapshotRef = useRef('');
   const snapshotSavedAtRef = useRef(0);
   const lastSavedCursorRef = useRef(0);
+  const persistPendingRef = useRef('');
+  const persistPendingCursorRef = useRef(0);
+  const persistFlushTimerRef = useRef<number | null>(null);
   const [uiFontFamily, setUiFontFamily] = useState(TERMINAL_FONT_FALLBACK);
   const reconnectTimerRef = useRef<number | null>(null);
+  const pingTimerRef = useRef<number | null>(null);
+  const lastPongAtRef = useRef(0);
   const stoppedRef = useRef(false);
   const onSessionNotFoundRef = useRef<TerminalExecutorWindowProps['onSessionNotFound']>(onSessionNotFound);
   const initSeenRef = useRef(false);
@@ -84,6 +89,12 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
     cursorRef.current = 0;
     lastSavedCursorRef.current = 0;
     snapshotRef.current = '';
+    persistPendingRef.current = '';
+    persistPendingCursorRef.current = 0;
+    if (persistFlushTimerRef.current != null) {
+      window.clearTimeout(persistFlushTimerRef.current);
+      persistFlushTimerRef.current = null;
+    }
 
     if (reconnectTimerRef.current) {
       window.clearTimeout(reconnectTimerRef.current);
@@ -116,7 +127,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
       theme: theme || fallbackTheme,
       allowProposedApi: true,
       convertEol: true,
-      scrollback: 50000,
+      scrollback: 8000,
     });
 
     const pickSentraTermFontFile = () => {
@@ -168,21 +179,58 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
 
     xtermInstance.current = term;
 
-    const persistState = (force = false) => {
-      const now = Date.now();
-      const cursor = cursorRef.current;
-      if (!force) {
-        if (cursor - lastSavedCursorRef.current < 25 && now - snapshotSavedAtRef.current < 800) return;
+    const flushPersist = (force = false) => {
+      const pending = persistPendingRef.current;
+      if (!pending) return;
+      persistPendingRef.current = '';
+
+      if (persistFlushTimerRef.current != null) {
+        window.clearTimeout(persistFlushTimerRef.current);
+        persistFlushTimerRef.current = null;
       }
+
+      const now = Date.now();
+      const cursor = force ? cursorRef.current : persistPendingCursorRef.current;
       snapshotSavedAtRef.current = now;
       lastSavedCursorRef.current = cursor;
-      void setTerminalSnapshot({
+      void appendTerminalSnapshotChunk({
         id: String(sessionId || ''),
         kind: 'exec',
         ts: now,
         cursor,
-        snapshot: String(snapshotRef.current || ''),
+        chunk: pending,
       });
+    };
+
+    const queuePersist = (chunk: string, cursor: number, force = false) => {
+      persistPendingCursorRef.current = cursor;
+
+      if (chunk) {
+        persistPendingRef.current = (persistPendingRef.current || '') + chunk;
+      }
+
+      if (force) {
+        flushPersist(true);
+        return;
+      }
+
+      if (!persistPendingRef.current) return;
+
+      const now = Date.now();
+      if (cursor - lastSavedCursorRef.current < 25 && now - snapshotSavedAtRef.current < 800) {
+        return;
+      }
+
+      if (persistPendingRef.current.length >= 16_000) {
+        flushPersist(false);
+        return;
+      }
+
+      if (persistFlushTimerRef.current != null) return;
+      persistFlushTimerRef.current = window.setTimeout(() => {
+        persistFlushTimerRef.current = null;
+        flushPersist(false);
+      }, 450);
     };
 
     const canFitNow = () => {
@@ -243,7 +291,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
           const snapLocal = storage.getString(snapshotKey, { backend: 'local', fallback: '' });
           restoredSnapshot = snapSession || snapLocal;
           restoredTs = legacyTs;
-          void setTerminalSnapshot({ id: sid, kind: 'exec', ts: legacyTs, cursor: restoredCursor, snapshot: restoredSnapshot });
+          void appendTerminalSnapshotChunk({ id: sid, kind: 'exec', ts: legacyTs, cursor: restoredCursor, chunk: restoredSnapshot });
           try { storage.remove(tsKey, 'session'); } catch { }
           try { storage.remove(cursorKey, 'session'); } catch { }
           try { storage.remove(snapshotKey, 'session'); } catch { }
@@ -288,6 +336,29 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
       if (disposed || stoppedRef.current) return;
       if (!openedRef.current) return;
 
+      const clearPingTimer = () => {
+        if (pingTimerRef.current) {
+          try { window.clearInterval(pingTimerRef.current); } catch { }
+          pingTimerRef.current = null;
+        }
+      };
+
+      const startPingTimer = () => {
+        clearPingTimer();
+        pingTimerRef.current = window.setInterval(() => {
+          const ws0 = wsRef.current;
+          if (!ws0 || ws0.readyState !== WebSocket.OPEN) return;
+
+          const lastPong = lastPongAtRef.current;
+          if (lastPong > 0 && Date.now() - lastPong > 45_000) {
+            try { ws0.close(); } catch { }
+            return;
+          }
+
+          try { ws0.send(JSON.stringify({ type: 'ping' })); } catch { }
+        }, 15_000);
+      };
+
       const token = getToken();
       const url = new URL(`/api/terminal-executor/ws/${encodeURIComponent(sessionId)}`, window.location.origin);
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -299,6 +370,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
 
       ws.onopen = () => {
         try { console.debug('[TerminalExecutor] ws open', { sessionId }); } catch { }
+        lastPongAtRef.current = Date.now();
         try {
           if (openedRef.current && canFitNow()) {
             fitAddonRef.current?.fit();
@@ -306,6 +378,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
         } catch { }
         sendResizeNow();
         try { ws.send(JSON.stringify({ type: 'ping' })); } catch { }
+        startPingTimer();
       };
 
       ws.onmessage = (ev) => {
@@ -313,6 +386,11 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
         try {
           msg = JSON.parse(String(ev.data || ''));
         } catch {
+          return;
+        }
+
+        if (msg?.type === 'pong') {
+          lastPongAtRef.current = Date.now();
           return;
         }
 
@@ -334,14 +412,14 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
           }
           const c = Number(msg?.cursor);
           if (Number.isFinite(c)) cursorRef.current = c;
-          persistState(false);
+          queuePersist(data, cursorRef.current, false);
           if (msg?.type === 'init') {
             try { console.debug('[TerminalExecutor] init', { sessionId, len: rawData.length, cursor: c }); } catch { }
           }
           if (msg?.type === 'init' && msg?.exited) {
             const ec = msg?.exitCode;
             safeWrite(`\r\n\x1b[33m[process exited: ${ec ?? 'unknown'}]\x1b[0m\r\n`);
-            persistState(true);
+            queuePersist('', cursorRef.current, true);
           }
           return;
         }
@@ -351,7 +429,7 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
           safeWrite(`\r\n\x1b[33m[process exited: ${ec ?? 'unknown'}]\x1b[0m\r\n`);
           const c = Number(msg?.cursor);
           if (Number.isFinite(c)) cursorRef.current = c;
-          persistState(true);
+          queuePersist('', cursorRef.current, true);
           return;
         }
 
@@ -372,6 +450,10 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
       };
 
       ws.onclose = () => {
+        if (pingTimerRef.current) {
+          try { window.clearInterval(pingTimerRef.current); } catch { }
+          pingTimerRef.current = null;
+        }
         if (disposed || stoppedRef.current) return;
         const delay = Math.min(6000, 500 + attempt * 600);
         reconnectTimerRef.current = window.setTimeout(() => connect(attempt + 1), delay);
@@ -538,7 +620,17 @@ export const TerminalExecutorWindow: React.FC<TerminalExecutorWindowProps> = ({ 
     return () => {
       disposed = true;
       stoppedRef.current = true;
-      persistState(true);
+      flushPersist(true);
+
+      if (persistFlushTimerRef.current != null) {
+        window.clearTimeout(persistFlushTimerRef.current);
+        persistFlushTimerRef.current = null;
+      }
+
+      if (pingTimerRef.current) {
+        try { window.clearInterval(pingTimerRef.current); } catch { }
+        pingTimerRef.current = null;
+      }
 
       window.removeEventListener('resize', onResize);
       terminalRef.current?.removeEventListener('pointerdown', focusOnPointer);

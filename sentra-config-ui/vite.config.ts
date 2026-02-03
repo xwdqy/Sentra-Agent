@@ -100,6 +100,14 @@ export default defineConfig(({ mode }) => {
           target: `http://localhost:${serverPort}`,
           changeOrigin: true,
           ws: true,
+          configure: (proxy) => {
+            proxy.on('error', (err: any) => {
+              const code = String((err as any)?.code || '');
+              // Page refresh often aborts the websocket; ignore noisy proxy errors.
+              if (code === 'ECONNABORTED' || code === 'ECONNRESET') return;
+              console.warn('[vite][proxy] /api error', err);
+            });
+          },
         },
         '/v1': {
           target: `http://localhost:${serverPort}`,

@@ -6,7 +6,7 @@ import type { ConfigData, EnvVariable } from '../../types/config.ts';
 import type { ToastMessage } from '../Toast';
 import { getDisplayName } from '../../utils/icons.tsx';
 import { OpenAI as OpenAIIcon } from '@lobehub/icons';
-import { Button, Checkbox, Collapse, Descriptions, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Segmented, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
+import { Button, Checkbox, Collapse, Descriptions, Drawer, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Select, Space, Switch, Table, Tabs, Tag, Tooltip, Typography, Upload } from 'antd';
 import styles from './ModelProvidersManager.module.css';
 import modelVendorMap from './modelVendorMap.json';
 import llmEnvMapping from './llmEnvMapping.json';
@@ -50,7 +50,6 @@ import {
   SwapOutlined,
   SyncOutlined,
   UnorderedListOutlined,
-  ThunderboltOutlined,
   ToolOutlined,
   TranslationOutlined,
   UploadOutlined,
@@ -316,7 +315,7 @@ type CapabilityMeta = {
 type ModelVendor = { key: string; label: string; iconName: string };
 
 const LOBE_ICON_STATIC_MAP: Record<string, any> = {
-  
+
 };
 
 let LOBE_ICON_FULL_LIB: Record<string, any> | null = null;
@@ -970,9 +969,9 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     }
 
     const id = providerEditorTargetId;
-  if (!id) return;
-  setProviders(prev => prev.map(px => (px.id === id ? { ...px, ...payload } : px)));
-  setProviderEditorOpen(false);
+    if (!id) return;
+    setProviders(prev => prev.map(px => (px.id === id ? { ...px, ...payload } : px)));
+    setProviderEditorOpen(false);
   }, [providerEditorForm, providerEditorIcon, providerEditorMode, providerEditorTargetId]);
 
   const runTestModels = useCallback(async () => {
@@ -1297,54 +1296,7 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
     return { all, selected, inferred: inferredCount, unselected };
   }, [capabilityChoices.length, inferredModelSettingsCaps, modelSettingsCaps.length]);
 
-  const capGridCols = isCompact ? 3 : 5;
-  const capGridRows = useMemo(() => {
-    const rows: { key: string; cells: any[] }[] = [];
-    for (let i = 0; i < filteredCapabilityChoices.length; i += capGridCols) {
-      rows.push({ key: `r${i}`, cells: filteredCapabilityChoices.slice(i, i + capGridCols) as any[] });
-    }
-    return rows;
-  }, [capGridCols, filteredCapabilityChoices]);
-
-  const capGridColumns = useMemo(() => {
-    const inferred = new Set(inferredModelSettingsCaps.map(String));
-    return Array.from({ length: capGridCols }).map((_, idx) => ({
-      key: `c${idx}`,
-      render: (_v: any, rec: any) => {
-        const cap = (rec?.cells || [])[idx];
-        if (!cap) return null;
-        const capKey = String(cap.key);
-        const on = modelSettingsCaps.includes(capKey);
-        const hint = inferred.has(capKey) && !on;
-        return (
-          <div
-            className={[styles.capPill, on ? styles.capPillOn : styles.capPillOff].filter(Boolean).join(' ')}
-            style={capStyleVars(capKey)}
-            role="button"
-            tabIndex={0}
-            onClick={() => toggleModelSettingsCap(capKey)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                toggleModelSettingsCap(capKey);
-              }
-            }}
-          >
-            <Checkbox
-              checked={on}
-              onChange={() => toggleModelSettingsCap(capKey)}
-              onClick={(e) => {
-                try { (e as any).stopPropagation(); } catch {}
-              }}
-            />
-            <span className={styles.capPillIcon} aria-label={capKey}><CapabilityIcon capKey={capKey} /></span>
-            <span className={styles.capPillLabel}>{String(cap.label || cap.key)}</span>
-            {hint ? <span className={styles.capPillHint}><BulbOutlined /> 推断</span> : null}
-          </div>
-        );
-      }
-    }));
-  }, [capGridCols, inferredModelSettingsCaps, modelSettingsCaps, toggleModelSettingsCap]);
+  const inferredCapsSet = useMemo(() => new Set(inferredModelSettingsCaps.map(String)), [inferredModelSettingsCaps]);
 
   const lobeIconChoices = useMemo(() => {
     if (!iconPickerOpen) return [] as string[];
@@ -1905,14 +1857,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                     </div>
 
                     <div className={styles.providerRowActions}>
-                      <Switch
-                        size="small"
-                        checked={p.enabled}
-                        onChange={(next) => setProviders(prev => prev.map(x => x.id === p.id ? { ...x, enabled: next } : x))}
-                        onClick={(_checked, e) => {
-                          try { (e as any)?.stopPropagation?.(); } catch {}
-                        }}
-                      />
                       <Button
                         size="small"
                         type="text"
@@ -1984,50 +1928,44 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
 
         {isCompact && activeProvider ? (
           <div className={styles.mobileTopPanel}>
-            <Segmented
-              size="middle"
-              block
-              value={mobileSection}
-              className={styles.mobileSectionSegmented}
-              options={[
-                {
-                  label: (
-                    <span className={styles.mobileSectionLabel}>
-                      <ShopOutlined />
-                      <span>供应商</span>
-                    </span>
-                  ),
-                  value: 'provider',
-                },
-                {
-                  label: (
-                    <span className={styles.mobileSectionLabel}>
-                      <SettingOutlined />
-                      <span>配置中心</span>
-                    </span>
-                  ),
-                  value: 'config',
-                },
-                {
-                  label: (
-                    <span className={styles.mobileSectionLabel}>
-                      <UnorderedListOutlined />
-                      <span>模型</span>
-                    </span>
-                  ),
-                  value: 'models',
-                },
-              ]}
-              onChange={(v) => setMobileSection(v as any)}
-            />
+            <div className={styles.mobileSectionTabs} role="tablist" aria-label="模型供应商分区">
+              <button
+                type="button"
+                className={[styles.mobileSectionTab, mobileSection === 'provider' ? styles.mobileSectionTabActive : ''].filter(Boolean).join(' ')}
+                aria-selected={mobileSection === 'provider'}
+                onClick={() => setMobileSection('provider')}
+              >
+                <span className={styles.mobileSectionLabel}>
+                  <ShopOutlined />
+                  <span>供应商</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={[styles.mobileSectionTab, mobileSection === 'config' ? styles.mobileSectionTabActive : ''].filter(Boolean).join(' ')}
+                aria-selected={mobileSection === 'config'}
+                onClick={() => setMobileSection('config')}
+              >
+                <span className={styles.mobileSectionLabel}>
+                  <SettingOutlined />
+                  <span>配置中心</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={[styles.mobileSectionTab, mobileSection === 'models' ? styles.mobileSectionTabActive : ''].filter(Boolean).join(' ')}
+                aria-selected={mobileSection === 'models'}
+                onClick={() => setMobileSection('models')}
+              >
+                <span className={styles.mobileSectionLabel}>
+                  <UnorderedListOutlined />
+                  <span>模型</span>
+                </span>
+              </button>
+            </div>
 
             <div className={styles.mobileProviderActions}>
               <Space size={8} wrap align="center">
-                <Space size={6} align="center">
-                  <Switch checked={activeProvider.enabled} onChange={(next) => updateActive({ enabled: next })} size="small" />
-                  <span style={{ fontSize: 12, fontWeight: 800, opacity: 0.85 }}>启用</span>
-                </Space>
-
                 <Button
                   onClick={() => openEditProvider(activeProvider.id)}
                   icon={<SettingOutlined />}
@@ -2069,11 +2007,6 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
                 </div>
                 <div className={styles.toolbar}>
                   <Space size={8} wrap align="center">
-                    <Space size={6} align="center">
-                      <Switch checked={activeProvider.enabled} onChange={(next) => updateActive({ enabled: next })} size="small" />
-                      <span style={{ fontSize: 12, fontWeight: 800, opacity: 0.85 }}>启用</span>
-                    </Space>
-
                     <Button
                       onClick={() => openEditProvider(activeProvider.id)}
                       icon={<SettingOutlined />}
@@ -2103,968 +2036,1010 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
             ) : null}
 
             {(!isCompact || mobileSection === 'provider') ? (
-            <div className={styles.card}>
-              <div className={styles.cardTitleRow}>
-                <div className={styles.cardTitle}>供应商设置</div>
-                <div className={styles.cardMeta}>用于连接与鉴权</div>
-              </div>
-
-              <div className={styles.formGridSingle}>
-                <div className={styles.field}>
-                  <div className={styles.fieldLabel}>API 密钥</div>
-                  <Input.Password
-                    className={styles.antdInput}
-                    value={activeProvider.apiKey}
-                    onChange={(e) => updateActive({ apiKey: e.target.value })}
-                    placeholder="sk-..."
-                    visibilityToggle
-                  />
+              <div className={styles.card}>
+                <div className={styles.cardTitleRow}>
+                  <div className={styles.cardTitle}>供应商设置</div>
+                  <div className={styles.cardMeta}>用于连接与鉴权</div>
                 </div>
 
-                <div className={styles.field}>
-                  <div className={styles.fieldLabel}>API 地址</div>
-                  <Input
-                    className={styles.antdInput}
-                    value={activeProvider.baseUrl}
-                    onChange={(e) => updateActive({ baseUrl: e.target.value })}
-                    onBlur={(e) => updateActive({ baseUrl: normalizeBaseUrlV1(e.target.value) })}
-                    placeholder="https://api.openai.com"
-                  />
+                <div className={styles.formGridSingle}>
+                  <div className={styles.field}>
+                    <div className={styles.fieldLabel}>API 密钥</div>
+                    <Input.Password
+                      className={styles.antdInput}
+                      value={activeProvider.apiKey}
+                      onChange={(e) => updateActive({ apiKey: e.target.value })}
+                      placeholder="sk-..."
+                      visibilityToggle
+                    />
+                  </div>
+
+                  <div className={styles.field}>
+                    <div className={styles.fieldLabel}>API 地址</div>
+                    <Input
+                      className={styles.antdInput}
+                      value={activeProvider.baseUrl}
+                      onChange={(e) => updateActive({ baseUrl: e.target.value })}
+                      onBlur={(e) => updateActive({ baseUrl: normalizeBaseUrlV1(e.target.value) })}
+                      placeholder="https://api.openai.com"
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
             ) : null}
 
             {(!isCompact || mobileSection === 'models') ? (
-            <div className={styles.card}>
-              <div className={styles.modelsHeader}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <Button
-                      size="small"
-                      type="text"
-                      icon={modelsCollapsed ? <RightOutlined /> : <DownOutlined />}
-                      onClick={() => {
-                        setModelsCollapsed(prev => {
-                          const next = !prev;
-                          try { localStorage.setItem(MODELS_COLLAPSE_KEY, next ? '1' : '0'); } catch {}
-                          return next;
-                        });
-                      }}
-                      aria-label={modelsCollapsed ? '展开模型列表' : '折叠模型列表'}
-                      title={modelsCollapsed ? '展开' : '折叠'}
-                    />
-                    <div className={styles.cardTitle}>模型</div>
-                    <span className={styles.badgeOff}>{filteredModels.length}</span>
-                  </div>
-                  <div className={styles.cardMeta}>
-                    {activeModelsEntry?.fetchedAt ? `更新时间：${new Date(activeModelsEntry.fetchedAt).toLocaleString()}` : '尚未获取（点击右侧刷新）'}
-                  </div>
-                </div>
-                <div className={[styles.modelsHeaderActions, isCompact ? styles.modelsHeaderActionsMobile : ''].filter(Boolean).join(' ')}>
-                  <Button
-                    type="primary"
-                    icon={<ReloadOutlined />}
-                    onClick={runTestModels}
-                    loading={busy}
-                    size="small"
-                    block={isCompact}
-                  >
-                    {busy ? '刷新中...' : '刷新'}
-                  </Button>
-
-                  <Input
-                    className={[styles.antdInput, styles.modelsSearch].filter(Boolean).join(' ')}
-                    value={modelSearch}
-                    onChange={(e) => setModelSearch(e.target.value)}
-                    placeholder="搜索模型id或供应商"
-                    allowClear
-                    prefix={<SearchOutlined />}
-                    size="small"
-                  />
-                </div>
-              </div>
-
-              {!modelsCollapsed ? (
-                <div className={styles.modelsBodyScroll}>
-                  {filteredModels.length === 0 ? (
-                    <>
-                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无模型数据，点击“刷新”获取" />
-                    </>
-                  ) : (
-                    <BrandLogoErrorBoundary
-                      resetKey={`models:${activeProvider?.id || ''}:${activeModelsEntry?.fetchedAt || 0}`}
-                      fallback={<div className={styles.errorBox}>模型列表渲染失败，请重新刷新或切换供应商。</div>}
-                    >
-                      <Collapse
-                        className={styles.modelsCollapse}
+              <div className={styles.card}>
+                <div className={styles.modelsHeader}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <Button
                         size="small"
-                        destroyOnHidden
-                        activeKey={expandedVendorKeys}
-                        onChange={(keys) => {
-                          const arr = Array.isArray(keys) ? keys.map(String) : [String(keys || '')].filter(Boolean);
-                          setCollapsedGroups(prev => {
-                            const next: Record<string, boolean> = { ...prev };
-                            const allKeys = groupedModels.map(g => String(g.vendor.key || g.vendor.label || 'models'));
-                            for (const k of allKeys) {
-                              next[k] = !arr.includes(k);
-                            }
+                        type="text"
+                        icon={modelsCollapsed ? <RightOutlined /> : <DownOutlined />}
+                        onClick={() => {
+                          setModelsCollapsed(prev => {
+                            const next = !prev;
+                            try { localStorage.setItem(MODELS_COLLAPSE_KEY, next ? '1' : '0'); } catch { }
                             return next;
                           });
                         }}
-                        items={groupedModels.map(({ vendor, models: ms }) => {
-                          const key = String(vendor.key || vendor.label || 'models');
-                          const expanded = expandedVendorKeys.includes(key);
-                          return {
-                            key,
-                            label: (
-                              <div className={styles.modelGroupHeaderAntd}>
-                                <div className={styles.groupHeaderLeft}>
-                                  <span className={styles.logoRound} style={{ width: 22, height: 22 }}>
-                                    <BrandLogo iconName={vendor.iconName} size={16} />
-                                  </span>
-                                  <span className={styles.vendorLabel}>{vendor.label}</span>
-                                  <span className={styles.badgeOff}>{ms.length}</span>
-                                </div>
-                              </div>
-                            ),
-                            children: expanded ? (
-                              <Table
-                                className={styles.modelAntdList}
-                                dataSource={ms}
-                                rowKey={(m) => {
-                                  const rawId = (m as any)?.id ?? (m as any)?.model ?? (m as any)?.name;
-                                  const id = rawId != null ? String(rawId).trim() : '';
-                                  return id ? id : formatModelTitle(m);
-                                }}
-                                pagination={false}
-                                size="small"
-                                showHeader={false}
-                                columns={[
-                                  {
-                                    key: 'row',
-                                    render: (_: any, m: any) => {
-                                      if (!activeProvider) return null;
-                                      const inferred = safeInferModelVendor(m, providerTypeFallbackVendor(activeProviderType));
-                                      const title = m?.id != null ? String(m.id) : formatModelTitle(m);
-                                      const override = getModelOverride(activeProvider.id, title);
-                                      const caps = (override?.caps && override.caps.length)
-                                        ? override.caps.map((k: string) => ({ key: k, label: k }))
-                                        : safeInferModelCapabilities(title);
+                        aria-label={modelsCollapsed ? '展开模型列表' : '折叠模型列表'}
+                        title={modelsCollapsed ? '展开' : '折叠'}
+                      />
+                      <div className={styles.cardTitle}>模型</div>
+                      <span className={styles.badgeOff}>{filteredModels.length}</span>
+                    </div>
+                    <div className={styles.cardMeta}>
+                      {activeModelsEntry?.fetchedAt ? `更新时间：${new Date(activeModelsEntry.fetchedAt).toLocaleString()}` : '尚未获取（点击右侧刷新）'}
+                    </div>
+                  </div>
+                  <div className={[styles.modelsHeaderActions, isCompact ? styles.modelsHeaderActionsMobile : ''].filter(Boolean).join(' ')}>
+                    <Button
+                      type="primary"
+                      icon={<ReloadOutlined />}
+                      onClick={runTestModels}
+                      loading={busy}
+                      size="small"
+                      block={isCompact}
+                    >
+                      {busy ? '刷新中...' : '刷新'}
+                    </Button>
 
-                                      return (
-                                        <div className={styles.modelRow}>
-                                          <div className={styles.modelRowMeta}>
-                                            <div className={styles.logoRound}>
-                                              {override?.icon ? (
-                                                <CustomIcon icon={override.icon as any} size={18} />
-                                              ) : (
-                                                <BrandLogo iconName={inferred.iconName} size={18} />
-                                              )}
-                                            </div>
-                                            <div style={{ minWidth: 0 }}>
-                                              <div className={styles.modelTitle}>{title}</div>
-                                              <div className={styles.modelCaps}>
-                                                {caps.map((cap: any) => (
-                                                  <Tooltip key={cap.key} title={cap.label}>
-                                                    <span
-                                                      className={styles.modelCapIcon}
-                                                      style={capStyleVars(cap.key)}
-                                                      aria-label={cap.key}
-                                                    >
-                                                      <CapabilityIcon capKey={cap.key} />
-                                                    </span>
-                                                  </Tooltip>
-                                                ))}
+                    <Input
+                      className={[styles.antdInput, styles.modelsSearch].filter(Boolean).join(' ')}
+                      value={modelSearch}
+                      onChange={(e) => setModelSearch(e.target.value)}
+                      placeholder="搜索模型id或供应商"
+                      allowClear
+                      prefix={<SearchOutlined />}
+                      size="small"
+                    />
+                  </div>
+                </div>
+
+                {!modelsCollapsed ? (
+                  <div className={styles.modelsBodyScroll}>
+                    {filteredModels.length === 0 ? (
+                      <>
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无模型数据，点击“刷新”获取" />
+                      </>
+                    ) : (
+                      <BrandLogoErrorBoundary
+                        resetKey={`models:${activeProvider?.id || ''}:${activeModelsEntry?.fetchedAt || 0}`}
+                        fallback={<div className={styles.errorBox}>模型列表渲染失败，请重新刷新或切换供应商。</div>}
+                      >
+                        <Collapse
+                          className={styles.modelsCollapse}
+                          size="small"
+                          destroyOnHidden
+                          activeKey={expandedVendorKeys}
+                          onChange={(keys) => {
+                            const arr = Array.isArray(keys) ? keys.map(String) : [String(keys || '')].filter(Boolean);
+                            setCollapsedGroups(prev => {
+                              const next: Record<string, boolean> = { ...prev };
+                              const allKeys = groupedModels.map(g => String(g.vendor.key || g.vendor.label || 'models'));
+                              for (const k of allKeys) {
+                                next[k] = !arr.includes(k);
+                              }
+                              return next;
+                            });
+                          }}
+                          items={groupedModels.map(({ vendor, models: ms }) => {
+                            const key = String(vendor.key || vendor.label || 'models');
+                            const expanded = expandedVendorKeys.includes(key);
+                            return {
+                              key,
+                              label: (
+                                <div className={styles.modelGroupHeaderAntd}>
+                                  <div className={styles.groupHeaderLeft}>
+                                    <span className={styles.logoRound} style={{ width: 22, height: 22 }}>
+                                      <BrandLogo iconName={vendor.iconName} size={16} />
+                                    </span>
+                                    <span className={styles.vendorLabel}>{vendor.label}</span>
+                                    <span className={styles.badgeOff}>{ms.length}</span>
+                                  </div>
+                                </div>
+                              ),
+                              children: expanded ? (
+                                <Table
+                                  className={styles.modelAntdList}
+                                  dataSource={ms}
+                                  rowKey={(m) => {
+                                    const rawId = (m as any)?.id ?? (m as any)?.model ?? (m as any)?.name;
+                                    const id = rawId != null ? String(rawId).trim() : '';
+                                    return id ? id : formatModelTitle(m);
+                                  }}
+                                  pagination={false}
+                                  size="small"
+                                  showHeader={false}
+                                  columns={[
+                                    {
+                                      key: 'row',
+                                      render: (_: any, m: any) => {
+                                        if (!activeProvider) return null;
+                                        const inferred = safeInferModelVendor(m, providerTypeFallbackVendor(activeProviderType));
+                                        const title = m?.id != null ? String(m.id) : formatModelTitle(m);
+                                        const override = getModelOverride(activeProvider.id, title);
+                                        const caps = (override?.caps && override.caps.length)
+                                          ? override.caps.map((k: string) => ({ key: k, label: k }))
+                                          : safeInferModelCapabilities(title);
+
+                                        return (
+                                          <div className={styles.modelRow}>
+                                            <div className={styles.modelRowMeta}>
+                                              <div className={styles.logoRound}>
+                                                {override?.icon ? (
+                                                  <CustomIcon icon={override.icon as any} size={18} />
+                                                ) : (
+                                                  <BrandLogo iconName={inferred.iconName} size={18} />
+                                                )}
+                                              </div>
+                                              <div style={{ minWidth: 0 }}>
+                                                <div className={styles.modelTitle}>{title}</div>
+                                                <div className={styles.modelCaps}>
+                                                  {caps.map((cap: any) => (
+                                                    <Tooltip key={cap.key} title={cap.label}>
+                                                      <span
+                                                        className={styles.modelCapIcon}
+                                                        style={capStyleVars(cap.key)}
+                                                        aria-label={cap.key}
+                                                      >
+                                                        <CapabilityIcon capKey={cap.key} />
+                                                      </span>
+                                                    </Tooltip>
+                                                  ))}
+                                                </div>
                                               </div>
                                             </div>
-                                          </div>
 
-                                          <div className={styles.modelRowActions}>
-                                            <Button
-                                              key="settings"
-                                              size="small"
-                                              type="text"
-                                              icon={<SettingOutlined />}
-                                              onClick={() => openModelSettings(activeProvider.id, title)}
-                                            />
-                                            <Button
-                                              key="copy"
-                                              size="small"
-                                              type="text"
-                                              icon={<CopyOutlined />}
-                                              onClick={(e) => {
-                                                try { (e as any)?.stopPropagation?.(); } catch {}
-                                                navigator.clipboard?.writeText(String(title || ''))
-                                                  .then(() => addToast('success', '已复制', String(title || '')))
-                                                  .catch((err) => addToast('error', '复制失败', String((err as any)?.message || err)));
-                                              }}
-                                            />
+                                            <div className={styles.modelRowActions}>
+                                              <Button
+                                                key="settings"
+                                                size="small"
+                                                type="text"
+                                                icon={<SettingOutlined />}
+                                                onClick={() => openModelSettings(activeProvider.id, title)}
+                                              />
+                                              <Button
+                                                key="copy"
+                                                size="small"
+                                                type="text"
+                                                icon={<CopyOutlined />}
+                                                onClick={(e) => {
+                                                  try { (e as any)?.stopPropagation?.(); } catch { }
+                                                  navigator.clipboard?.writeText(String(title || ''))
+                                                    .then(() => addToast('success', '已复制', String(title || '')))
+                                                    .catch((err) => addToast('error', '复制失败', String((err as any)?.message || err)));
+                                                }}
+                                              />
+                                            </div>
                                           </div>
-                                        </div>
-                                      );
+                                        );
+                                      },
                                     },
-                                  },
-                                ]}
-                              />
-                            ) : null,
-                          };
-                        })}
-                      />
-                    </BrandLogoErrorBoundary>
-                  )}
-                </div>
-              ) : null}
-            </div>
+                                  ]}
+                                />
+                              ) : null,
+                            };
+                          })}
+                        />
+                      </BrandLogoErrorBoundary>
+                    )}
+                  </div>
+                ) : null}
+              </div>
             ) : null}
 
             {(!isCompact || mobileSection === 'config') ? (
-            <div className={styles.card}>
-              <div className={styles.cardTitleRow}>
-                <div style={{ minWidth: 0 }}>
-                  <Typography.Title level={5} style={{ margin: 0, fontSize: 14 }}>
-                    LLM 配置中心
-                  </Typography.Title>
-                  <Descriptions size="small" column={1} colon={false} style={{ marginTop: 6 }}>
-                    <Descriptions.Item label="说明">
-                      {configLoading
-                        ? '加载配置中...'
-                        : (llmTab === 'mcp-plugins'
-                          ? '配置 sentra-mcp/plugins 本地插件环境变量'
-                          : (llmMappingLoading ? '加载映射中...' : '按模块编辑所有 LLM 相关环境变量'))}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="目标">
-                      {llmTab === 'mcp-plugins' ? 'sentra-mcp/plugins' : String(llmModule || '')}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="状态">
-                      <Space size={6} wrap>
-                        <Tag color={configLoading ? 'processing' : 'success'}>{configLoading ? '配置加载中' : '配置就绪'}</Tag>
-                        {llmTab === 'mcp-plugins'
-                          ? null
-                          : <Tag color={llmMappingLoading ? 'processing' : 'default'}>{llmMappingLoading ? '映射加载中' : '映射就绪'}</Tag>}
-                      </Space>
-                    </Descriptions.Item>
-                  </Descriptions>
+              <div className={styles.card}>
+                <div className={styles.cardTitleRow}>
+                  <div style={{ minWidth: 0 }}>
+                    <Typography.Title level={5} style={{ margin: 0, fontSize: 14 }}>
+                      LLM 配置中心
+                    </Typography.Title>
+                    <Descriptions size="small" column={1} colon={false} style={{ marginTop: 6 }}>
+                      <Descriptions.Item label="说明">
+                        {configLoading
+                          ? '加载配置中...'
+                          : (llmTab === 'mcp-plugins'
+                            ? '配置 sentra-mcp/plugins 本地插件环境变量'
+                            : (llmMappingLoading ? '加载映射中...' : '按模块编辑所有 LLM 相关环境变量'))}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="目标">
+                        {llmTab === 'mcp-plugins' ? 'sentra-mcp/plugins' : String(llmModule || '')}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="状态">
+                        <Space size={6} wrap>
+                          <Tag color={configLoading ? 'processing' : 'success'}>{configLoading ? '配置加载中' : '配置就绪'}</Tag>
+                          {llmTab === 'mcp-plugins'
+                            ? null
+                            : <Tag color={llmMappingLoading ? 'processing' : 'default'}>{llmMappingLoading ? '映射加载中' : '映射就绪'}</Tag>}
+                        </Space>
+                      </Descriptions.Item>
+                    </Descriptions>
+                  </div>
+                  <div className={styles.llmTopRight}>
+                    <Tabs
+                      size="small"
+                      activeKey={String(llmTab)}
+                      className={styles.llmTabsAntd}
+                      onChange={(k) => {
+                        const next = k as LlmConfigTabName;
+                        setLlmTab(next);
+                        if (next !== 'mcp-plugins') setLlmModule(next);
+                      }}
+                      items={LLM_TABS.map(m => ({ key: m.name, label: m.label }))}
+                    />
+                  </div>
                 </div>
-                <div className={styles.llmTopRight}>
-                  <Tabs
-                    size="small"
-                    activeKey={String(llmTab)}
-                    className={styles.llmTabsAntd}
-                    onChange={(k) => {
-                      const next = k as LlmConfigTabName;
-                      setLlmTab(next);
-                      if (next !== 'mcp-plugins') setLlmModule(next);
-                    }}
-                    items={LLM_TABS.map(m => ({ key: m.name, label: m.label }))}
-                  />
-                </div>
-              </div>
 
-              <div className={styles.llmToolbar}>
-                <div className={styles.llmToolbarLeft}>
-                  <Button
-                    size="small"
-                    icon={<ReloadOutlined />}
-                    onClick={loadConfigData}
-                    disabled={configLoading || llmSaving || mcpPluginSaving}
-                    title="重新加载配置"
-                  >
-                    刷新
-                  </Button>
+                <div className={styles.llmToolbar}>
+                  <div className={styles.llmToolbarLeft}>
+                    <Button
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      onClick={loadConfigData}
+                      disabled={configLoading || llmSaving || mcpPluginSaving}
+                      title="重新加载配置"
+                    >
+                      刷新
+                    </Button>
 
-                  {llmTab === 'mcp-plugins' ? (
-                    <>
-                      <Button
-                        size="small"
-                        onClick={() => setMcpPluginShowAllVars(s => !s)}
-                        disabled={mcpPluginSaving}
-                      >
-                        {mcpPluginShowAllVars ? '仅显示 LLM 字段' : '显示全部字段'}
-                      </Button>
-
-                      <Tooltip title="一键把当前供应商的 BaseURL(/v1) / API Key 填入插件内所有 *_BASE_URL/*_API_KEY 字段">
+                    {llmTab === 'mcp-plugins' ? (
+                      <>
                         <Button
                           size="small"
-                          icon={<ThunderboltOutlined />}
-                          onClick={fillMcpPluginSecretsFromActiveProvider}
-                          disabled={!activeProvider || mcpPluginSaving || !mcpPluginName}
+                          onClick={() => setMcpPluginShowAllVars(s => !s)}
+                          disabled={mcpPluginSaving}
                         >
-                          一键配置
+                          {mcpPluginShowAllVars ? '仅显示 LLM 字段' : '显示全部字段'}
+                        </Button>
+
+                        <Tooltip title="一键把当前供应商的 BaseURL(/v1) / API Key 填入插件内所有 *_BASE_URL/*_API_KEY 字段">
+                          <Button
+                            size="small"
+                            icon={<SyncOutlined />}
+                            onClick={fillMcpPluginSecretsFromActiveProvider}
+                            disabled={!activeProvider || mcpPluginSaving || !mcpPluginName}
+                          >
+                            同步到配置
+                          </Button>
+                        </Tooltip>
+
+                        <Select
+                          className={styles.antdSelect}
+                          size="small"
+                          value={mcpPluginName || undefined}
+                          onChange={(v) => setMcpPluginName(String(v || ''))}
+                          options={mcpPluginOptions.map((o) => ({ value: o.name, label: o.label }))}
+                          showSearch={{ optionFilterProp: 'label' }}
+                          allowClear
+                          placeholder="选择 MCP 插件"
+                          disabled={mcpPluginSaving}
+                          notFoundContent={selectNotFound}
+                          styles={selectPopupStyles}
+                          popupMatchSelectWidth={false}
+                          style={{ width: 220, maxWidth: '100%' }}
+                        />
+                      </>
+                    ) : (
+                      <Tooltip title="一键把当前供应商的 BaseURL(/v1) / API Key 填入本模块支持的 BaseURL/API_KEY 字段">
+                        <Button
+                          size="small"
+                          icon={<SyncOutlined />}
+                          onClick={fillLlmSecretsFromActiveProvider}
+                          disabled={!activeProvider || llmSaving}
+                        >
+                          同步到配置
                         </Button>
                       </Tooltip>
+                    )}
 
-                      <Select
-                        className={styles.antdSelect}
-                        size="small"
-                        value={mcpPluginName || undefined}
-                        onChange={(v) => setMcpPluginName(String(v || ''))}
-                        options={mcpPluginOptions.map((o) => ({ value: o.name, label: o.label }))}
-                        showSearch={{ optionFilterProp: 'label' }}
-                        allowClear
-                        placeholder="选择 MCP 插件"
-                        disabled={mcpPluginSaving}
-                        notFoundContent={selectNotFound}
-                        styles={selectPopupStyles}
-                        popupMatchSelectWidth={false}
-                        style={{ width: 220, maxWidth: '100%' }}
-                      />
-                    </>
+                    <Button
+                      size="small"
+                      icon={showSecretsInEnv ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                      onClick={() => setShowSecretsInEnv(s => !s)}
+                      disabled={llmSaving || mcpPluginSaving}
+                    >
+                      {showSecretsInEnv ? '隐藏密钥' : '显示密钥'}
+                    </Button>
+
+                    {(String(llmTab) !== 'mcp-plugins' && llmHasAdvancedItems) ? (
+                      <Tooltip title="显示/隐藏 JSON 映射中标记为 advanced 的参数">
+                        <Button
+                          size="small"
+                          icon={<SlidersOutlined />}
+                          type={showAdvancedLlm ? 'primary' : 'default'}
+                          onClick={() => setShowAdvancedLlm(s => !s)}
+                          disabled={llmSaving}
+                          aria-label="高级参数"
+                        >
+                          {showAdvancedLlm ? '隐藏高级参数' : '高级参数'}
+                        </Button>
+                      </Tooltip>
+                    ) : null}
+
+                    {llmTab === 'mcp-plugins' ? (
+                      <>
+                        <Tooltip title="收起全部分组">
+                          <Button
+                            size="small"
+                            onClick={collapseAllMcpPluginGroups}
+                            disabled={!mcpPluginName || mcpPluginSaving}
+                            aria-label="收起全部分组"
+                          >
+                            全部收起
+                          </Button>
+                        </Tooltip>
+                        <Tooltip title="展开全部分组">
+                          <Button
+                            size="small"
+                            onClick={expandAllMcpPluginGroups}
+                            disabled={!mcpPluginName || mcpPluginSaving}
+                            aria-label="展开全部分组"
+                          >
+                            全部展开
+                          </Button>
+                        </Tooltip>
+                      </>
+                    ) : (
+                      <>
+                        <Tooltip title="收起全部分组">
+                          <Button
+                            size="small"
+                            onClick={collapseAllLlmGroups}
+                            disabled={llmSaving || configLoading}
+                            aria-label="收起全部分组"
+                          >
+                            全部收起
+                          </Button>
+                        </Tooltip>
+                        <Tooltip title="展开全部分组">
+                          <Button
+                            size="small"
+                            onClick={expandAllLlmGroups}
+                            disabled={llmSaving || configLoading}
+                            aria-label="展开全部分组"
+                          >
+                            全部展开
+                          </Button>
+                        </Tooltip>
+                      </>
+                    )}
+                  </div>
+                  <Tooltip title={llmTab === 'mcp-plugins' ? (mcpPluginName ? '保存' : '请选择插件') : '写入该模块 .env'}>
+                    <Button
+                      type="primary"
+                      size="small"
+                      icon={<SaveOutlined />}
+                      onClick={llmTab === 'mcp-plugins' ? saveMcpPlugin : saveLlmModule}
+                      loading={llmTab === 'mcp-plugins' ? mcpPluginSaving : llmSaving}
+                      disabled={llmTab === 'mcp-plugins'
+                        ? (!mcpPluginName || !mcpPluginDirty[mcpPluginName])
+                        : (configLoading || !llmDirty[llmModule])}
+                      aria-label="保存"
+                    >
+                      保存
+                    </Button>
+                  </Tooltip>
+                </div>
+
+                {llmTab === 'mcp-plugins' ? (
+                  !mcpPluginName ? (
+                    <div className={styles.cardMeta}>未选择插件。</div>
+                  ) : mcpPluginItems.length === 0 ? (
+                    <div className={styles.cardMeta}>该插件暂无可配置项（可能没有 .env.example）。</div>
                   ) : (
-                    <Tooltip title="一键把当前供应商的 BaseURL(/v1) / API Key 填入本模块支持的 BaseURL/API_KEY 字段">
-                      <Button
-                        size="small"
-                        icon={<ThunderboltOutlined />}
-                        onClick={fillLlmSecretsFromActiveProvider}
-                        disabled={!activeProvider || llmSaving}
-                      >
-                        一键配置
-                      </Button>
-                    </Tooltip>
-                  )}
-
-                  <Button
-                    size="small"
-                    icon={showSecretsInEnv ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                    onClick={() => setShowSecretsInEnv(s => !s)}
-                    disabled={llmSaving || mcpPluginSaving}
-                  >
-                    {showSecretsInEnv ? '隐藏密钥' : '显示密钥'}
-                  </Button>
-
-                  {(String(llmTab) !== 'mcp-plugins' && llmHasAdvancedItems) ? (
-                    <Tooltip title="显示/隐藏 JSON 映射中标记为 advanced 的参数">
-                      <Button
-                        size="small"
-                        icon={<SlidersOutlined />}
-                        type={showAdvancedLlm ? 'primary' : 'default'}
-                        onClick={() => setShowAdvancedLlm(s => !s)}
-                        disabled={llmSaving}
-                        aria-label="高级参数"
-                      >
-                        {showAdvancedLlm ? '隐藏高级参数' : '高级参数'}
-                      </Button>
-                    </Tooltip>
-                  ) : null}
-
-                  {llmTab === 'mcp-plugins' ? (
-                    <>
-                      <Tooltip title="收起全部分组">
-                        <Button
-                          size="small"
-                          onClick={collapseAllMcpPluginGroups}
-                          disabled={!mcpPluginName || mcpPluginSaving}
-                          aria-label="收起全部分组"
-                        >
-                          全部收起
-                        </Button>
-                      </Tooltip>
-                      <Tooltip title="展开全部分组">
-                        <Button
-                          size="small"
-                          onClick={expandAllMcpPluginGroups}
-                          disabled={!mcpPluginName || mcpPluginSaving}
-                          aria-label="展开全部分组"
-                        >
-                          全部展开
-                        </Button>
-                      </Tooltip>
-                    </>
-                  ) : (
-                    <>
-                      <Tooltip title="收起全部分组">
-                        <Button
-                          size="small"
-                          onClick={collapseAllLlmGroups}
-                          disabled={llmSaving || configLoading}
-                          aria-label="收起全部分组"
-                        >
-                          全部收起
-                        </Button>
-                      </Tooltip>
-                      <Tooltip title="展开全部分组">
-                        <Button
-                          size="small"
-                          onClick={expandAllLlmGroups}
-                          disabled={llmSaving || configLoading}
-                          aria-label="展开全部分组"
-                        >
-                          全部展开
-                        </Button>
-                      </Tooltip>
-                    </>
-                  )}
-                </div>
-                <Tooltip title={llmTab === 'mcp-plugins' ? (mcpPluginName ? '保存' : '请选择插件') : '写入该模块 .env'}>
-                  <Button
-                    type="primary"
-                    size="small"
-                    icon={<SaveOutlined />}
-                    onClick={llmTab === 'mcp-plugins' ? saveMcpPlugin : saveLlmModule}
-                    loading={llmTab === 'mcp-plugins' ? mcpPluginSaving : llmSaving}
-                    disabled={llmTab === 'mcp-plugins'
-                      ? (!mcpPluginName || !mcpPluginDirty[mcpPluginName])
-                      : (configLoading || !llmDirty[llmModule])}
-                    aria-label="保存"
-                  >
-                    保存
-                  </Button>
-                </Tooltip>
-              </div>
-
-              {llmTab === 'mcp-plugins' ? (
-                !mcpPluginName ? (
-                  <div className={styles.cardMeta}>未选择插件。</div>
-                ) : mcpPluginItems.length === 0 ? (
-                  <div className={styles.cardMeta}>该插件暂无可配置项（可能没有 .env.example）。</div>
-                ) : (
-                  <BrandLogoErrorBoundary
-                    resetKey={`mcpPlugin:${mcpPluginName}:${mcpPluginShowAllVars ? 'all' : 'llm'}`}
-                    fallback={<div className={styles.errorBox}>插件配置渲染失败，请刷新或切换插件。</div>}
-                  >
-                    <div className={styles.llmGroups}>
-                      {mcpPluginGroupedItems.map(([g, items]) => {
-                        const k = `plugin:${mcpPluginName}:${g}`;
-                        const collapsed = mcpPluginGroupCollapsed[k] !== false;
-                        return (
-                          <div className={styles.llmGroup} key={k}>
-                            <div className={styles.llmGroupHeader}>
-                              <div className={styles.llmGroupHeaderLeft}>
-                                <div className={styles.llmGroupTitle}>{g}</div>
-                                <span className={styles.badgeOff}>{items.length}</span>
+                    <BrandLogoErrorBoundary
+                      resetKey={`mcpPlugin:${mcpPluginName}:${mcpPluginShowAllVars ? 'all' : 'llm'}`}
+                      fallback={<div className={styles.errorBox}>插件配置渲染失败，请刷新或切换插件。</div>}
+                    >
+                      <div className={styles.llmGroups}>
+                        {mcpPluginGroupedItems.map(([g, items]) => {
+                          const k = `plugin:${mcpPluginName}:${g}`;
+                          const collapsed = mcpPluginGroupCollapsed[k] !== false;
+                          return (
+                            <div className={styles.llmGroup} key={k}>
+                              <div className={styles.llmGroupHeader}>
+                                <div className={styles.llmGroupHeaderLeft}>
+                                  <div className={styles.llmGroupTitle}>{g}</div>
+                                  <span className={styles.badgeOff}>{items.length}</span>
+                                </div>
+                                <div className={styles.llmGroupHeaderRight}>
+                                  <Button
+                                    size="small"
+                                    type="text"
+                                    icon={collapsed ? <RightOutlined /> : <DownOutlined />}
+                                    onClick={() => setMcpPluginGroupCollapsed(prev => ({ ...prev, [k]: prev[k] === false ? true : false }))}
+                                    aria-label={collapsed ? '展开' : '折叠'}
+                                    title={collapsed ? '展开' : '折叠'}
+                                  />
+                                </div>
                               </div>
-                              <div className={styles.llmGroupHeaderRight}>
+
+                              {!collapsed ? (
+                                <Table
+                                  className={styles.envListAntd}
+                                  dataSource={items}
+                                  rowKey={(r) => String((r as any).key || '')}
+                                  pagination={false}
+                                  size="small"
+                                  showHeader={false}
+                                  columns={[
+                                    {
+                                      key: 'row',
+                                      render: (_: any, it: any) => {
+                                        const v = mcpPluginVarsMap.get(it.key);
+                                        const meta = parseEnvMeta(v?.comment);
+                                        const desc = meta?.description || '';
+                                        const displayName = String(v?.displayName ?? '').trim();
+                                        const value = String(v?.value ?? '');
+                                        const hasCnName = Boolean(displayName);
+                                        const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
+                                        const isSecret = isSensitiveKeyKind(it.kind, it.key);
+
+                                        const kindTag = (() => {
+                                          if (it.kind === 'api_key') return <Tag icon={<KeyOutlined />} color="red">密钥</Tag>;
+                                          if (it.kind === 'base_url') return <Tag icon={<LinkOutlined />} color="blue">Base URL</Tag>;
+                                          if (it.kind === 'boolean') return <Tag icon={<CheckOutlined />} color="green">开关</Tag>;
+                                          if (it.kind === 'number') return <Tag icon={<NumberOutlined />} color="gold">数字</Tag>;
+                                          if (it.kind === 'enum') return <Tag icon={<AppstoreOutlined />} color="purple">选项</Tag>;
+                                          if (it.kind === 'model') return <Tag icon={<ApiOutlined />} color="cyan">模型</Tag>;
+                                          return <Tag>文本</Tag>;
+                                        })();
+
+                                        const secretTag = isSecret ? <Tag icon={<LockOutlined />} color="volcano">敏感</Tag> : null;
+                                        const requiredTag = /必填|required/i.test(desc) ? <Tag color="magenta">必填</Tag> : null;
+
+                                        const control = (
+                                          it.kind === 'boolean' ? (
+                                            <Switch
+                                              aria-label={it.key}
+                                              checked={isTruthyString(value)}
+                                              onChange={(next) => updateMcpPluginVar(it.key, next ? 'true' : 'false')}
+                                              size="small"
+                                            />
+                                          ) : it.kind === 'enum' ? (
+                                            <Select
+                                              className={styles.antdSelect}
+                                              value={value}
+                                              onChange={(next) => updateMcpPluginVar(it.key, String(next ?? ''))}
+                                              options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map((op: string) => ({ value: op, label: op }))}
+                                              showSearch
+                                              allowClear
+                                              notFoundContent={selectNotFound}
+                                              styles={selectPopupStyles}
+                                              popupMatchSelectWidth={false}
+                                            />
+                                          ) : it.kind === 'model' ? (
+                                            <Select
+                                              className={styles.antdSelect}
+                                              mode="tags"
+                                              showSearch
+                                              allowClear
+                                              tokenSeparators={[',']}
+                                              value={value ? [value] : []}
+                                              placeholder={activeProvider ? (activeModelIds.length ? '选择/搜索模型（回车确认）' : '请先检测供应商模型') : '请先选择供应商'}
+                                              options={(activeProvider ? activeModelIds
+                                                .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
+                                                .filter(id => {
+                                                  const requireCaps = getPluginModelRequireCaps(mcpPluginName, it.key);
+                                                  return modelHasCaps(activeProvider.id, id, requireCaps);
+                                                })
+                                                .map(id => ({ value: id, label: id })) : [])}
+                                              notFoundContent={selectNotFound}
+                                              styles={selectPopupStyles}
+                                              popupMatchSelectWidth={false}
+                                              onChange={(vals) => {
+                                                const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
+                                                const next = list.length ? list[list.length - 1] : '';
+                                                updateMcpPluginVar(it.key, next);
+                                              }}
+                                            />
+                                          ) : it.kind === 'text' && /whitelist/i.test(it.key) ? (
+                                            <Select
+                                              className={styles.antdSelect}
+                                              mode="tags"
+                                              showSearch
+                                              allowClear
+                                              tokenSeparators={[',']}
+                                              value={parseMultiTextValue(value)}
+                                              placeholder="输入多个值（回车/逗号）"
+                                              notFoundContent={selectNotFound}
+                                              styles={selectPopupStyles}
+                                              popupMatchSelectWidth={false}
+                                              onChange={(vals) => {
+                                                const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
+                                                updateMcpPluginVar(it.key, formatMultiTextValue(list));
+                                              }}
+                                            />
+                                          ) : it.kind === 'base_url' ? (
+                                            <Input
+                                              className={styles.antdInput}
+                                              value={value}
+                                              onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
+                                              onBlur={(e) => updateMcpPluginVar(it.key, normalizeBaseUrlV1(e.target.value))}
+                                              type="text"
+                                              placeholder="https://.../v1"
+                                            />
+                                          ) : (
+                                            <Input
+                                              className={styles.antdInput}
+                                              value={value}
+                                              onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
+                                              type={isSecret && !showSecretsInEnv ? 'password' : (type === 'number' ? 'number' : 'text')}
+                                              placeholder={it.kind === 'api_key' ? 'sk-...' : undefined}
+                                            />
+                                          )
+                                        );
+
+                                        return (
+                                          <div className={styles.envRow}>
+                                            <div className={styles.envLeft}>
+                                              <Tooltip
+                                                trigger={isCompact ? ['click'] : ['hover']}
+                                                placement="topLeft"
+                                                title={(
+                                                  <div className={styles.tooltipKeyRow}>
+                                                    <span className={styles.tooltipKeyText}>{it.key}</span>
+                                                  </div>
+                                                )}
+                                              >
+                                                <div className={styles.envName}>{hasCnName ? displayName : '未提供中文名称'}</div>
+                                              </Tooltip>
+                                              {desc ? <div className={styles.envDesc}>{desc}</div> : null}
+                                              <div className={styles.envMetaTags}>
+                                                {requiredTag}
+                                                {secretTag}
+                                                {kindTag}
+                                              </div>
+                                            </div>
+                                            <div className={styles.envRight}>{control}</div>
+                                          </div>
+                                        );
+                                      },
+                                    },
+                                  ]}
+                                />
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </BrandLogoErrorBoundary>
+                  )
+                ) : (!llmModuleConfig ? (
+                  <div className={styles.cardMeta}>该模块未找到配置。</div>
+                ) : !llmModuleMapping || !llmActiveProfile ? (
+                  <div className={styles.cardMeta}>该模块未配置 LLM 映射规则（请更新 llmEnvMapping.json）。</div>
+                ) : llmVisibleItems.length === 0 ? (
+                  <div className={styles.cardMeta}>当前模式下没有可配置项（可能被条件规则隐藏）。</div>
+                ) : (
+                  <div className={styles.llmGroups}>
+                    {llmGroupedItems.map(([g, items]) => {
+                      const k = `${llmModule}:${g}`;
+                      const collapsed = llmGroupCollapsed[k] !== false;
+                      return (
+                        <div className={styles.llmGroup} key={k}>
+                          <div className={styles.llmGroupHeader}>
+                            <div className={styles.llmGroupHeaderLeft}>
+                              <div className={styles.llmGroupTitle}>{g}</div>
+                              <span className={styles.badgeOff}>{items.length}</span>
+                            </div>
+                            <div className={styles.llmGroupHeaderRight}>
+                              <Tooltip title="同步该分组 BaseURL/Key">
                                 <Button
                                   size="small"
                                   type="text"
-                                  icon={collapsed ? <RightOutlined /> : <DownOutlined />}
-                                  onClick={() => setMcpPluginGroupCollapsed(prev => ({ ...prev, [k]: prev[k] === false ? true : false }))}
-                                  aria-label={collapsed ? '展开' : '折叠'}
-                                  title={collapsed ? '展开' : '折叠'}
+                                  icon={<SyncOutlined />}
+                                  onClick={() => quickFillGroupFromProvider(g)}
+                                  disabled={llmSaving}
                                 />
-                              </div>
-                            </div>
-
-                            {!collapsed ? (
-                              <Table
-                                className={styles.envListAntd}
-                                dataSource={items}
-                                rowKey={(r) => String((r as any).key || '')}
-                                pagination={false}
+                              </Tooltip>
+                              <Button
                                 size="small"
-                                showHeader={false}
-                                columns={[
-                                  {
-                                    key: 'row',
-                                    render: (_: any, it: any) => {
-                                      const v = mcpPluginVarsMap.get(it.key);
-                                      const meta = parseEnvMeta(v?.comment);
-                                      const desc = meta?.description || '';
-                                      const displayName = String(v?.displayName ?? '').trim();
-                                      const value = String(v?.value ?? '');
-                                      const hasCnName = Boolean(displayName);
-                                      const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
-                                      const isSecret = isSensitiveKeyKind(it.kind, it.key);
-
-                                      const kindTag = (() => {
-                                        if (it.kind === 'api_key') return <Tag icon={<KeyOutlined />} color="red">密钥</Tag>;
-                                        if (it.kind === 'base_url') return <Tag icon={<LinkOutlined />} color="blue">Base URL</Tag>;
-                                        if (it.kind === 'boolean') return <Tag icon={<CheckOutlined />} color="green">开关</Tag>;
-                                        if (it.kind === 'number') return <Tag icon={<NumberOutlined />} color="gold">数字</Tag>;
-                                        if (it.kind === 'enum') return <Tag icon={<AppstoreOutlined />} color="purple">选项</Tag>;
-                                        if (it.kind === 'model') return <Tag icon={<ApiOutlined />} color="cyan">模型</Tag>;
-                                        return <Tag>文本</Tag>;
-                                      })();
-
-                                      const secretTag = isSecret ? <Tag icon={<LockOutlined />} color="volcano">敏感</Tag> : null;
-                                      const requiredTag = /必填|required/i.test(desc) ? <Tag color="magenta">必填</Tag> : null;
-
-                                      const control = (
-                                        it.kind === 'boolean' ? (
-                                          <Switch
-                                            aria-label={it.key}
-                                            checked={isTruthyString(value)}
-                                            onChange={(next) => updateMcpPluginVar(it.key, next ? 'true' : 'false')}
-                                            size="small"
-                                          />
-                                        ) : it.kind === 'enum' ? (
-                                          <Select
-                                            className={styles.antdSelect}
-                                            value={value}
-                                            onChange={(next) => updateMcpPluginVar(it.key, String(next ?? ''))}
-                                            options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map((op: string) => ({ value: op, label: op }))}
-                                            showSearch
-                                            allowClear
-                                            notFoundContent={selectNotFound}
-                                            styles={selectPopupStyles}
-                                            popupMatchSelectWidth={false}
-                                          />
-                                        ) : it.kind === 'model' ? (
-                                          <Select
-                                            className={styles.antdSelect}
-                                            mode="tags"
-                                            showSearch
-                                            allowClear
-                                            tokenSeparators={[',']}
-                                            value={value ? [value] : []}
-                                            placeholder={activeProvider ? (activeModelIds.length ? '选择/搜索模型（回车确认）' : '请先检测供应商模型') : '请先选择供应商'}
-                                            options={(activeProvider ? activeModelIds
-                                              .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
-                                              .filter(id => {
-                                                const requireCaps = getPluginModelRequireCaps(mcpPluginName, it.key);
-                                                return modelHasCaps(activeProvider.id, id, requireCaps);
-                                              })
-                                              .map(id => ({ value: id, label: id })) : [])}
-                                            notFoundContent={selectNotFound}
-                                            styles={selectPopupStyles}
-                                            popupMatchSelectWidth={false}
-                                            onChange={(vals) => {
-                                              const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
-                                              const next = list.length ? list[list.length - 1] : '';
-                                              updateMcpPluginVar(it.key, next);
-                                            }}
-                                          />
-                                        ) : it.kind === 'text' && /whitelist/i.test(it.key) ? (
-                                          <Select
-                                            className={styles.antdSelect}
-                                            mode="tags"
-                                            showSearch
-                                            allowClear
-                                            tokenSeparators={[',']}
-                                            value={parseMultiTextValue(value)}
-                                            placeholder="输入多个值（回车/逗号）"
-                                            notFoundContent={selectNotFound}
-                                            styles={selectPopupStyles}
-                                            popupMatchSelectWidth={false}
-                                            onChange={(vals) => {
-                                              const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
-                                              updateMcpPluginVar(it.key, formatMultiTextValue(list));
-                                            }}
-                                          />
-                                        ) : it.kind === 'base_url' ? (
-                                          <Input
-                                            className={styles.antdInput}
-                                            value={value}
-                                            onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
-                                            onBlur={(e) => updateMcpPluginVar(it.key, normalizeBaseUrlV1(e.target.value))}
-                                            type="text"
-                                            placeholder="https://.../v1"
-                                          />
-                                        ) : (
-                                          <Input
-                                            className={styles.antdInput}
-                                            value={value}
-                                            onChange={(e) => updateMcpPluginVar(it.key, e.target.value)}
-                                            type={isSecret && !showSecretsInEnv ? 'password' : (type === 'number' ? 'number' : 'text')}
-                                            placeholder={it.kind === 'api_key' ? 'sk-...' : undefined}
-                                          />
-                                        )
-                                      );
-
-                                      return (
-                                        <div className={styles.envRow}>
-                                          <div className={styles.envLeft}>
-                                            <Tooltip
-                                              trigger={isCompact ? ['click'] : ['hover']}
-                                              placement="topLeft"
-                                              title={(
-                                                <div className={styles.tooltipKeyRow}>
-                                                  <span className={styles.tooltipKeyText}>{it.key}</span>
-                                                </div>
-                                              )}
-                                            >
-                                              <div className={styles.envName}>{hasCnName ? displayName : '未提供中文名称'}</div>
-                                            </Tooltip>
-                                            {desc ? <div className={styles.envDesc}>{desc}</div> : null}
-                                            <div className={styles.envMetaTags}>
-                                              {requiredTag}
-                                              {secretTag}
-                                              {kindTag}
-                                            </div>
-                                          </div>
-                                          <div className={styles.envRight}>{control}</div>
-                                        </div>
-                                      );
-                                    },
-                                  },
-                                ]}
+                                type="text"
+                                icon={collapsed ? <RightOutlined /> : <DownOutlined />}
+                                onClick={() => setLlmGroupCollapsed(prev => ({ ...prev, [k]: prev[k] === false ? true : false }))}
+                                aria-label={collapsed ? '展开' : '折叠'}
+                                title={collapsed ? '展开' : '折叠'}
                               />
-                            ) : null}
+                            </div>
+                          </div>
+
+                          {!collapsed ? (
+                            <Table
+                              className={styles.envListAntd}
+                              dataSource={items}
+                              rowKey={(r) => String((r as any).key || '')}
+                              pagination={false}
+                              size="small"
+                              showHeader={false}
+                              columns={[
+                                {
+                                  key: 'row',
+                                  render: (_: any, it: any) => {
+                                    const v = llmVarsMap.get(it.key);
+                                    const meta = parseEnvMeta(v?.comment);
+                                    const desc = meta?.description || '';
+                                    const displayName = String(v?.displayName ?? '').trim();
+                                    const value = String(v?.value ?? '');
+                                    const hasCnName = Boolean(displayName);
+                                    const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
+                                    const isSecret = isSensitiveKeyKind(it.kind, it.key);
+                                    const isModelMultiCsv = it.kind === 'model' && it.picker === 'model' && it.multiple === true && it.valueFormat === 'csv';
+
+                                    const kindTag = (() => {
+                                      if (it.kind === 'api_key') return <Tag icon={<KeyOutlined />} color="red">密钥</Tag>;
+                                      if (it.kind === 'base_url') return <Tag icon={<LinkOutlined />} color="blue">Base URL</Tag>;
+                                      if (it.kind === 'boolean') return <Tag icon={<CheckOutlined />} color="green">开关</Tag>;
+                                      if (it.kind === 'number') return <Tag icon={<NumberOutlined />} color="gold">数字</Tag>;
+                                      if (it.kind === 'enum') return <Tag icon={<AppstoreOutlined />} color="purple">选项</Tag>;
+                                      if (it.kind === 'model') return <Tag icon={<ApiOutlined />} color="cyan">模型</Tag>;
+                                      return <Tag>文本</Tag>;
+                                    })();
+
+                                    const secretTag = isSecret ? <Tag icon={<LockOutlined />} color="volcano">敏感</Tag> : null;
+                                    const requiredTag = /必填|required/i.test(desc) ? <Tag color="magenta">必填</Tag> : null;
+
+                                    const control = (
+                                      it.kind === 'boolean' ? (
+                                        <Switch
+                                          aria-label={it.key}
+                                          checked={isTruthyString(value)}
+                                          onChange={(next) => updateLlmVar(it.key, next ? 'true' : 'false')}
+                                          size="small"
+                                        />
+                                      ) : it.kind === 'enum' ? (
+                                        <Select
+                                          className={styles.antdSelect}
+                                          value={value}
+                                          onChange={(next) => updateLlmVar(it.key, String(next ?? ''))}
+                                          options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map((op: string) => ({ value: op, label: op }))}
+                                          showSearch
+                                          allowClear
+                                          notFoundContent={selectNotFound}
+                                          styles={selectPopupStyles}
+                                          popupMatchSelectWidth={false}
+                                        />
+                                      ) : it.kind === 'model' ? (
+                                        <Select
+                                          className={styles.antdSelect}
+                                          mode="tags"
+                                          showSearch
+                                          allowClear
+                                          tokenSeparators={[',']}
+                                          value={isModelMultiCsv ? parseCsvValue(value) : (value ? [value] : [])}
+                                          placeholder={activeProvider ? (activeModelIds.length ? (isModelMultiCsv ? '选择/搜索多个模型（回车确认）' : '选择/搜索模型（回车确认）') : '请先检测供应商模型') : '请先选择供应商'}
+                                          options={(activeProvider ? activeModelIds
+                                            .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
+                                            .map(id => ({ value: id, label: id })) : [])}
+                                          notFoundContent={selectNotFound}
+                                          styles={selectPopupStyles}
+                                          popupMatchSelectWidth={false}
+                                          onChange={(vals) => {
+                                            const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
+                                            if (isModelMultiCsv) {
+                                              updateLlmVar(it.key, formatCsvValue(Array.from(new Set(list))));
+                                              return;
+                                            }
+                                            const next = list.length ? list[list.length - 1] : '';
+                                            updateLlmVar(it.key, next);
+                                          }}
+                                        />
+                                      ) : it.kind === 'text' && /whitelist/i.test(it.key) ? (
+                                        <Select
+                                          className={styles.antdSelect}
+                                          mode="tags"
+                                          showSearch
+                                          allowClear
+                                          tokenSeparators={[',']}
+                                          value={parseMultiTextValue(value)}
+                                          placeholder="输入多个值（回车/逗号）"
+                                          notFoundContent={selectNotFound}
+                                          styles={selectPopupStyles}
+                                          popupMatchSelectWidth={false}
+                                          onChange={(vals) => {
+                                            const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
+                                            updateLlmVar(it.key, formatMultiTextValue(list));
+                                          }}
+                                        />
+                                      ) : it.kind === 'number' || type === 'number' ? (
+                                        <InputNumber
+                                          style={{ width: '100%' }}
+                                          value={Number.isFinite(Number(value)) ? Number(value) : null}
+                                          onChange={(next) => updateLlmVar(it.key, next == null ? '' : String(next))}
+                                          placeholder="请输入数字"
+                                        />
+                                      ) : it.kind === 'api_key' ? (
+                                        <Input
+                                          className={styles.antdInput}
+                                          value={value}
+                                          onChange={(e) => updateLlmVar(it.key, e.target.value)}
+                                          type={isSecret && !showSecretsInEnv ? 'password' : 'text'}
+                                          placeholder="sk-..."
+                                        />
+                                      ) : it.kind === 'base_url' ? (
+                                        <Input
+                                          className={styles.antdInput}
+                                          value={value}
+                                          onChange={(e) => updateLlmVar(it.key, e.target.value)}
+                                          onBlur={(e) => updateLlmVar(it.key, normalizeBaseUrlV1(e.target.value))}
+                                          type="text"
+                                          placeholder="https://.../v1"
+                                        />
+                                      ) : (
+                                        <Input
+                                          className={styles.antdInput}
+                                          value={value}
+                                          onChange={(e) => updateLlmVar(it.key, e.target.value)}
+                                          type={isSecret && !showSecretsInEnv ? 'password' : 'text'}
+                                        />
+                                      )
+                                    );
+
+                                    return (
+                                      <div className={styles.envRow}>
+                                        <div className={styles.envLeft}>
+                                          <Tooltip
+                                            trigger={isCompact ? ['click'] : ['hover']}
+                                            placement="topLeft"
+                                            title={(
+                                              <div className={styles.tooltipKeyRow}>
+                                                <span className={styles.tooltipKeyText}>{it.key}</span>
+                                              </div>
+                                            )}
+                                          >
+                                            <div className={styles.envName}>{hasCnName ? displayName : '未提供中文名称'}</div>
+                                          </Tooltip>
+                                          {desc ? <div className={styles.envDesc}>{desc}</div> : null}
+                                          <div className={styles.envMetaTags}>
+                                            {requiredTag}
+                                            {secretTag}
+                                            {kindTag}
+                                          </div>
+                                        </div>
+                                        <div className={styles.envRight}>{control}</div>
+                                      </div>
+                                    );
+                                  },
+                                },
+                              ]}
+                            />
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <Drawer
+              open={modelSettingsOpen}
+              placement="right"
+              width={560}
+              title="更新模型信息"
+              onClose={() => { setModelSettingsOpen(false); setIconPickerOpen(false); }}
+              className={styles.modelSettingsDrawer}
+              destroyOnHidden={false}
+            >
+              <div className={styles.drawerBody}>
+                <div className={styles.modelSettingsHeaderRow}>
+                  <span className={styles.logoRound} style={{ width: 34, height: 34 }}>
+                    {modelSettingsIcon ? (
+                      <CustomIcon icon={modelSettingsIcon} size={20} />
+                    ) : (
+                      <BrandLogo iconName={safeInferModelVendor({ id: modelSettingsModelId }, providerTypeFallbackVendor(activeProviderType)).iconName} size={20} />
+                    )}
+                  </span>
+                  <div style={{ minWidth: 0 }}>
+                    <div className={styles.modelSettingsModelId}>{modelSettingsModelId}</div>
+                    <div className={styles.modelSettingsSub}>自定义图标与能力，将写入本地覆盖文件</div>
+                  </div>
+                </div>
+
+                <div className={styles.modelSettingsSection}>
+                  <div className={styles.modelSettingsSectionTitle}>外观</div>
+                  <div className={styles.modelSettingsActionsRow}>
+                    <Tooltip title="选择图标（Lobe Icons）">
+                      <Button
+                        size="small"
+                        icon={<BgColorsOutlined />}
+                        onClick={() => {
+                          setIconPickerTarget('model');
+                          setIconPickerOpen(true);
+                        }}
+                      >
+                        选择图标
+                      </Button>
+                    </Tooltip>
+                    <Upload
+                      accept="image/*"
+                      showUploadList={false}
+                      beforeUpload={(file) => {
+                        const f = file as any;
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          const dataUrl = String(reader.result || '');
+                          if (!dataUrl.startsWith('data:image/')) {
+                            addToast('error', '图片格式不支持');
+                            return;
+                          }
+                          setModelSettingsIcon({ type: 'upload', dataUrl });
+                        };
+                        reader.readAsDataURL(f);
+                        return false;
+                      }}
+                    >
+                      <Button size="small" icon={<UploadOutlined />}>上传图片</Button>
+                    </Upload>
+                    <Button
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={() => setModelSettingsIcon(null)}
+                    >
+                      清除
+                    </Button>
+                  </div>
+                </div>
+
+                <div className={styles.modelSettingsSection}>
+                  <div className={styles.modelSettingsSectionTitle}>能力</div>
+
+                  <div className={styles.capSelectedBar}>
+                    <div className={styles.capSelectedLeft}>
+                      <div className={styles.capSelectedTitle}>已选能力</div>
+                      <div className={styles.capSelectedCount}>{modelSettingsCaps.length}</div>
+                    </div>
+                    <div className={styles.capSelectedTags}>
+                      {modelSettingsCaps.slice(0, 40).map((k) => (
+                        <Tag
+                          key={k}
+                          closable
+                          onClose={(e) => {
+                            e.preventDefault();
+                            toggleModelSettingsCap(k);
+                          }}
+                          className={styles.capSelectedTag}
+                          style={capStyleVars(k)}
+                        >
+                          {capabilityLabelByKey.get(String(k)) || String(k)}
+                        </Tag>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className={styles.capFilterStack}>
+                    <Input
+                      className={styles.antdInput}
+                      value={capabilitySearch}
+                      onChange={(e) => setCapabilitySearch(e.target.value)}
+                      placeholder="搜索能力，例如 vision / web / embedding"
+                      allowClear
+                      prefix={<SearchOutlined />}
+                    />
+                    <Select
+                      className={styles.antdSelect}
+                      value={capabilityCategory}
+                      onChange={(v) => setCapabilityCategory(String(v || 'all'))}
+                      options={capabilityCategoryOptions}
+                      placeholder="按类别"
+                      style={{ width: '100%' }}
+                    />
+                    <div className={styles.capPillsRow}>
+                      <div className={styles.capPills} role="tablist" aria-label="能力视图">
+                        <button
+                          type="button"
+                          className={[styles.capViewPill, capabilityView === 'all' ? styles.capViewPillActive : ''].filter(Boolean).join(' ')}
+                          aria-selected={capabilityView === 'all'}
+                          onClick={() => setCapabilityView('all')}
+                        >
+                          全部({capabilityViewCounts.all})
+                        </button>
+                        <button
+                          type="button"
+                          className={[styles.capViewPill, capabilityView === 'selected' ? styles.capViewPillActive : ''].filter(Boolean).join(' ')}
+                          aria-selected={capabilityView === 'selected'}
+                          onClick={() => setCapabilityView('selected')}
+                        >
+                          已选({capabilityViewCounts.selected})
+                        </button>
+                        <button
+                          type="button"
+                          className={[styles.capViewPill, capabilityView === 'inferred' ? styles.capViewPillActive : ''].filter(Boolean).join(' ')}
+                          aria-selected={capabilityView === 'inferred'}
+                          onClick={() => setCapabilityView('inferred')}
+                        >
+                          推断({capabilityViewCounts.inferred})
+                        </button>
+                        <button
+                          type="button"
+                          className={[styles.capViewPill, capabilityView === 'unselected' ? styles.capViewPillActive : ''].filter(Boolean).join(' ')}
+                          aria-selected={capabilityView === 'unselected'}
+                          onClick={() => setCapabilityView('unselected')}
+                        >
+                          未选({capabilityViewCounts.unselected})
+                        </button>
+                      </div>
+                    </div>
+                    <div className={styles.capActionsRow}>
+                      <Button size="small" onClick={() => setModelSettingsCaps(inferredModelSettingsCaps)}>按推断</Button>
+                      <Button size="small" onClick={() => setModelSettingsCaps(capabilityChoices.map(c => c.key))}>全选</Button>
+                      <Button size="small" onClick={() => setModelSettingsCaps([])}>清空</Button>
+                    </div>
+                  </div>
+
+                  <div className={styles.capGridScroll}>
+                    <div className={styles.capGrid} role="list">
+                      {filteredCapabilityChoices.map((cap) => {
+                        const capKey = String((cap as any).key);
+                        const on = modelSettingsCaps.includes(capKey);
+                        const hint = inferredCapsSet.has(capKey) && !on;
+                        return (
+                          <div
+                            key={capKey}
+                            className={[styles.capPill, on ? styles.capPillOn : styles.capPillOff].filter(Boolean).join(' ')}
+                            style={capStyleVars(capKey)}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => toggleModelSettingsCap(capKey)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                toggleModelSettingsCap(capKey);
+                              }
+                            }}
+                          >
+                            <Checkbox
+                              checked={on}
+                              onChange={() => toggleModelSettingsCap(capKey)}
+                              onClick={(e) => {
+                                try { (e as any).stopPropagation(); } catch { }
+                              }}
+                            />
+                            <span className={styles.capPillIcon} aria-label={capKey}><CapabilityIcon capKey={capKey} /></span>
+                            <span className={styles.capPillLabel}>{String((cap as any).label || (cap as any).key)}</span>
+                            {hint ? <span className={styles.capPillHint}><BulbOutlined /> 推断</span> : null}
                           </div>
                         );
                       })}
                     </div>
-                  </BrandLogoErrorBoundary>
-                )
-              ) : (!llmModuleConfig ? (
-                <div className={styles.cardMeta}>该模块未找到配置。</div>
-              ) : !llmModuleMapping || !llmActiveProfile ? (
-                <div className={styles.cardMeta}>该模块未配置 LLM 映射规则（请更新 llmEnvMapping.json）。</div>
-              ) : llmVisibleItems.length === 0 ? (
-                <div className={styles.cardMeta}>当前模式下没有可配置项（可能被条件规则隐藏）。</div>
-              ) : (
-                <div className={styles.llmGroups}>
-                  {llmGroupedItems.map(([g, items]) => {
-                    const k = `${llmModule}:${g}`;
-                    const collapsed = llmGroupCollapsed[k] !== false;
-                    return (
-                      <div className={styles.llmGroup} key={k}>
-                        <div className={styles.llmGroupHeader}>
-                          <div className={styles.llmGroupHeaderLeft}>
-                            <div className={styles.llmGroupTitle}>{g}</div>
-                            <span className={styles.badgeOff}>{items.length}</span>
-                          </div>
-                          <div className={styles.llmGroupHeaderRight}>
-                            <Tooltip title="一键配置该分组 BaseURL/Key">
-                              <Button
-                                size="small"
-                                type="text"
-                                icon={<ThunderboltOutlined />}
-                                onClick={() => quickFillGroupFromProvider(g)}
-                                disabled={llmSaving}
-                              />
-                            </Tooltip>
-
-                            <Button
-                              size="small"
-                              type="text"
-                              icon={collapsed ? <RightOutlined /> : <DownOutlined />}
-                              onClick={() => setLlmGroupCollapsed(prev => ({ ...prev, [k]: prev[k] === false ? true : false }))}
-                              aria-label={collapsed ? '展开' : '折叠'}
-                              title={collapsed ? '展开' : '折叠'}
-                            />
-                          </div>
-                        </div>
-
-                        {!collapsed ? (
-                          <Table
-                            className={styles.envListAntd}
-                            dataSource={items}
-                            rowKey={(r) => String((r as any).key || '')}
-                            pagination={false}
-                            size="small"
-                            showHeader={false}
-                            columns={[
-                              {
-                                key: 'row',
-                                render: (_: any, it: any) => {
-                                  const v = llmVarsMap.get(it.key);
-                                  const meta = parseEnvMeta(v?.comment);
-                                  const desc = meta?.description || '';
-                                  const displayName = String(v?.displayName ?? '').trim();
-                                  const value = String(v?.value ?? '');
-                                  const hasCnName = Boolean(displayName);
-                                  const type: EnvValueType = (it.kind === 'boolean' ? 'boolean' : (it.kind === 'number' ? 'number' : (it.kind === 'enum' ? 'enum' : 'string')));
-                                  const isSecret = isSensitiveKeyKind(it.kind, it.key);
-                                  const isModelMultiCsv = it.kind === 'model' && it.picker === 'model' && it.multiple === true && it.valueFormat === 'csv';
-
-                                  const kindTag = (() => {
-                                    if (it.kind === 'api_key') return <Tag icon={<KeyOutlined />} color="red">密钥</Tag>;
-                                    if (it.kind === 'base_url') return <Tag icon={<LinkOutlined />} color="blue">Base URL</Tag>;
-                                    if (it.kind === 'boolean') return <Tag icon={<CheckOutlined />} color="green">开关</Tag>;
-                                    if (it.kind === 'number') return <Tag icon={<NumberOutlined />} color="gold">数字</Tag>;
-                                    if (it.kind === 'enum') return <Tag icon={<AppstoreOutlined />} color="purple">选项</Tag>;
-                                    if (it.kind === 'model') return <Tag icon={<ApiOutlined />} color="cyan">模型</Tag>;
-                                    return <Tag>文本</Tag>;
-                                  })();
-
-                                  const secretTag = isSecret ? <Tag icon={<LockOutlined />} color="volcano">敏感</Tag> : null;
-                                  const requiredTag = /必填|required/i.test(desc) ? <Tag color="magenta">必填</Tag> : null;
-
-                                  const control = (
-                                    it.kind === 'boolean' ? (
-                                      <Switch
-                                        aria-label={it.key}
-                                        checked={isTruthyString(value)}
-                                        onChange={(next) => updateLlmVar(it.key, next ? 'true' : 'false')}
-                                        size="small"
-                                      />
-                                    ) : it.kind === 'enum' ? (
-                                      <Select
-                                        className={styles.antdSelect}
-                                        value={value}
-                                        onChange={(next) => updateLlmVar(it.key, String(next ?? ''))}
-                                        options={(Array.isArray(it.options) && it.options.length ? it.options : (Array.isArray(meta?.options) ? meta!.options! : [])).map((op: string) => ({ value: op, label: op }))}
-                                        showSearch
-                                        allowClear
-                                        notFoundContent={selectNotFound}
-                                        styles={selectPopupStyles}
-                                        popupMatchSelectWidth={false}
-                                      />
-                                    ) : it.kind === 'model' ? (
-                                      <Select
-                                        className={styles.antdSelect}
-                                        mode="tags"
-                                        showSearch
-                                        allowClear
-                                        tokenSeparators={[',']}
-                                        value={isModelMultiCsv ? parseCsvValue(value) : (value ? [value] : [])}
-                                        placeholder={activeProvider ? (activeModelIds.length ? (isModelMultiCsv ? '选择/搜索多个模型（回车确认）' : '选择/搜索模型（回车确认）') : '请先检测供应商模型') : '请先选择供应商'}
-                                        options={(activeProvider ? activeModelIds
-                                          .filter(id => modelInScope(id, inferModelScopeFromItem(it)))
-                                          .map(id => ({ value: id, label: id })) : [])}
-                                        notFoundContent={selectNotFound}
-                                        styles={selectPopupStyles}
-                                        popupMatchSelectWidth={false}
-                                        onChange={(vals) => {
-                                          const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
-                                          if (isModelMultiCsv) {
-                                            updateLlmVar(it.key, formatCsvValue(Array.from(new Set(list))));
-                                            return;
-                                          }
-                                          const next = list.length ? list[list.length - 1] : '';
-                                          updateLlmVar(it.key, next);
-                                        }}
-                                      />
-                                    ) : it.kind === 'text' && /whitelist/i.test(it.key) ? (
-                                      <Select
-                                        className={styles.antdSelect}
-                                        mode="tags"
-                                        showSearch
-                                        allowClear
-                                        tokenSeparators={[',']}
-                                        value={parseMultiTextValue(value)}
-                                        placeholder="输入多个值（回车/逗号）"
-                                        notFoundContent={selectNotFound}
-                                        styles={selectPopupStyles}
-                                        popupMatchSelectWidth={false}
-                                        onChange={(vals) => {
-                                          const list = Array.isArray(vals) ? vals.map(vx => String(vx || '').trim()).filter(Boolean) : [];
-                                          updateLlmVar(it.key, formatMultiTextValue(list));
-                                        }}
-                                      />
-                                    ) : it.kind === 'number' || type === 'number' ? (
-                                      <InputNumber
-                                        style={{ width: '100%' }}
-                                        value={Number.isFinite(Number(value)) ? Number(value) : null}
-                                        onChange={(next) => updateLlmVar(it.key, next == null ? '' : String(next))}
-                                        placeholder="请输入数字"
-                                      />
-                                    ) : it.kind === 'api_key' ? (
-                                      <Input
-                                        className={styles.antdInput}
-                                        value={value}
-                                        onChange={(e) => updateLlmVar(it.key, e.target.value)}
-                                        type={isSecret && !showSecretsInEnv ? 'password' : 'text'}
-                                        placeholder="sk-..."
-                                      />
-                                    ) : it.kind === 'base_url' ? (
-                                      <Input
-                                        className={styles.antdInput}
-                                        value={value}
-                                        onChange={(e) => updateLlmVar(it.key, e.target.value)}
-                                        onBlur={(e) => updateLlmVar(it.key, normalizeBaseUrlV1(e.target.value))}
-                                        type="text"
-                                        placeholder="https://.../v1"
-                                      />
-                                    ) : (
-                                      <Input
-                                        className={styles.antdInput}
-                                        value={value}
-                                        onChange={(e) => updateLlmVar(it.key, e.target.value)}
-                                        type={isSecret && !showSecretsInEnv ? 'password' : 'text'}
-                                      />
-                                    )
-                                  );
-
-                                  return (
-                                    <div className={styles.envRow}>
-                                      <div className={styles.envLeft}>
-                                        <Tooltip
-                                          trigger={isCompact ? ['click'] : ['hover']}
-                                          placement="topLeft"
-                                          title={(
-                                            <div className={styles.tooltipKeyRow}>
-                                              <span className={styles.tooltipKeyText}>{it.key}</span>
-                                            </div>
-                                          )}
-                                        >
-                                          <div className={styles.envName}>{hasCnName ? displayName : '未提供中文名称'}</div>
-                                        </Tooltip>
-                                        {desc ? <div className={styles.envDesc}>{desc}</div> : null}
-                                        <div className={styles.envMetaTags}>
-                                          {requiredTag}
-                                          {secretTag}
-                                          {kindTag}
-                                        </div>
-                                      </div>
-                                      <div className={styles.envRight}>{control}</div>
-                                    </div>
-                                  );
-                                },
-                              },
-                            ]}
-                          />
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-            ) : null}
-
-            <Modal
-              title="模型设置"
-              open={modelSettingsOpen}
-              onCancel={() => { setModelSettingsOpen(false); setIconPickerOpen(false); }}
-              onOk={() => void saveModelSettings()}
-              okText="保存"
-              cancelText="取消"
-              width={820}
-              className={styles.modelSettingsModal}
-              destroyOnHidden={false}
-            >
-              <div className={styles.modelSettingsHeaderRow}>
-                <span className={styles.logoRound} style={{ width: 34, height: 34 }}>
-                  {modelSettingsIcon ? (
-                    <CustomIcon icon={modelSettingsIcon} size={20} />
-                  ) : (
-                    <BrandLogo iconName={safeInferModelVendor({ id: modelSettingsModelId }, providerTypeFallbackVendor(activeProviderType)).iconName} size={20} />
-                  )}
-                </span>
-                <div style={{ minWidth: 0 }}>
-                  <div className={styles.modelSettingsModelId}>{modelSettingsModelId}</div>
-                  <div className={styles.modelSettingsSub}>自定义图标与能力，将写入本地覆盖文件</div>
+                  </div>
                 </div>
               </div>
 
-              <Tabs
-                className={styles.modelSettingsTabs}
-                items={[
-                  {
-                    key: 'appearance',
-                    label: '外观',
-                    children: (
-                      <>
-                        <div className={styles.modelSettingsActionsRow}>
-                          <Tooltip title="选择图标（Lobe Icons）">
-                            <Button
-                              type="text"
-                              size="small"
-                              icon={<BgColorsOutlined />}
-                              onClick={() => {
-                                setIconPickerTarget('model');
-                                setIconPickerOpen(true);
-                              }}
-                            />
-                          </Tooltip>
-                          <Upload
-                            accept="image/*"
-                            showUploadList={false}
-                            beforeUpload={(file) => {
-                              const f = file as any;
-                              const reader = new FileReader();
-                              reader.onload = () => {
-                                const dataUrl = String(reader.result || '');
-                                if (!dataUrl.startsWith('data:image/')) {
-                                  addToast('error', '图片格式不支持');
-                                  return;
-                                }
-                                setModelSettingsIcon({ type: 'upload', dataUrl });
-                              };
-                              reader.readAsDataURL(f);
-                              return false;
-                            }}
-                          >
-                            <Tooltip title="上传图片">
-                              <Button type="text" size="small" icon={<UploadOutlined />} />
-                            </Tooltip>
-                          </Upload>
-                          <Tooltip title="清除自定义图标">
-                            <Button
-                              type="text"
-                              danger
-                              size="small"
-                              icon={<DeleteOutlined />}
-                              onClick={() => setModelSettingsIcon(null)}
-                            />
-                          </Tooltip>
-                        </div>
-                      </>
-                    )
-                  },
-                  {
-                    key: 'caps',
-                    label: '能力',
-                    children: (
-                      <>
-                        <div className={styles.capSelectedBar}>
-                          <div className={styles.capSelectedLeft}>
-                            <div className={styles.capSelectedTitle}>已选能力</div>
-                            <div className={styles.capSelectedCount}>{modelSettingsCaps.length}</div>
-                          </div>
-                          <div className={styles.capSelectedTags}>
-                            {modelSettingsCaps.slice(0, 40).map((k) => (
-                              <Tag
-                                key={k}
-                                closable
-                                onClose={(e) => {
-                                  e.preventDefault();
-                                  toggleModelSettingsCap(k);
-                                }}
-                                className={styles.capSelectedTag}
-                                style={capStyleVars(k)}
-                              >
-                                {capabilityLabelByKey.get(String(k)) || String(k)}
-                              </Tag>
-                            ))}
-                          </div>
-                        </div>
-
-                        <div className={styles.modelSettingsCapToolbarAntd}>
-                          <Input
-                            className={styles.antdInput}
-                            value={capabilitySearch}
-                            onChange={(e) => setCapabilitySearch(e.target.value)}
-                            placeholder="搜索能力，例如 vision / web / embedding"
-                            allowClear
-                            prefix={<SearchOutlined />}
-                          />
-
-                          <Select
-                            className={styles.antdSelect}
-                            value={capabilityCategory}
-                            onChange={(v) => setCapabilityCategory(String(v || 'all'))}
-                            options={capabilityCategoryOptions}
-                            placeholder="按类别"
-                            style={{ width: 160 }}
-                          />
-                          <Segmented
-                            className={styles.capSegmented}
-                            value={capabilityView}
-                            onChange={(v) => setCapabilityView(String(v) as any)}
-                            options={[
-                              { label: `全部(${capabilityViewCounts.all})`, value: 'all' },
-                              { label: `已选(${capabilityViewCounts.selected})`, value: 'selected' },
-                              { label: `推断(${capabilityViewCounts.inferred})`, value: 'inferred' },
-                              { label: `未选(${capabilityViewCounts.unselected})`, value: 'unselected' },
-                            ]}
-                          />
-                          <div className={styles.modelSettingsCapToolbarBtns}>
-                            <Button size="small" onClick={() => setModelSettingsCaps(inferredModelSettingsCaps)}>按推断</Button>
-                            <Button size="small" onClick={() => setModelSettingsCaps(capabilityChoices.map(c => c.key))}>全选</Button>
-                            <Button size="small" onClick={() => setModelSettingsCaps([])}>清空</Button>
-                          </div>
-                        </div>
-
-                        <Table
-                          className={styles.capGridTable}
-                          size="small"
-                          pagination={false}
-                          showHeader={false}
-                          tableLayout="fixed"
-                          scroll={{ y: isCompact ? 360 : 420 }}
-                          dataSource={capGridRows}
-                          rowKey={(r) => String((r as any).key)}
-                          columns={capGridColumns as any}
-                        />
-                      </>
-                    )
-                  }
-                ]}
-              />
-            </Modal>
+              <div className={styles.drawerFooter}>
+                <Button onClick={() => { setModelSettingsOpen(false); setIconPickerOpen(false); }}>
+                  取消
+                </Button>
+                <Button type="primary" onClick={() => void saveModelSettings()}>
+                  保存
+                </Button>
+              </div>
+            </Drawer>
 
             <Modal
               title="选择图标（Lobe Icons）"
@@ -3109,101 +3084,108 @@ export default function ModelProvidersManager(props: { addToast: (type: ToastMes
         )}
       </div>
 
-      <Modal
-        title={providerEditorMode === 'add' ? '添加供应商' : '编辑供应商'}
+      <Drawer
         open={providerEditorOpen}
-        onCancel={() => setProviderEditorOpen(false)}
-        onOk={() => void saveProviderEditor()}
-        okText="保存"
-        cancelText="取消"
+        placement="right"
+        width={520}
+        title={providerEditorMode === 'add' ? '添加供应商' : '编辑供应商'}
+        onClose={() => { setProviderEditorOpen(false); setIconPickerOpen(false); }}
+        className={styles.providerEditorDrawer}
+        destroyOnHidden={false}
       >
-        <Form
-          form={providerEditorForm}
-          layout="vertical"
-          initialValues={{ enabled: true, apiKeyHeader: 'Authorization', apiKeyPrefix: 'Bearer ' }}
-        >
-          <Form.Item label="供应商图标" extra="可选：优先显示自定义图标（仅保存在浏览器本地）">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-              <span className={styles.logoRound} style={{ width: 34, height: 34 }}>
-                {providerEditorIcon ? (
-                  <CustomIcon icon={providerEditorIcon} size={20} />
-                ) : (
-                  <ProviderLogo type={String(providerEditorType || 'custom')} />
-                )}
-              </span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                <Tooltip title="选择图标（Lobe Icons）">
+        <div className={styles.drawerBody}>
+          <Form
+            form={providerEditorForm}
+            layout="vertical"
+            initialValues={{ enabled: true, apiKeyHeader: 'Authorization', apiKeyPrefix: 'Bearer ' }}
+          >
+            <Form.Item label="供应商图标" extra="可选：优先显示自定义图标（仅保存在浏览器本地）">
+              <div className={styles.providerEditorIconRow}>
+                <span className={styles.logoRound} style={{ width: 34, height: 34 }}>
+                  {providerEditorIcon ? (
+                    <CustomIcon icon={providerEditorIcon} size={20} />
+                  ) : (
+                    <ProviderLogo type={String(providerEditorType || 'custom')} />
+                  )}
+                </span>
+                <div className={styles.providerEditorIconActions}>
                   <Button
-                    type="text"
                     size="small"
                     icon={<BgColorsOutlined />}
                     onClick={() => {
                       setIconPickerTarget('provider');
                       setIconPickerOpen(true);
                     }}
-                  />
-                </Tooltip>
-                <Upload
-                  accept="image/*"
-                  showUploadList={false}
-                  beforeUpload={(file) => {
-                    const f = file as any;
-                    const reader = new FileReader();
-                    reader.onload = () => {
-                      const dataUrl = String(reader.result || '');
-                      if (!dataUrl.startsWith('data:image/')) {
-                        addToast('error', '图片格式不支持');
-                        return;
-                      }
-                      setProviderEditorIcon({ type: 'upload', dataUrl });
-                    };
-                    reader.readAsDataURL(f);
-                    return false;
-                  }}
-                >
-                  <Tooltip title="上传图片">
-                    <Button type="text" size="small" icon={<UploadOutlined />} />
-                  </Tooltip>
-                </Upload>
-                <Tooltip title="清除自定义图标">
+                  >
+                    选择图标
+                  </Button>
+                  <Upload
+                    accept="image/*"
+                    showUploadList={false}
+                    beforeUpload={(file) => {
+                      const f = file as any;
+                      const reader = new FileReader();
+                      reader.onload = () => {
+                        const dataUrl = String(reader.result || '');
+                        if (!dataUrl.startsWith('data:image/')) {
+                          addToast('error', '图片格式不支持');
+                          return;
+                        }
+                        setProviderEditorIcon({ type: 'upload', dataUrl });
+                      };
+                      reader.readAsDataURL(f);
+                      return false;
+                    }}
+                  >
+                    <Button size="small" icon={<UploadOutlined />}>上传图片</Button>
+                  </Upload>
                   <Button
-                    type="text"
-                    danger
                     size="small"
+                    danger
                     icon={<DeleteOutlined />}
                     onClick={() => setProviderEditorIcon(null)}
-                  />
-                </Tooltip>
+                  >
+                    清除
+                  </Button>
+                </div>
               </div>
-            </div>
-          </Form.Item>
-          <Form.Item label="供应商名称" name="name" rules={[{ required: true, message: '请输入供应商名称' }]}>
-            <Input placeholder="例如：OpenAI / Gemini / 自建服务" />
-          </Form.Item>
-          <Form.Item label="供应商类型" name="type" rules={[{ required: true, message: '请选择供应商类型' }]}>
-            <Select
-              options={providerTypeOptions}
-              showSearch={{ optionFilterProp: 'label' }}
-              placeholder="例如：openai / gemini / custom"
-            />
-          </Form.Item>
-          <Form.Item label="是否启用" name="enabled" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-          <Form.Item label="API 地址（Base URL）" name="baseUrl" extra="建议填写到域名根：例如 https://api.openai.com（会在需要时补全 /v1）">
-            <Input placeholder="https://api.openai.com" />
-          </Form.Item>
-          <Form.Item label="API 密钥（API Key）" name="apiKey" extra="不会上传到服务器，仅保存在浏览器本地">
-            <Input.Password placeholder="sk-..." visibilityToggle />
-          </Form.Item>
-          <Form.Item label="API Key 请求头（Header）" name="apiKeyHeader" extra="通常保持默认：Authorization">
-            <Input placeholder="Authorization" />
-          </Form.Item>
-          <Form.Item label="API Key 前缀（Prefix）" name="apiKeyPrefix" extra="通常保持默认：Bearer（注意末尾空格）">
-            <Input placeholder="Bearer " />
-          </Form.Item>
-        </Form>
-      </Modal>
+            </Form.Item>
+            <Form.Item label="供应商名称" name="name" rules={[{ required: true, message: '请输入供应商名称' }]}>
+              <Input placeholder="例如：OpenAI / Gemini / 自建服务" />
+            </Form.Item>
+            <Form.Item label="供应商类型" name="type" rules={[{ required: true, message: '请选择供应商类型' }]}>
+              <Select
+                options={providerTypeOptions}
+                showSearch={{ optionFilterProp: 'label' }}
+                placeholder="例如：openai / gemini / custom"
+              />
+            </Form.Item>
+            <Form.Item label="是否启用" name="enabled" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item label="API 地址（Base URL）" name="baseUrl" extra="建议填写到域名根：例如 https://api.openai.com（会在需要时补全 /v1）">
+              <Input placeholder="https://api.openai.com" />
+            </Form.Item>
+            <Form.Item label="API 密钥（API Key）" name="apiKey" extra="不会上传到服务器，仅保存在浏览器本地">
+              <Input.Password placeholder="sk-..." visibilityToggle />
+            </Form.Item>
+            <Form.Item label="API Key 请求头（Header）" name="apiKeyHeader" extra="通常保持默认：Authorization">
+              <Input placeholder="Authorization" />
+            </Form.Item>
+            <Form.Item label="API Key 前缀（Prefix）" name="apiKeyPrefix" extra="通常保持默认：Bearer（注意末尾空格）">
+              <Input placeholder="Bearer " />
+            </Form.Item>
+          </Form>
+        </div>
+        <div className={styles.drawerFooter}>
+          <Button onClick={() => { setProviderEditorOpen(false); setIconPickerOpen(false); }}>
+            取消
+          </Button>
+          <Button type="primary" onClick={() => void saveProviderEditor()}>
+            保存
+          </Button>
+        </div>
+      </Drawer>
     </div>
   );
 }

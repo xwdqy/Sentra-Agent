@@ -94,10 +94,46 @@ export async function terminalExecutorRoutes(fastify: FastifyInstance) {
         signal: s.exitSignal,
       });
 
+      let pending = '';
+      let flushTimer: NodeJS.Timeout | null = null;
+      const MAX_WS_BUFFERED = 4_000_000;
+
+      const flushNow = () => {
+        if (!pending) return;
+        const sock: any = connection?.socket;
+        if (sock && typeof sock.bufferedAmount === 'number' && sock.bufferedAmount > MAX_WS_BUFFERED) {
+          pending = '';
+          try { sock.close?.(); } catch { }
+          return;
+        }
+        const data = pending;
+        pending = '';
+        sendJson(connection, { type: 'data', data, cursor: s.totalCursor });
+      };
+
+      const scheduleFlush = () => {
+        if (flushTimer) return;
+        flushTimer = setTimeout(() => {
+          flushTimer = null;
+          flushNow();
+        }, 20);
+      };
+
       const onData = (d: string) => {
-        sendJson(connection, { type: 'data', data: d, cursor: s.totalCursor });
+        if (!d) return;
+        pending += d;
+        if (pending.length >= 32_000) {
+          flushNow();
+          return;
+        }
+        scheduleFlush();
       };
       const onExit = (ev: any) => {
+        if (flushTimer) {
+          try { clearTimeout(flushTimer); } catch { }
+          flushTimer = null;
+        }
+        try { flushNow(); } catch { }
         sendJson(connection, { type: 'exit', cursor: s.totalCursor, exitCode: ev?.exitCode ?? s.exitCode, signal: ev?.signal ?? s.exitSignal });
       };
 
@@ -138,6 +174,10 @@ export async function terminalExecutorRoutes(fastify: FastifyInstance) {
       });
 
       connection.socket.on('close', () => {
+        if (flushTimer) {
+          try { clearTimeout(flushTimer); } catch { }
+          flushTimer = null;
+        }
         try {
           s.emitter.off('data', onData);
           s.emitter.off('exit', onExit);

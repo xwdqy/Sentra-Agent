@@ -12,11 +12,27 @@ interface ScriptProcess {
     dedupeKey: string;
     process: ReturnType<typeof spawn>;
     output: string[];
+    outputBaseCursor: number;
+    totalCursor: number;
     exitCode: number | null;
     startTime: Date;
     endTime: Date | null;
     emitter: EventEmitter;
     isPm2Mode?: boolean;
+}
+
+const MAX_OUTPUT_CHUNKS = 2000;
+
+function appendOutput(p: ScriptProcess, text: string) {
+    const chunk = String(text ?? '');
+    if (!chunk) return;
+    p.totalCursor += 1;
+    p.output.push(chunk);
+    if (p.output.length > MAX_OUTPUT_CHUNKS) {
+        const drop = p.output.length - MAX_OUTPUT_CHUNKS;
+        p.output.splice(0, drop);
+        p.outputBaseCursor += drop;
+    }
 }
 
 function commandExists(cmd: string): boolean {
@@ -218,6 +234,8 @@ export class ScriptRunner {
             dedupeKey,
             process: proc,
             output: [],
+            outputBaseCursor: 0,
+            totalCursor: 0,
             exitCode: null,
             startTime: new Date(),
             endTime: null,
@@ -229,14 +247,14 @@ export class ScriptRunner {
 
         proc.stdout?.on('data', (data) => {
             const text = data.toString();
-            scriptProcess.output.push(text);
-            emitter.emit('output', { type: 'stdout', data: text });
+            appendOutput(scriptProcess, text);
+            emitter.emit('output', { type: 'stdout', data: text, cursor: scriptProcess.totalCursor });
         });
 
         proc.stderr?.on('data', (data) => {
             const text = data.toString();
-            scriptProcess.output.push(text);
-            emitter.emit('output', { type: 'stderr', data: text });
+            appendOutput(scriptProcess, text);
+            emitter.emit('output', { type: 'stderr', data: text, cursor: scriptProcess.totalCursor });
         });
 
         proc.on('close', (code) => {
@@ -253,8 +271,8 @@ export class ScriptRunner {
         // Handle spawn errors (e.g. bad cwd, command not found)
         proc.on('error', (err) => {
             const errorMsg = `Failed to start process: ${err.message}`;
-            scriptProcess.output.push(errorMsg);
-            emitter.emit('output', { type: 'stderr', data: errorMsg });
+            appendOutput(scriptProcess, errorMsg);
+            emitter.emit('output', { type: 'stderr', data: errorMsg, cursor: scriptProcess.totalCursor });
             scriptProcess.exitCode = 1;
             scriptProcess.endTime = new Date();
             emitter.emit('exit', { code: 1 });
@@ -363,6 +381,8 @@ export class ScriptRunner {
             dedupeKey: id,
             process: proc,
             output: [],
+            outputBaseCursor: 0,
+            totalCursor: 0,
             exitCode: null,
             startTime: new Date(),
             endTime: null,
@@ -374,20 +394,20 @@ export class ScriptRunner {
 
         if (usedBashFallbackToPwsh) {
             const msg = 'Bash not found. Install Git for Windows (Git Bash) or enable WSL to use bash.';
-            scriptProcess.output.push(msg);
-            emitter.emit('output', { type: 'stderr', data: msg + '\r\n' });
+            appendOutput(scriptProcess, msg);
+            emitter.emit('output', { type: 'stderr', data: msg + '\r\n', cursor: scriptProcess.totalCursor });
         }
 
         proc.stdout?.on('data', (data) => {
             const text = data.toString();
-            scriptProcess.output.push(text);
-            emitter.emit('output', { type: 'stdout', data: text });
+            appendOutput(scriptProcess, text);
+            emitter.emit('output', { type: 'stdout', data: text, cursor: scriptProcess.totalCursor });
         });
 
         proc.stderr?.on('data', (data) => {
             const text = data.toString();
-            scriptProcess.output.push(text);
-            emitter.emit('output', { type: 'stderr', data: text });
+            appendOutput(scriptProcess, text);
+            emitter.emit('output', { type: 'stderr', data: text, cursor: scriptProcess.totalCursor });
         });
 
         proc.on('close', (code) => {
@@ -402,8 +422,8 @@ export class ScriptRunner {
 
         proc.on('error', (err) => {
             const errorMsg = `Failed to start process: ${err.message}`;
-            scriptProcess.output.push(errorMsg);
-            emitter.emit('output', { type: 'stderr', data: errorMsg });
+            appendOutput(scriptProcess, errorMsg);
+            emitter.emit('output', { type: 'stderr', data: errorMsg, cursor: scriptProcess.totalCursor });
             scriptProcess.exitCode = 1;
             scriptProcess.endTime = new Date();
             emitter.emit('exit', { code: 1 });
@@ -494,7 +514,44 @@ export class ScriptRunner {
         }
     }
 
-    subscribeToOutput(id: string, callback: (data: { type: string; data: string }) => void): (() => void) | null {
+    cleanupAll(opts?: { includePm2?: boolean }): { ok: boolean; killed: string[]; pm2: Array<{ name: string; ok: boolean; message?: string }> } {
+        const includePm2 = opts?.includePm2 !== false;
+        const killed: string[] = [];
+        const pm2Res: Array<{ name: string; ok: boolean; message?: string }> = [];
+
+        try {
+            const ids = Array.from(this.processes.keys());
+            for (const id of ids) {
+                const rec = this.processes.get(id);
+                if (!rec || rec.exitCode !== null) continue;
+                const r = this.killProcess(id);
+                if (r.success) killed.push(id);
+            }
+        } catch {
+        }
+
+        if (includePm2) {
+            try {
+                const a = deletePm2ProcessByName('sentra-napcat');
+                pm2Res.push({ name: 'sentra-napcat', ok: a.ok, message: a.message });
+            } catch {
+            }
+            try {
+                const a = deletePm2ProcessByName('sentra-agent');
+                pm2Res.push({ name: 'sentra-agent', ok: a.ok, message: a.message });
+            } catch {
+            }
+            try {
+                const a = deletePm2ProcessByName('sentra-emo');
+                pm2Res.push({ name: 'sentra-emo', ok: a.ok, message: a.message });
+            } catch {
+            }
+        }
+
+        return { ok: true, killed, pm2: pm2Res };
+    }
+
+    subscribeToOutput(id: string, callback: (data: { type: string; data: string; cursor?: number }) => void): (() => void) | null {
         const proc = this.processes.get(id);
         if (!proc) return null;
 

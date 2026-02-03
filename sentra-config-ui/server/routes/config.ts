@@ -4,12 +4,23 @@ import { writeEnvFile } from '../utils/envParser';
 import { join, resolve } from 'path';
 import { copyFileSync, existsSync } from 'fs';
 import { EnvVariable } from '../types';
+import { getRuntimeConfig, getRuntimeConfigVersion, reloadRuntimeConfigFromEnvFile } from '../utils/runtimeConfig.ts';
 
 function getRootDir(): string {
   return resolve(process.cwd(), process.env.SENTRA_ROOT || '..');
 }
 
 export async function configRoutes(fastify: FastifyInstance) {
+  fastify.get('/api/configs/runtime', async () => {
+    try {
+      // Best-effort: in case file watcher is delayed.
+      reloadRuntimeConfigFromEnvFile();
+    } catch {
+    }
+    const cfg = getRuntimeConfig();
+    return { version: getRuntimeConfigVersion(), config: cfg };
+  });
+
   // 获取所有配置
   fastify.get('/api/configs', async (_request, reply) => {
     try {
@@ -39,6 +50,13 @@ export async function configRoutes(fastify: FastifyInstance) {
 
       writeEnvFile(envPath, variables);
 
+      try {
+        if (moduleName === 'sentra-config-ui' || moduleName === '.') {
+          reloadRuntimeConfigFromEnvFile();
+        }
+      } catch {
+      }
+
       return { success: true, message: `Configuration saved for ${moduleName}` };
     } catch (error) {
       reply.code(500).send({
@@ -63,6 +81,11 @@ export async function configRoutes(fastify: FastifyInstance) {
       const envPath = join(pluginPath, '.env');
 
       writeEnvFile(envPath, variables);
+
+      try {
+        // plugin .env changes do not affect sentra-config-ui runtime config
+      } catch {
+      }
 
       return { success: true, message: `Configuration saved for plugin ${pluginName}` };
     } catch (error) {
@@ -99,6 +122,14 @@ export async function configRoutes(fastify: FastifyInstance) {
       }
 
       copyFileSync(examplePath, envPath);
+
+      try {
+        // If restoring sentra-config-ui env, apply immediately.
+        if (moduleName === 'sentra-config-ui' || moduleName === '.') {
+          reloadRuntimeConfigFromEnvFile();
+        }
+      } catch {
+      }
 
       return { success: true, message: 'Configuration restored from .env.example' };
     } catch (error) {

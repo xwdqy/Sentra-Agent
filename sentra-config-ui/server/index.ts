@@ -16,14 +16,24 @@ import { llmProvidersRoutes } from './routes/llmProviders.ts';
 import { emojiStickersRoutes } from './routes/emojiStickers.ts';
 import { terminalExecutorRoutes } from './routes/terminalExecutor.ts';
 import { mcpServersRoutes } from './routes/mcpServers.ts';
+import { qqSandboxRoutes } from './routes/qqSandbox.ts';
 import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import { runDeepwikiSentraXmlAgent, type DeepwikiAgentState } from './deepwikiAgent/agent.ts';
+import {
+  getRuntimeConfig,
+  onRuntimeConfigChange,
+  reloadRuntimeConfigFromEnvFile,
+  startRuntimeConfigHotReload,
+} from './utils/runtimeConfig.ts';
 
 // 加载环境变量
 dotenv.config();
+
+// Runtime env hot-reload for this service only (sentra-config-ui/.env)
+startRuntimeConfigHotReload();
 
 const PORT = parseInt(process.env.SERVER_PORT || '7245');
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
@@ -46,21 +56,16 @@ function cleanupDeepwikiAgentStateStore() {
   }
 }
 
-function refreshSecurityTokenFromEnvFile() {
-  try {
-    const envPath = join(process.cwd(), '.env');
-    if (!existsSync(envPath)) return;
-    const parsed = dotenv.parse(readFileSync(envPath));
-    const nextToken = (parsed.SECURITY_TOKEN || '').trim();
-    if (nextToken && nextToken !== SECURITY_TOKEN) {
-      SECURITY_TOKEN = nextToken;
-      process.env.SECURITY_TOKEN = nextToken;
-      console.log('\n[Auth] SECURITY_TOKEN reloaded from .env (runtime update).');
-    }
-  } catch (e) {
-    console.warn('[Auth] Failed to reload SECURITY_TOKEN from .env:', e instanceof Error ? e.message : e);
+// Keep SECURITY_TOKEN synced with runtime config (.env hot reload)
+onRuntimeConfigChange((cfg) => {
+  const nextToken = String(cfg?.securityTokenFromEnv || '').trim();
+  if (!nextToken) return;
+  if (nextToken !== SECURITY_TOKEN) {
+    SECURITY_TOKEN = nextToken;
+    process.env.SECURITY_TOKEN = nextToken;
+    console.log('\n[Auth] SECURITY_TOKEN reloaded from .env (runtime update).');
   }
-}
+});
 
 async function start() {
   const fastify = Fastify({
@@ -128,7 +133,17 @@ async function start() {
 
   // Auth Verification Endpoint
   fastify.post('/api/auth/verify', async (request, reply) => {
-    refreshSecurityTokenFromEnvFile();
+    // Best-effort: force a reload right now (watcher may have delay).
+    reloadRuntimeConfigFromEnvFile();
+    try {
+      const cfg = getRuntimeConfig();
+      const nextToken = String(cfg?.securityTokenFromEnv || '').trim();
+      if (nextToken && nextToken !== SECURITY_TOKEN) {
+        SECURITY_TOKEN = nextToken;
+        process.env.SECURITY_TOKEN = nextToken;
+      }
+    } catch {
+    }
     const { token } = request.body as { token: string };
     if (token === SECURITY_TOKEN) {
       return { success: true };
@@ -447,6 +462,7 @@ async function start() {
   await fastify.register(configRoutes);
   await fastify.register(scriptRoutes);
   await fastify.register(terminalExecutorRoutes);
+  await fastify.register(qqSandboxRoutes);
   await fastify.register(presetRoutes);
   await fastify.register(worldbookRoutes);
   await fastify.register(fileRoutes);

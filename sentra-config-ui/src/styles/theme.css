@@ -6,7 +6,7 @@
   --base-control-radius: 10px;
   --base-control-height: 36px;
   --base-control-focus-border: rgba(var(--sentra-accent-rgb), 0.45);
-  --base-control-focus-shadow: 0 0 0 4px rgba(var(--sentra-accent-rgb), 0.14);
+  --base-control-focus-shadow: none;
 
   --control-bg: var(--local-control-bg, var(--base-control-bg));
   --control-border: var(--local-control-border, var(--base-control-border));
@@ -37,6 +37,41 @@
   min-height: var(--control-height) !important;
 }
 
+:where(.ant-input-affix-wrapper),
+:where(.ant-input-number),
+:where(.ant-select-selector) {
+  height: var(--control-height) !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  align-items: center !important;
+}
+
+:where(.ant-input-sm),
+:where(.ant-input-affix-wrapper-sm),
+:where(.ant-input-number-sm),
+:where(.ant-select-sm .ant-select-selector) {
+  min-height: 28px !important;
+}
+
+:where(.ant-input-affix-wrapper-sm),
+:where(.ant-input-number-sm),
+:where(.ant-select-sm .ant-select-selector) {
+  height: 28px !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  align-items: center !important;
+}
+
+:where(.ant-input-sm) {
+  padding-top: 3px !important;
+  padding-bottom: 3px !important;
+}
+
+:where(.ant-input-affix-wrapper-sm) {
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
 :where(.ant-input::placeholder) {
   color: var(--control-placeholder) !important;
 }
@@ -59,6 +94,14 @@
 :where(.ant-picker-focused) {
   border-color: var(--control-focus-border) !important;
   box-shadow: var(--control-focus-shadow) !important;
+}
+
+:where(.ant-select-dropdown),
+:where(.ant-picker-dropdown),
+:where(.ant-dropdown),
+:where(.ant-tooltip),
+:where(.ant-popover) {
+  box-shadow: none !important;
 }
 
 :where(.ant-input-affix-wrapper .ant-input) {

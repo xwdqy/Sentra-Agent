@@ -1,6 +1,7 @@
-import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import styles from './PresetsEditor.module.css';
-import { Alert, Button, Empty, Input, InputNumber, Modal, Segmented, Space, Steps, Switch, Tag, Upload } from 'antd';
+import { Alert, Button, Dropdown, Empty, Input, InputNumber, Modal, Space, Steps, Switch, Tag, Upload } from 'antd';
 import {
     CloudDownloadOutlined,
     DeleteOutlined,
@@ -22,12 +23,7 @@ import type { ToastMessage } from './Toast';
 import { SentraInlineLoading } from './SentraInlineLoading';
 import { generateWorldbookStream, saveModuleConfig, savePresetFile } from '../services/api';
 import { useAppStore } from '../store/appStore';
-
-const MonacoEditor = lazy(async () => {
-    await import('../utils/monacoSetup');
-    const mod = await import('@monaco-editor/react');
-    return { default: mod.default };
-});
+import { storage } from '../utils/storage';
 
 class EditorErrorBoundary extends React.Component<
     { children: React.ReactNode },
@@ -155,11 +151,77 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
     const [worldbookGenSaving, setWorldbookGenSaving] = useState(false);
     const worldbookGenAbortRef = useRef<AbortController | null>(null);
 
-    const [worldbookGenApiBaseUrl, setWorldbookGenApiBaseUrl] = useState('');
-    const [worldbookGenApiKey, setWorldbookGenApiKey] = useState('');
-    const [worldbookGenModel, setWorldbookGenModel] = useState('');
-    const [worldbookGenTemperature, setWorldbookGenTemperature] = useState<number>(0.4);
-    const [worldbookGenMaxTokens, setWorldbookGenMaxTokens] = useState<number>(-1);
+    const orderedFilePaths = useMemo(() => {
+        const out: string[] = [];
+        for (const folder of folders) {
+            for (const f of (folder?.files || [])) {
+                if (!f?.path) continue;
+                out.push(String(f.path));
+            }
+        }
+        return out;
+    }, [folders]);
+
+    const lastSelectedFilePathRef = useRef<string>('');
+    const lastSelectedFileIndexRef = useRef<number>(-1);
+    const [pageFlipDir, setPageFlipDir] = useState<1 | -1>(1);
+
+    useEffect(() => {
+        const nextPath = String(selectedFile?.path || '');
+        if (!nextPath) return;
+
+        const prevPath = lastSelectedFilePathRef.current;
+        if (!prevPath) {
+            lastSelectedFilePathRef.current = nextPath;
+            lastSelectedFileIndexRef.current = orderedFilePaths.indexOf(nextPath);
+            return;
+        }
+
+        if (prevPath === nextPath) return;
+        const nextIdx = orderedFilePaths.indexOf(nextPath);
+        const prevIdx = lastSelectedFileIndexRef.current;
+
+        if (nextIdx >= 0 && prevIdx >= 0) {
+            setPageFlipDir(nextIdx >= prevIdx ? 1 : -1);
+        } else {
+            setPageFlipDir(String(nextPath).localeCompare(String(prevPath)) >= 0 ? 1 : -1);
+        }
+
+        lastSelectedFilePathRef.current = nextPath;
+        lastSelectedFileIndexRef.current = nextIdx;
+    }, [orderedFilePaths, selectedFile?.path]);
+
+    const [worldbookGenApiBaseUrl, setWorldbookGenApiBaseUrl] = useState(() => storage.getString('worldbook_gen.apiBaseUrl', { fallback: '' }));
+    const [worldbookGenApiKey, setWorldbookGenApiKey] = useState(() => storage.getString('worldbook_gen.apiKey', { fallback: '' }));
+    const [worldbookGenModel, setWorldbookGenModel] = useState(() => storage.getString('worldbook_gen.model', { fallback: '' }));
+    const [worldbookGenTemperature, setWorldbookGenTemperature] = useState<number>(() => {
+        const v = Number(storage.getString('worldbook_gen.temperature', { fallback: '0.4' }));
+        return Number.isFinite(v) ? v : 0.4;
+    });
+    const [worldbookGenMaxTokens, setWorldbookGenMaxTokens] = useState<number>(() => {
+        const v = Number(storage.getString('worldbook_gen.maxTokens', { fallback: '-1' }));
+        return Number.isFinite(v) ? v : -1;
+    });
+
+    useEffect(() => {
+        storage.setString('worldbook_gen.apiBaseUrl', String(worldbookGenApiBaseUrl || ''));
+    }, [worldbookGenApiBaseUrl]);
+
+    useEffect(() => {
+        storage.setString('worldbook_gen.apiKey', String(worldbookGenApiKey || ''));
+    }, [worldbookGenApiKey]);
+
+    useEffect(() => {
+        storage.setString('worldbook_gen.model', String(worldbookGenModel || ''));
+    }, [worldbookGenModel]);
+
+    useEffect(() => {
+        storage.setString('worldbook_gen.temperature', String(worldbookGenTemperature ?? 0.4));
+    }, [worldbookGenTemperature]);
+
+    useEffect(() => {
+        storage.setString('worldbook_gen.maxTokens', String(worldbookGenMaxTokens ?? -1));
+    }, [worldbookGenMaxTokens]);
 
     const worldbookParse = useMemo(() => {
         const raw = String(worldbookImportRaw || '').trim();
@@ -183,73 +245,6 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
         if (!worldbookGenOpen) return;
         setWorldbookGenStep(0);
     }, [worldbookGenOpen]);
-
-    const editorContainerRef = useRef<HTMLDivElement | null>(null);
-    const editorRef = useRef<import('monaco-editor').editor.IStandaloneCodeEditor | null>(null);
-    const [editorSize, setEditorSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-
-    useEffect(() => {
-        const el = editorContainerRef.current;
-        if (!el) return;
-
-        let rafId: number | null = null;
-
-        const measure = () => {
-            try {
-                const rect = el.getBoundingClientRect();
-                const w = Math.max(0, Math.round(rect.width));
-                const h = Math.max(0, Math.round(rect.height));
-                setEditorSize({ w, h });
-                const editor = editorRef.current;
-                if (!editor) return;
-                try {
-                    editor.layout();
-                } catch {
-                    // ignore
-                }
-            } catch {
-                // ignore
-            }
-        };
-
-        const ro = new ResizeObserver(() => {
-            measure();
-        });
-
-        ro.observe(el);
-
-        const onWindowResize = () => measure();
-        window.addEventListener('resize', onWindowResize);
-
-        // run once immediately (ResizeObserver can be delayed)
-        measure();
-
-        // In some layouts the container may report 0x0 until the next frame.
-        let tries = 0;
-        const tick = () => {
-            tries += 1;
-            measure();
-            const rect = el.getBoundingClientRect();
-            if ((rect.width <= 0 || rect.height <= 0) && tries < 10) {
-                rafId = window.requestAnimationFrame(tick);
-            }
-        };
-        rafId = window.requestAnimationFrame(tick);
-
-        return () => {
-            try {
-                ro.disconnect();
-            } catch {
-                // ignore
-            }
-
-            window.removeEventListener('resize', onWindowResize);
-            if (rafId != null) {
-                window.cancelAnimationFrame(rafId);
-                rafId = null;
-            }
-        };
-    }, [selectedFile?.path]);
 
     const handleOpenWorldbookGen = () => {
         setWorldbookGenOpen(true);
@@ -283,6 +278,17 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
             return;
         }
 
+        const apiBaseUrl = String(worldbookGenApiBaseUrl || '').trim();
+        const apiKey = String(worldbookGenApiKey || '').trim();
+        if (!apiBaseUrl) {
+            addToast('error', '生成失败', '请填写 API Base URL');
+            return;
+        }
+        if (!apiKey) {
+            addToast('error', '生成失败', '请填写 API Key');
+            return;
+        }
+
         if (worldbookGenAbortRef.current) {
             try { worldbookGenAbortRef.current.abort(); } catch { }
             worldbookGenAbortRef.current = null;
@@ -305,8 +311,8 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
 
             const res = await generateWorldbookStream({
                 text,
-                apiBaseUrl: worldbookGenApiBaseUrl.trim() || undefined,
-                apiKey: worldbookGenApiKey.trim() || undefined,
+                apiBaseUrl,
+                apiKey,
                 model: worldbookGenModel.trim() || undefined,
                 temperature: Number.isFinite(Number(worldbookGenTemperature)) ? Number(worldbookGenTemperature) : 0.4,
                 maxTokens: maxTokensValue,
@@ -401,21 +407,6 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
         })).filter(folder => folder.files.length > 0);
         return mapped;
     })();
-
-    const getLanguage = (filename: string) => {
-        const ext = filename.split('.').pop()?.toLowerCase();
-        switch (ext) {
-            case 'json': return 'json';
-            case 'js': return 'javascript';
-            case 'ts': return 'typescript';
-            case 'md': return 'markdown';
-            case 'yml':
-            case 'yaml': return 'yaml';
-            case 'css': return 'css';
-            case 'html': return 'html';
-            default: return 'plaintext';
-        }
-    };
 
     const handleCreateFile = async () => {
         if (!newFileName.trim()) return;
@@ -518,8 +509,34 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
         }
     };
 
+    const worldbookActionMenu = useMemo(() => {
+        return {
+            items: [
+                {
+                    key: 'set-current',
+                    label: '设为当前世界书',
+                    icon: <StarOutlined />,
+                    disabled: !selectedIsWorldbook || !rootEnv,
+                    onClick: () => void handleSetAsCurrentWorldbook(),
+                },
+                {
+                    key: 'import',
+                    label: '导入世界书',
+                    icon: <InboxOutlined />,
+                    onClick: () => handleOpenWorldbookImport(),
+                },
+                {
+                    key: 'generate',
+                    label: '生成世界书',
+                    icon: <ThunderboltOutlined />,
+                    onClick: () => handleOpenWorldbookGen(),
+                },
+            ],
+        } as any;
+    }, [handleOpenWorldbookGen, handleOpenWorldbookImport, handleSetAsCurrentWorldbook, rootEnv, selectedIsWorldbook]);
+
     return (
-        <div className={`${styles.container} ${styles.desktopRoot}`} data-theme={theme}>
+        <div className={`${styles.container} ${styles.desktopRoot} ${styles.notebookRoot}`} data-theme={theme}>
             <div className={styles.sidebar}>
                 <div className={styles.sidebarHeader}>
                     <div className={styles.searchWrapper}>
@@ -541,16 +558,25 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                             style={{ marginLeft: 8 }}
                         />
                     </div>
-                    <div style={{ marginTop: 10 }}>
-                        <Segmented
-                            size="small"
-                            value={scope}
-                            onChange={(v) => setScope(v as any)}
-                            options={[
-                                { label: '全部', value: 'all' },
-                                { label: '世界书', value: 'worldbook' },
-                            ]}
-                        />
+                    <div className={styles.scopeSwitch}>
+                        <div className={styles.pillTabs} role="tablist" aria-label="文件范围">
+                            <button
+                                type="button"
+                                className={`${styles.pillTab} ${scope === 'all' ? styles.pillTabActive : ''}`}
+                                aria-selected={scope === 'all'}
+                                onClick={() => setScope('all')}
+                            >
+                                全部
+                            </button>
+                            <button
+                                type="button"
+                                className={`${styles.pillTab} ${scope === 'worldbook' ? styles.pillTabActive : ''}`}
+                                aria-selected={scope === 'worldbook'}
+                                onClick={() => setScope('worldbook')}
+                            >
+                                世界书
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div className={styles.fileList}>
@@ -605,141 +631,110 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                 {selectedFile ? (
                     <>
                         <div className={styles.editorToolbar}>
-                            <div className={styles.filePath}>{selectedFile.path}</div>
+                            <div style={{ flex: 1, minWidth: 0 }} />
                             <div className={styles.actions}>
-                                <Space size={8}>
-                                    {import.meta.env.DEV ? (
-                                        <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                                            len={fileContent.length} size={editorSize.w}×{editorSize.h}
-                                        </span>
-                                    ) : null}
+                                <div className={styles.actionGroups}>
+                                    <Space size={6} className={styles.actionGroup}>
+                                        {scope === 'worldbook' ? (
+                                            <>
+                                                {selectedIsCurrentWorldbook ? <Tag color="green">当前世界书</Tag> : selectedIsWorldbook ? <Tag>世界书</Tag> : null}
+                                                <Dropdown trigger={['click']} menu={worldbookActionMenu} placement="bottomRight">
+                                                    <Button size="small" icon={<FileTextOutlined />}>
+                                                        世界书 <DownOutlined />
+                                                    </Button>
+                                                </Dropdown>
+                                            </>
+                                        ) : null}
 
-                                    {selectedIsWorldbook ? (
-                                        <>
-                                            {selectedIsCurrentWorldbook ? <Tag color="green">当前世界书</Tag> : <Tag>世界书</Tag>}
-                                            <Button
-                                                size="small"
-                                                icon={<StarOutlined />}
-                                                onClick={() => void handleSetAsCurrentWorldbook()}
-                                                disabled={!rootEnv}
-                                            >
-                                                设为当前
-                                            </Button>
-                                        </>
-                                    ) : null}
-
-                                    {scope === 'worldbook' ? (
                                         <Button
                                             size="small"
-                                            icon={<InboxOutlined />}
-                                            onClick={handleOpenWorldbookImport}
+                                            icon={<CloudDownloadOutlined />}
+                                            onClick={() => onOpenPresetImporter && onOpenPresetImporter()}
                                         >
-                                            导入世界书
+                                            导入
                                         </Button>
-                                    ) : null}
 
-                                    {scope === 'worldbook' ? (
                                         <Button
                                             size="small"
-                                            icon={<ThunderboltOutlined />}
-                                            onClick={handleOpenWorldbookGen}
+                                            icon={<ReloadOutlined />}
+                                            onClick={() => void (async () => {
+                                                try {
+                                                    await refreshFiles();
+                                                } catch {
+                                                    // ignore
+                                                }
+                                                await selectFile(selectedFile);
+                                            })()}
                                         >
-                                            生成世界书
+                                            刷新
                                         </Button>
-                                    ) : null}
+                                    </Space>
 
-                                    <Button
-                                        size="small"
-                                        icon={<CloudDownloadOutlined />}
-                                        onClick={() => onOpenPresetImporter && onOpenPresetImporter()}
-                                    >
-                                        导入
-                                    </Button>
-
-                                    <Button
-                                        size="small"
-                                        icon={<ReloadOutlined />}
-                                        onClick={() => selectFile(selectedFile)}
-                                    />
-                                    <Button
-                                        size="small"
-                                        danger
-                                        icon={<DeleteOutlined />}
-                                        onClick={() => setShowDeleteModal(true)}
-                                    />
-                                    <Button
-                                        size="small"
-                                        type="primary"
-                                        icon={<SaveOutlined />}
-                                        onClick={saveFile}
-                                        loading={saving}
-                                    >
-                                        保存
-                                    </Button>
-                                </Space>
+                                    <Space size={6} className={styles.actionGroup}>
+                                        <Button
+                                            size="small"
+                                            danger
+                                            icon={<DeleteOutlined />}
+                                            onClick={() => setShowDeleteModal(true)}
+                                        >
+                                            删除
+                                        </Button>
+                                        <Button
+                                            size="small"
+                                            type="primary"
+                                            icon={<SaveOutlined />}
+                                            onClick={saveFile}
+                                            loading={saving}
+                                        >
+                                            保存
+                                        </Button>
+                                    </Space>
+                                </div>
                             </div>
                         </div>
                         {loadingFile ? (
                             <div className={styles.emptyState}>读取文件中...</div>
                         ) : (
                             <div className={styles.editorSplit}>
-                                <div className={styles.editorMain} ref={editorContainerRef}>
-                                    <div style={{ flex: 1, minHeight: 0 }}>
-                                        <EditorErrorBoundary>
-                                            {(() => {
-                                                const fallback = (
-                                                    <textarea
-                                                        value={fileContent}
-                                                        onChange={(e) => setFileContent(e.target.value)}
-                                                        spellCheck={false}
-                                                        style={{
-                                                            width: '100%',
-                                                            height: '100%',
-                                                            resize: 'none',
-                                                            border: 'none',
-                                                            outline: 'none',
-                                                            background: theme === 'dark' ? '#0b0f14' : '#ffffff',
-                                                            color: theme === 'dark' ? 'rgba(255,255,255,0.92)' : '#111827',
-                                                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-                                                            fontSize: 13,
-                                                            lineHeight: 1.45,
-                                                            padding: 12,
-                                                            boxSizing: 'border-box',
-                                                        }}
-                                                    />
-                                                );
-
-                                                return (
-                                                    <Suspense fallback={fallback}>
-                                                        <MonacoEditor
-                                                            key={selectedFile.path}
-                                                            height="100%"
-                                                            language={getLanguage(selectedFile.name)}
+                                <div className={styles.editorMain}>
+                                    <div className={styles.pageStage}>
+                                        <AnimatePresence mode="wait">
+                                            <motion.div
+                                                key={selectedFile.path}
+                                                className={styles.pageSurface}
+                                                initial={performanceMode ? false : {
+                                                    opacity: 0,
+                                                    x: pageFlipDir * 56,
+                                                    rotateY: pageFlipDir * -14,
+                                                    transformPerspective: 1200,
+                                                } as any}
+                                                animate={{
+                                                    opacity: 1,
+                                                    x: 0,
+                                                    rotateY: 0,
+                                                    transformPerspective: 1200,
+                                                } as any}
+                                                exit={performanceMode ? undefined : {
+                                                    opacity: 0,
+                                                    x: pageFlipDir * -56,
+                                                    rotateY: pageFlipDir * 14,
+                                                    transformPerspective: 1200,
+                                                } as any}
+                                                transition={{ duration: performanceMode ? 0 : 0.18, ease: [0.16, 1, 0.3, 1] }}
+                                            >
+                                                <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+                                                    <EditorErrorBoundary>
+                                                        <Input.TextArea
+                                                            className={styles.textEditor}
                                                             value={fileContent}
-                                                            onChange={(value) => setFileContent(value || '')}
-                                                            theme={theme === 'dark' ? 'vs-dark' : 'light'}
-                                                            onMount={(editor) => {
-                                                                editorRef.current = editor;
-                                                                window.setTimeout(() => {
-                                                                    try {
-                                                                        editor.layout();
-                                                                    } catch {
-                                                                        // ignore
-                                                                    }
-                                                                }, 0);
-                                                            }}
-                                                            options={{
-                                                                minimap: { enabled: !performanceMode },
-                                                                fontSize: 13,
-                                                                fontFamily: "'Consolas', 'Monaco', 'Courier New', monospace",
-                                                                scrollBeyondLastLine: false,
-                                                                automaticLayout: true,
-                                                            }}
+                                                            onChange={(e) => setFileContent(e.target.value)}
+                                                            spellCheck={false}
+                                                            disabled={saving}
                                                         />
-                                                    </Suspense>
-                                                );
-                                            })()}
-                                        </EditorErrorBoundary>
+                                                    </EditorErrorBoundary>
+                                                </div>
+                                            </motion.div>
+                                        </AnimatePresence>
                                     </div>
                                 </div>
                             </div>
@@ -788,7 +783,7 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div style={{ fontSize: 12, opacity: 0.75 }}>
-                            当前世界书：<span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' }}>{currentWorldbook}</span>
+                            当前世界书：<span>{currentWorldbook}</span>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                             <div style={{ fontSize: 12, opacity: 0.75 }}>保存后设为当前</div>
@@ -826,7 +821,7 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
                                 <div>
                                     <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>模型（可选）</div>
-                                    <Input value={worldbookGenModel} onChange={(e) => setWorldbookGenModel(e.target.value)} disabled={worldbookGenIsStreaming || worldbookGenSaving} placeholder="留空使用 root .env WORLDBOOK_GENERATOR_MODEL / MAIN_AI_MODEL" />
+                                    <Input value={worldbookGenModel} onChange={(e) => setWorldbookGenModel(e.target.value)} disabled={worldbookGenIsStreaming || worldbookGenSaving} placeholder="留空默认 gpt-4o-mini" />
                                 </div>
                                 <div>
                                     <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>温度</div>
@@ -840,12 +835,12 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
 
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                                 <div>
-                                    <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>API Base URL（可选）</div>
-                                    <Input value={worldbookGenApiBaseUrl} onChange={(e) => setWorldbookGenApiBaseUrl(e.target.value)} disabled={worldbookGenIsStreaming || worldbookGenSaving} placeholder="留空使用 root .env API_BASE_URL" />
+                                    <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>API Base URL（必填）</div>
+                                    <Input value={worldbookGenApiBaseUrl} onChange={(e) => setWorldbookGenApiBaseUrl(e.target.value)} disabled={worldbookGenIsStreaming || worldbookGenSaving} placeholder="https://xxx 或 https://xxx/v1" />
                                 </div>
                                 <div>
-                                    <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>API Key（可选）</div>
-                                    <Input.Password value={worldbookGenApiKey} onChange={(e) => setWorldbookGenApiKey(e.target.value)} disabled={worldbookGenIsStreaming || worldbookGenSaving} placeholder="留空使用 root .env API_KEY" />
+                                    <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>API Key（必填）</div>
+                                    <Input.Password value={worldbookGenApiKey} onChange={(e) => setWorldbookGenApiKey(e.target.value)} disabled={worldbookGenIsStreaming || worldbookGenSaving} placeholder="sk-..." />
                                 </div>
                             </div>
 
@@ -871,7 +866,6 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                                 border: theme === 'dark' ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(15,23,42,0.10)',
                                 background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : '#ffffff',
                                 padding: 12,
-                                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
                                 fontSize: 12,
                                 whiteSpace: 'pre-wrap',
                                 minHeight: 260,
@@ -911,7 +905,6 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                                     border: theme === 'dark' ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(15,23,42,0.10)',
                                     background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : '#ffffff',
                                     padding: 12,
-                                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
                                     fontSize: 12,
                                     whiteSpace: 'pre-wrap',
                                     minHeight: 220,
@@ -956,7 +949,7 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div style={{ fontSize: 12, opacity: 0.75 }}>
-                            当前世界书：<span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace' }}>{currentWorldbook}</span>
+                            当前世界书：<span>{currentWorldbook}</span>
                         </div>
                     </div>
 
@@ -971,21 +964,26 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                     />
 
                     {worldbookImportStep === 0 ? (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                        <Segmented
-                            value={worldbookImportMode}
-                            onChange={(v) => setWorldbookImportMode(v as any)}
-                            options={[
-                                { label: '上传', value: 'upload' },
-                                { label: '文本', value: 'text' },
-                            ]}
-                            disabled={worldbookImportSaving}
-                        />
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <div style={{ fontSize: 12, opacity: 0.75 }}>保存后设为当前</div>
-                            <Switch checked={worldbookImportSetActive} onChange={setWorldbookImportSetActive} disabled={worldbookImportSaving} />
+                        <div className={styles.modalTabsRow}>
+                            <div className={styles.pillTabs} role="tablist" aria-label="导入方式">
+                                <button
+                                    type="button"
+                                    className={`${styles.pillTab} ${worldbookImportMode === 'upload' ? styles.pillTabActive : ''}`}
+                                    aria-selected={worldbookImportMode === 'upload'}
+                                    onClick={() => setWorldbookImportMode('upload')}
+                                >
+                                    上传
+                                </button>
+                                <button
+                                    type="button"
+                                    className={`${styles.pillTab} ${worldbookImportMode === 'text' ? styles.pillTabActive : ''}`}
+                                    aria-selected={worldbookImportMode === 'text'}
+                                    onClick={() => setWorldbookImportMode('text')}
+                                >
+                                    文本
+                                </button>
+                            </div>
                         </div>
-                    </div>
                     ) : null}
 
                     {worldbookImportStep === 0 && worldbookImportMode === 'upload' ? (
@@ -1023,7 +1021,6 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                             placeholder="粘贴 worldbook JSON..."
                             autoSize={{ minRows: 8, maxRows: 18 }}
                             disabled={worldbookImportSaving}
-                            style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace" }}
                         />
                     ) : null}
 
@@ -1039,7 +1036,6 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                                 border: theme === 'dark' ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(15,23,42,0.10)',
                                 background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : '#ffffff',
                                 padding: 12,
-                                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
                                 fontSize: 12,
                                 whiteSpace: 'pre-wrap',
                                 minHeight: 220,
@@ -1058,7 +1054,6 @@ export const PresetsEditor: React.FC<PresetsEditorProps> = ({ theme, state, addT
                             border: theme === 'dark' ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(15,23,42,0.10)',
                             background: theme === 'dark' ? 'rgba(255,255,255,0.04)' : '#ffffff',
                             padding: 12,
-                            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
                             fontSize: 12,
                             whiteSpace: 'pre-wrap',
                             minHeight: 220,

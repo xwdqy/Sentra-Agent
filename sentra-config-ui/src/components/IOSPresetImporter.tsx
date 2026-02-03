@@ -226,6 +226,17 @@ export const IOSPresetImporter: React.FC<IOSPresetImporterProps> = ({ onClose, a
       addToast('error', '转换失败', '文件内容为空');
       return;
     }
+
+    const apiBaseUrlTrimmed = apiBaseUrl.trim();
+    const apiKeyTrimmed = apiKey.trim();
+    if (!apiBaseUrlTrimmed) {
+      addToast('error', '转换失败', '请填写 API Base URL');
+      return;
+    }
+    if (!apiKeyTrimmed) {
+      addToast('error', '转换失败', '请填写 API Key');
+      return;
+    }
     try {
       setSaving(true);
       const tempNum = Number(temperature);
@@ -253,8 +264,8 @@ export const IOSPresetImporter: React.FC<IOSPresetImporterProps> = ({ onClose, a
         const result = await convertPresetTextStream({
           text: rawText,
           fileName: effectiveFileName,
-          apiBaseUrl: apiBaseUrl.trim() || undefined,
-          apiKey: apiKey.trim() || undefined,
+          apiBaseUrl: apiBaseUrlTrimmed,
+          apiKey: apiKeyTrimmed,
           model: model.trim() || undefined,
           temperature: temperatureNum,
           maxTokens: maxTokensValue,
@@ -281,8 +292,8 @@ export const IOSPresetImporter: React.FC<IOSPresetImporterProps> = ({ onClose, a
       const result = await convertPresetText({
         text: rawText,
         fileName: effectiveFileName,
-        apiBaseUrl: apiBaseUrl.trim() || undefined,
-        apiKey: apiKey.trim() || undefined,
+        apiBaseUrl: apiBaseUrlTrimmed,
+        apiKey: apiKeyTrimmed,
         model: model.trim() || undefined,
         temperature: temperatureNum,
         maxTokens: maxTokensValue,

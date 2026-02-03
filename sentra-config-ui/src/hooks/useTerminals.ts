@@ -82,10 +82,28 @@ export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
     }
   };
 
+  const runScriptSilent = async (path: string, title: string, args: string[]) => {
+    try {
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ args }),
+      });
+      const data: any = await response.json().catch(() => ({}));
+      if (!response.ok || !data?.success) {
+        const msg = String(data?.message || data?.error || `HTTP ${response.status}`);
+        addToast('error', `Failed to run ${title}`, msg);
+      }
+    } catch (error) {
+      addToast('error', `Failed to run ${title}`, error instanceof Error ? error.message : undefined);
+    }
+  };
+
   const handleRunBootstrap = async () => runScript('/api/scripts/bootstrap', 'Bootstrap Script', 'bootstrap', ['--force']);
   const handleRunStart = async () => runScript('/api/scripts/start', 'Start Script', 'start', []);
   const handleRunNapcatBuild = async () => runScript('/api/scripts/napcat', 'Napcat Build', 'napcat-build', ['build']);
   const handleRunNapcatStart = async () => runScript('/api/scripts/napcat', 'Napcat Start', 'napcat-start', ['start']);
+  const handleRunNapcatStartSilent = async () => runScriptSilent('/api/scripts/napcat', 'Napcat Start', ['start']);
   const handleRunUpdate = async () => runScript('/api/scripts/update', 'Update Project', 'update', []);
   const handleRunForceUpdate = async () => runScript('/api/scripts/update', 'Force Update Project', 'force-update', ['force']);
   const handleRunSentiment = async () => runScript('/api/scripts/sentiment', '情感分析服务', 'sentiment', [], {
@@ -178,6 +196,7 @@ export function useTerminals({ addToast, allocateZ }: UseTerminalsParams) {
     handleRunStart,
     handleRunNapcatBuild,
     handleRunNapcatStart,
+    handleRunNapcatStartSilent,
     handleRunUpdate,
     handleRunForceUpdate,
     handleRunSentiment,
