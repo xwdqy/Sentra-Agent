@@ -23,13 +23,13 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
   data: <T = any>(action: string, params?: any) => Promise<T>;
   ok: <T = any>(action: string, params?: any) => Promise<OneBotResponse<T>>;
   retry: <T = any>(action: string, params?: any) => Promise<OneBotResponse<T>>;
-  
+
   // 适配器实例
   adapter: NapcatAdapter | NapcatReverseAdapter;
-  
+
   // 生命周期
   dispose: () => Promise<void>;
-  
+
   // 消息发送
   send: {
     private: (user_id: number, message: MessageInput) => Promise<OneBotResponse>;
@@ -40,7 +40,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
     forwardGroup: (group_id: number, messages: any[]) => Promise<OneBotResponse>;
     forwardPrivate: (user_id: number, messages: any[]) => Promise<OneBotResponse>;
   };
-  
+
   // 消息操作
   message: {
     recall: (message_id: number) => Promise<OneBotResponse>;
@@ -55,7 +55,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
     recentContact: (params?: any) => Promise<OneBotResponse>;
     emojiLike: (message_id: number, emoji_id: number) => Promise<OneBotResponse>;
   };
-  
+
   // 群组管理
   group: {
     list: () => Promise<OneBotResponse>;
@@ -69,7 +69,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
     setName: (group_id: number, group_name: string) => Promise<OneBotResponse>;
     leave: (group_id: number, is_dismiss?: boolean) => Promise<OneBotResponse>;
   };
-  
+
   // 文件操作
   file: {
     uploadGroup: (group_id: number, file: string, name?: string, folder?: string) => Promise<OneBotResponse>;
@@ -81,7 +81,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
     deleteGroupFolder: (group_id: number, folder_id: string) => Promise<OneBotResponse>;
     createGroupFolder: (group_id: number, name: string, parent_id?: string) => Promise<OneBotResponse>;
   };
-  
+
   // 用户信息
   user: {
     info: (user_id: number, no_cache?: boolean) => Promise<OneBotResponse>;
@@ -95,7 +95,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
     fetchCustomFace: () => Promise<OneBotResponse>;
     getUnidirectionalFriendList: () => Promise<OneBotResponse>;
   };
-  
+
   // 请求处理
   request: {
     setGroupAdd: (flag: string, sub_type: 'add' | 'invite', approve: boolean, reason?: string) => Promise<OneBotResponse>;
@@ -103,13 +103,13 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
     getDoubtFriendsAddRequest: () => Promise<OneBotResponse>;
     setDoubtFriendsAddRequest: (params: any) => Promise<OneBotResponse>;
   };
-  
+
   // 图片和媒体
   media: {
     getImage: (file: string) => Promise<OneBotResponse>;
     ocrImage: (image: string) => Promise<OneBotResponse>;
   };
-  
+
   // 系统信息
   system: {
     loginInfo: () => Promise<OneBotResponse>;
@@ -138,7 +138,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
   collection: {
     create: (params: any) => Promise<OneBotResponse>;
   };
-  
+
   // 事件监听
   on: {
     message: (handler: (ev: any) => void) => () => void;
@@ -151,7 +151,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
     close: (handler: (code: number, reason: string) => void) => () => void;
     error: (handler: (err: Error) => void) => () => void;
   };
-  
+
   // 工具方法
   utils: {
     isAtMe: (ev: MessageEvent) => boolean;
@@ -167,9 +167,9 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
         videos: Array<{ file?: string; url?: string; size?: string | number; path?: string }>;
         files: Array<{ name?: string; url?: string; size?: string | number; path?: string }>;
         records: Array<{ file?: string; format?: string; path?: string }>;
-        forwards: Array<{ 
-          id?: string | number; 
-          count?: number; 
+        forwards: Array<{
+          id?: string | number;
+          count?: number;
           preview?: string[];
           nodes?: Array<{
             sender_id?: number;
@@ -184,7 +184,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
       };
     }>;
   };
-  
+
   // 消息流（WebSocket实时推送）
   stream?: {
     /** 启动消息流服务 */
@@ -312,7 +312,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
           logFiltered: next.logFiltered,
         });
       }
-    } catch {}
+    } catch { }
 
     if (messageStream && typeof messageStream.updateRuntimeOptions === 'function') {
       try {
@@ -327,7 +327,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
           whitelistUsers: next.whitelistUsers,
           logFiltered: next.logFiltered,
         });
-      } catch {}
+      } catch { }
     }
   });
 
@@ -340,11 +340,11 @@ export function createSDK(init?: SDKInit): SdkInvoke {
   fn.data = async (action, params) => {
     return (await adapter.callData(action, params)) as any;
   };
-  
+
   fn.ok = async (action, params) => {
     return adapter.callOk(action, params) as any;
   };
-  
+
   fn.retry = async (action, params) => {
     if (adapter instanceof NapcatAdapter && typeof adapter.callRetry === 'function') {
       return adapter.callRetry(action, params) as any;
@@ -505,16 +505,16 @@ export function createSDK(init?: SDKInit): SdkInvoke {
     recall: (message_id) => fn('delete_msg', { message_id }),
     get: (message_id) => fn('get_msg', { message_id }),
     getForward: (message_id) => fn('get_forward_msg', { message_id }),
-    getGroupHistory: (group_id, message_seq, count = 20) => 
+    getGroupHistory: (group_id, message_seq, count = 20) =>
       fn('get_group_msg_history', { group_id, message_seq, count }),
-    getFriendHistory: (user_id, message_seq, count = 20) => 
+    getFriendHistory: (user_id, message_seq, count = 20) =>
       fn('get_friend_msg_history', { user_id, message_seq, count }),
     markAsRead: (params: any) => fn('mark_msg_as_read', params),
     markPrivateAsRead: (params: any) => fn('mark_private_msg_as_read', params),
     markGroupAsRead: (params: any) => fn('mark_group_msg_as_read', params),
     markAllAsRead: () => fn('_mark_all_as_read'),
     recentContact: (params?: any) => fn('get_recent_contact', params ?? {}),
-    emojiLike: (message_id, emoji_id) => 
+    emojiLike: (message_id, emoji_id) =>
       fn('set_msg_emoji_like', { message_id, emoji_id }),
   };
 
@@ -523,11 +523,11 @@ export function createSDK(init?: SDKInit): SdkInvoke {
     list: () => fn('get_group_list'),
     info: (group_id, no_cache) => fn('get_group_info', { group_id, no_cache }),
     memberList: (group_id) => fn('get_group_member_list', { group_id }),
-    memberInfo: (group_id, user_id, no_cache) => 
+    memberInfo: (group_id, user_id, no_cache) =>
       fn('get_group_member_info', { group_id, user_id, no_cache }),
     wholeBan: (group_id, enable = true) => fn('set_group_whole_ban', { group_id, enable }),
     ban: (group_id, user_id, duration) => fn('set_group_ban', { group_id, user_id, duration }),
-    kick: (group_id, user_id, reject_add_request) => 
+    kick: (group_id, user_id, reject_add_request) =>
       fn('set_group_kick', { group_id, user_id, reject_add_request }),
     setCard: (group_id, user_id, card) => fn('set_group_card', { group_id, user_id, card }),
     setName: (group_id, group_name) => fn('set_group_name', { group_id, group_name }),
@@ -536,20 +536,20 @@ export function createSDK(init?: SDKInit): SdkInvoke {
 
   // 文件操作
   fn.file = {
-    uploadGroup: (group_id, file, name, folder) => 
+    uploadGroup: (group_id, file, name, folder) =>
       fn('upload_group_file', { group_id, file, name, folder }),
-    uploadPrivate: (user_id, file, name) => 
+    uploadPrivate: (user_id, file, name) =>
       fn('upload_private_file', { user_id, file, name }),
     getGroupRoot: (group_id) => fn('get_group_root_files', { group_id }),
-    getGroupFolder: (group_id, folder_id) => 
+    getGroupFolder: (group_id, folder_id) =>
       fn('get_group_files_by_folder', { group_id, folder_id }),
-    getGroupFileUrl: (group_id, file_id, busid) => 
+    getGroupFileUrl: (group_id, file_id, busid) =>
       fn('get_group_file_url', { group_id, file_id, busid }),
-    deleteGroupFile: (group_id, file_id, busid) => 
+    deleteGroupFile: (group_id, file_id, busid) =>
       fn('delete_group_file', { group_id, file_id, busid }),
-    deleteGroupFolder: (group_id, folder_id) => 
+    deleteGroupFolder: (group_id, folder_id) =>
       fn('delete_group_folder', { group_id, folder_id }),
-    createGroupFolder: (group_id, name, parent_id) => 
+    createGroupFolder: (group_id, name, parent_id) =>
       fn('create_group_file_folder', { group_id, name, parent_id }),
   };
 
@@ -574,9 +574,9 @@ export function createSDK(init?: SDKInit): SdkInvoke {
 
   // 请求处理
   fn.request = {
-    setGroupAdd: (flag, sub_type, approve, reason) => 
+    setGroupAdd: (flag, sub_type, approve, reason) =>
       fn('set_group_add_request', { flag, sub_type, approve, reason }),
-    setFriendAdd: (flag, approve, remark) => 
+    setFriendAdd: (flag, approve, remark) =>
       fn('set_friend_add_request', { flag, approve, remark }),
     getDoubtFriendsAddRequest: () => fn('get_doubt_friends_add_request'),
     setDoubtFriendsAddRequest: (params: any) => fn('set_doubt_friends_add_request', params),
@@ -886,7 +886,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
       if (reply && reply.id) {
         try {
           referred = await fn.data('get_msg', { message_id: reply.id });
-        } catch {}
+        } catch { }
       }
 
       const findInList = (arr: any[]): any | undefined => {
@@ -918,7 +918,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
               const cand = findInList(((hist as any).data as any)?.messages || []);
               if (cand) { referred = cand; break; }
             }
-          } catch {}
+          } catch { }
         }
       }
 
@@ -947,7 +947,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
               cursor = Math.min(...seqs) - 1;
             }
           }
-        } catch {}
+        } catch { }
       }
 
       if (referred && referred.message) {
@@ -1010,7 +1010,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
                 content = obj?.meta?.news?.desc || obj?.meta?.detail_1?.desc || obj?.desc || obj?.meta?.desc;
                 url = obj?.meta?.news?.jumpUrl || obj?.meta?.detail_1?.qqdocurl || obj?.meta?.news?.url || obj?.url;
                 image = obj?.meta?.news?.preview || obj?.meta?.detail_1?.preview || obj?.meta?.preview || obj?.cover;
-              } catch {}
+              } catch { }
               const preview = title || (typeof raw === 'string' ? raw : '');
               cards.push({ type: 'app', title, url, image, content, raw, preview });
             }
@@ -1193,14 +1193,14 @@ export function createSDK(init?: SDKInit): SdkInvoke {
         media.files = enrichedFiles;
         media.forwards = enrichedForwards;
         media.cards = enrichedCards;
-      } catch {}
+      } catch { }
 
       return { reply, referred, referredPlain, currentPlain, media };
     },
   };
 
   fn.adapter = adapter;
-  
+
   // 初始化消息流（可选）
   let messageStream: MessageStream | undefined;
   if (cfg.enableStream) {
@@ -1216,7 +1216,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
       whitelistUsers: cfg.whitelistUsers,
       logFiltered: cfg.logFiltered,
     });
-    
+
     // 设置群名称解析器
     messageStream.setGroupNameResolver(async (groupId: number) => {
       try {
@@ -1228,7 +1228,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
     });
     // 注入 SDK 调用器，允许通过消息流直接调用 SDK 功能
     messageStream.setInvoker(fn);
-    
+
     fn.stream = {
       start: () => messageStream!.start(),
       stop: () => messageStream!.stop(),
@@ -1236,7 +1236,7 @@ export function createSDK(init?: SDKInit): SdkInvoke {
       getInstance: () => messageStream,
     };
   }
-  
+
   fn.dispose = async () => {
     try {
       if (messageStream) {
@@ -1248,9 +1248,9 @@ export function createSDK(init?: SDKInit): SdkInvoke {
         await adapter.destroy();
       }
       if (typeof stopConfigListener === 'function') {
-        try { stopConfigListener(); } catch {}
+        try { stopConfigListener(); } catch { }
       }
-    } catch {}
+    } catch { }
   };
 
   return fn;

@@ -15,6 +15,9 @@ const distEntry = path.join(napcatDir, 'dist', 'src', 'main.js');
 const ecosystem = path.join(repoRoot, 'ecosystem.config.cjs');
 const pm2AppName = 'sentra-napcat';
 
+const napcatEnvFile = path.join(napcatDir, '.env');
+const napcatEnvExampleFile = path.join(napcatDir, '.env.example');
+
 function exists(p) {
   try {
     fs.accessSync(p);
@@ -53,6 +56,47 @@ function readDotenvFile(filePath) {
     return out;
   } catch {
     return {};
+  }
+}
+
+function ensureNapcatEnvReady() {
+  try {
+    if (!exists(napcatEnvFile)) {
+      if (exists(napcatEnvExampleFile)) {
+        fs.copyFileSync(napcatEnvExampleFile, napcatEnvFile);
+        console.log(chalk.gray('[Napcat] .env missing → copied from .env.example'));
+      }
+      return;
+    }
+
+    if (!exists(napcatEnvExampleFile)) return;
+
+    const cur = readDotenvFile(napcatEnvFile);
+    const ex = readDotenvFile(napcatEnvExampleFile);
+
+    const ensureKeys = [
+      'NAPCAT_WS_URL',
+      'NAPCAT_MODE',
+      'REVERSE_PORT',
+      'REVERSE_PATH',
+      'ENABLE_STREAM',
+      'STREAM_PORT',
+    ];
+
+    const missing = ensureKeys.filter((k) => cur[k] == null || String(cur[k]).trim() === '');
+    if (!missing.length) return;
+
+    const appendLines = [];
+    for (const k of missing) {
+      const v = ex[k];
+      if (v == null || String(v).trim() === '') continue;
+      appendLines.push(`${k}=${v}`);
+    }
+    if (!appendLines.length) return;
+
+    fs.appendFileSync(napcatEnvFile, `\n\n# Added by sentra-config-ui/scripts/napcat.mjs\n${appendLines.join('\n')}\n`, 'utf8');
+    console.log(chalk.gray(`[Napcat] .env missing keys → appended defaults: ${missing.join(', ')}`));
+  } catch {
   }
 }
 
@@ -258,8 +302,10 @@ async function main() {
   const { cmd, env, logs } = parseArgs();
   const pm = choosePM(process.env.PACKAGE_MANAGER || 'auto');
 
-   // Ensure dependencies for sentra-adapter/napcat before build/start
-   await ensureNapcatDeps(pm);
+  // Ensure dependencies for sentra-adapter/napcat before build/start
+  await ensureNapcatDeps(pm);
+
+  ensureNapcatEnvReady();
 
   if (cmd === 'build') {
     console.log(boxen(chalk.bold.cyan(`Napcat: build (using ${pm})`), { padding: 1, borderStyle: 'round' }));

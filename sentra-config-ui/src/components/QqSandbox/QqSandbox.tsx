@@ -620,17 +620,30 @@ export function QqSandbox() {
       }
       const pid = String(data.processId);
       const startedAt = Date.now();
+      let lastStatus: any = null;
       while (true) {
         if (Date.now() - startedAt > timeoutMs) throw new Error('timeout');
         const stRes = await fetch(`/api/scripts/status/${encodeURIComponent(pid)}`, { headers: authHeaders });
         if (stRes.status === 404) throw new Error('process_not_found');
         const st: any = await stRes.json().catch(() => ({}));
+        lastStatus = st;
         if (st && (st.exitCode != null || st.endTime != null)) break;
         await sleep(650);
       }
+
+      if (lastStatus && lastStatus.exitCode != null && Number(lastStatus.exitCode) !== 0) {
+        const lines = Array.isArray(lastStatus.output) ? lastStatus.output : [];
+        const tail = lines.slice(Math.max(0, lines.length - 40)).join('');
+        const msg = tail ? `exitCode=${String(lastStatus.exitCode)}\n\n${tail}` : `exitCode=${String(lastStatus.exitCode)}`;
+        throw new Error(msg);
+      }
       antdMessage.success(`${title}完成`);
     } catch (e: any) {
-      antdMessage.error(`${title}失败: ${String(e?.message || e)}`);
+      const rawMsg = String(e?.message || e);
+      const msg = rawMsg === 'timeout'
+        ? 'timeout（可能在安装依赖/构建，首次启动建议等待更久）'
+        : rawMsg;
+      antdMessage.error(`${title}失败: ${msg}`);
     } finally {
       hide();
       setNapcatBusy(false);
@@ -2329,7 +2342,7 @@ export function QqSandbox() {
           defaultStreamPort={defaultStreamPort}
           setStreamPort={setStreamPort}
           napcatBusy={napcatBusy}
-          onStartNapcat={() => void runScriptAndWait('/api/scripts/napcat', ['start', '--no-logs'], '启动 Napcat')}
+          onStartNapcat={() => void runScriptAndWait('/api/scripts/napcat', ['start', '--no-logs'], '启动 Napcat', 10 * 60_000)}
           onStopNapcat={() => void runScriptAndWait('/api/scripts/napcat', ['pm2-stop', '--no-logs'], '停止 Napcat', 90_000)}
           onUseDefaultPort={() => {
             if (defaultStreamPort > 0) setStreamPort(defaultStreamPort);

@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { loadToolDef } from './tools/loader.js';
 import { isRunCancelled, clearRunCancelled } from '../bus/runCancel.js';
 import { registerRunStart, markRunFinished, removeRun, buildConcurrencyOverlay } from '../bus/runRegistry.js';
+import { parseFunctionCalls } from '../utils/fc.js';
 
 function now() { return Date.now(); }
 
@@ -1151,11 +1152,33 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     const idxs = revDepsArr[i] || [];
     return idxs.map((j) => plan.steps?.[j]?.stepId).filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim());
   };
+
+  // 结果流完成态：确保“最后一次 tool_result / tool_result_group”携带 resultStatus='final'
+  // 约束：只对最后一个结果事件标记 final，避免多个事件同时被认为是最终完成。
+  let finalResultEmitted = false;
+
+  // 孤立步骤结果缓冲：由调度器在确认是否为最后一步时决定 progress/final
+  const isolatedResultBuffers = new Map(); // plannedStepIndex -> ev
+  const flushIsolatedResultIfAny = (plannedStepIndex, finalHint) => {
+    try {
+      const ev = isolatedResultBuffers.get(plannedStepIndex);
+      if (!ev) return;
+      const shouldFinal = !!finalHint && !finalResultEmitted;
+      emitRunEvent(runId, {
+        ...ev,
+        resultStream: true,
+        resultStatus: shouldFinal ? 'final' : 'progress'
+      });
+      if (shouldFinal) finalResultEmitted = true;
+      isolatedResultBuffers.delete(plannedStepIndex);
+    } catch { }
+  };
+
   const emitToolResultGrouped = (ev, plannedStepIndex) => {
     const gid = groupOf[plannedStepIndex];
     if (gid === null || gid === undefined) {
-      // 孤立步骤：即时发送（优先反馈）
-      emitRunEvent(runId, { ...ev, resultStream: true, resultStatus: 'progress' });
+      // 孤立步骤：先缓冲，由调度器在确认是否“最后一步”时决定 progress/final
+      isolatedResultBuffers.set(plannedStepIndex, ev);
       return;
     }
     if (!groupBuffers.has(gid)) groupBuffers.set(gid, new Map());
@@ -1172,7 +1195,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     if (!groupArgsBuffers.has(gid)) groupArgsBuffers.set(gid, new Map());
     groupArgsBuffers.get(gid).set(plannedStepIndex, argsEv);
   };
-  const flushGroupIfReady = (gid) => {
+  const flushGroupIfReady = (gid, { finalHint } = {}) => {
     if (gid === null || gid === undefined) return;
     const g = groups.find((x) => x.id === gid);
     if (!g || g.flushed) return;
@@ -1206,6 +1229,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       if (ev) resultEvents.push(ev);
     }
     if (resultEvents.length > 0) {
+      const shouldFinal = !!finalHint && !finalResultEmitted;
       const resultGroupEvent = {
         type: 'tool_result_group',
         groupId: gid,
@@ -1213,10 +1237,11 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         orderIndices: order,
         events: resultEvents,
         resultStream: true,
-        resultStatus: 'progress',
+        resultStatus: shouldFinal ? 'final' : 'progress',
         groupFlushed: true,
       };
       emitRunEvent(runId, resultGroupEvent);
+      if (shouldFinal) finalResultEmitted = true;
     }
 
     groupBuffers.delete(gid);
@@ -1767,10 +1792,12 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       const s = plan.steps[i];
       if (s && s.skip === true && !finished.has(i)) {
         finished.add(i);
+        const isFinalStep = finished.size >= plan.steps.length;
+        flushIsolatedResultIfAny(i, isFinalStep);
         const gid2 = groupOf[i];
         if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
           groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-          flushGroupIfReady(gid2);
+          flushGroupIfReady(gid2, { finalHint: isFinalStep });
         }
       }
     }
@@ -1792,17 +1819,21 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
 
           if (r?.requeueMs > 0) {
             // 调度级延迟重排：不标记完成，设置最早可调度时间
+            // 孤立步骤：仍需把本次结果作为 progress 发出（例如 COOLDOWN_ACTIVE），避免“无反馈”。
+            flushIsolatedResultIfAny(i, false);
             delayUntil.set(i, now() + r.requeueMs);
             started.delete(i);
             if (r?.usedEntry) used.push(r.usedEntry);
             return;
           }
           finished.add(i);
+          const isFinalStep = finished.size >= plan.steps.length;
+          flushIsolatedResultIfAny(i, isFinalStep);
           // 中文：更新组内剩余计数并在组完成时统一刷新实时事件
           const gid2 = groupOf[i];
           if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
             groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-            flushGroupIfReady(gid2);
+            flushGroupIfReady(gid2, { finalHint: isFinalStep });
           }
           if (r?.usedEntry) used.push(r.usedEntry);
           if (r?.succeeded) succeeded += r.succeeded;
@@ -1811,11 +1842,13 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
           runningByTool.set(aiName, Math.max(0, (runningByTool.get(aiName) || 1) - 1));
           runningByProvider.set(provKey, Math.max(0, (runningByProvider.get(provKey) || 1) - 1));
           finished.add(i);
+          const isFinalStep = finished.size >= plan.steps.length;
+          flushIsolatedResultIfAny(i, isFinalStep);
           // 中文：异常也视为完成，避免组刷新被阻塞
           const gid2 = groupOf[i];
           if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
             groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-            flushGroupIfReady(gid2);
+            flushGroupIfReady(gid2, { finalHint: isFinalStep });
           }
           logger.warn?.('并行执行异常', { label: 'STEP', index: i, error: String(e) });
         }));
@@ -1849,7 +1882,10 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
           }
         }
         // 强制刷新所有已无待完成步数的组
-        for (const g of groups) flushGroupIfReady(g.id);
+        const finalGid = groups.length ? groups[groups.length - 1].id : null;
+        for (const g of groups) {
+          flushGroupIfReady(g.id, { finalHint: !finalResultEmitted && finalGid !== null && g.id === finalGid });
+        }
       }
       break;
     }
@@ -1861,7 +1897,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   const attempted = used.length;
   const successRate = attempted ? succeeded / attempted : 0;
   // 兜底：循环结束后，若仍有未刷新的组（理论上不应发生），统一刷新
-  for (const g of groups) flushGroupIfReady(g.id);
+  for (const g of groups) flushGroupIfReady(g.id, { finalHint: false });
   return { used, attempted, succeeded, successRate };
 }
 
@@ -2453,28 +2489,6 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       }
 
       const enableSummary = config.flags?.enableSummary !== false;
-
-      emitRunEvent(runId, {
-        type: 'tool_result_group',
-        groupId: runId,
-        groupSize: 0,
-        orderIndices: [],
-        events: [],
-        resultStream: true,
-        resultStatus: 'final',
-        groupFlushed: true,
-      });
-      await HistoryStore.append(runId, {
-        type: 'tool_result_group',
-        groupId: runId,
-        groupSize: 0,
-        orderIndices: [],
-        events: [],
-        resultStream: true,
-        resultStatus: 'final',
-        groupFlushed: true,
-      });
-
       emitRunEvent(runId, {
         type: 'completed',
         exec,
@@ -2510,6 +2524,150 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
         try { await HistoryStore.setSummary(runId, summary); } catch { }
 
         // 发送总结事件，包含失败信息
+        emitRunEvent(runId, {
+          type: 'summary',
+          summary,
+          success: summaryResult.success,
+          error: summaryResult.error,
+          attempts: summaryResult.attempts
+        });
+        await HistoryStore.append(runId, {
+          type: 'summary',
+          summary,
+          success: summaryResult.success,
+          error: summaryResult.error,
+          attempts: summaryResult.attempts
+        });
+      }
+    } catch (e) {
+      emitRunEvent(runId, { type: 'done', error: String(e) });
+      await HistoryStore.append(runId, { type: 'done', error: String(e) });
+    } finally {
+      const cancelled = isRunCancelled(runId);
+      try { markRunFinished(runId, { cancelled }); } catch { }
+      try { removeRun(runId); } catch { }
+      try { await sub.return?.(); } catch { }
+      try { RunEvents.close(runId); } catch { }
+      try { clearRunCancelled(runId); } catch { }
+    }
+  })();
+
+  try {
+    for await (const ev of sub) {
+      yield ev;
+      if (ev?.type === 'completed' || ev?.type === 'summary') break;
+    }
+  } finally {
+    const cancelled = isRunCancelled(runId);
+    try { markRunFinished(runId, { cancelled }); } catch { }
+    try { removeRun(runId); } catch { }
+    try { await sub.return?.(); } catch { }
+    try { RunEvents.close(runId); } catch { }
+    try { clearRunCancelled(runId); } catch { }
+  }
+}
+
+export async function* planThenExecuteStreamToolsXml({ objective, toolsXml, context = {}, mcpcore, conversation }) {
+  const runId = uuidv4();
+  const sub = RunEvents.subscribe(runId);
+  const ctx0 = (context && typeof context === 'object') ? context : {};
+  registerRunStart({ runId, channelId: ctx0.channelId, identityKey: ctx0.identityKey, objective });
+  const ctx = injectConcurrencyOverlay({ runId, objective, context: ctx0 });
+
+  (async () => {
+    try {
+      const sanitizedCtx = sanitizeContextForLog(ctx);
+      emitRunEvent(runId, { type: 'start', objective, context: sanitizedCtx });
+      await HistoryStore.append(runId, { type: 'start', objective, context: sanitizedCtx });
+
+      let manifest0 = buildPlanningManifest(mcpcore);
+
+      const judge = { need: true, summary: 'direct_tools_xml', toolNames: [], ok: true, forced: true };
+      const toolPreReplySingleSkipTools = Array.isArray(config.flags?.toolPreReplySingleSkipTools)
+        ? config.flags.toolPreReplySingleSkipTools
+        : [];
+      emitRunEvent(runId, {
+        type: 'judge',
+        need: true,
+        summary: judge.summary,
+        toolNames: judge.toolNames,
+        ok: true,
+        forced: true,
+        toolPreReplySingleSkipTools
+      });
+      await HistoryStore.append(runId, {
+        type: 'judge',
+        need: true,
+        summary: judge.summary,
+        toolNames: judge.toolNames,
+        ok: true,
+        forced: true,
+        toolPreReplySingleSkipTools
+      });
+
+      const rawToolsXml = String(toolsXml || '').trim();
+      const calls = parseFunctionCalls(rawToolsXml, { format: (config.fcLlm?.format || 'sentra') });
+      const steps = (Array.isArray(calls) ? calls : [])
+        .filter((c) => c && typeof c === 'object')
+        .map((c) => ({
+          stepId: newStepId(),
+          aiName: String(c.name || '').trim(),
+          reason: ['direct_tools_xml'],
+          nextStep: '',
+          draftArgs: (c.arguments && typeof c.arguments === 'object') ? c.arguments : {},
+          dependsOnStepIds: undefined
+        }))
+        .filter((s) => s.aiName);
+
+      const plan0 = { manifest: manifest0, steps };
+      const plan = normalizePlanStepIds(plan0);
+      await HistoryStore.setPlan(runId, plan);
+      emitRunEvent(runId, { type: 'plan', plan });
+      await HistoryStore.append(runId, { type: 'plan', plan });
+
+      const exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
+
+      if (isRunCancelled(runId)) {
+        const summary = '本次运行已被上游取消（用户改主意），仅保留已完成的工具结果，不再继续评估与总结。';
+        try { await HistoryStore.setSummary(runId, summary); } catch { }
+        emitRunEvent(runId, { type: 'done', exec, cancelled: true });
+        await HistoryStore.append(runId, { type: 'done', exec, cancelled: true });
+        emitRunEvent(runId, { type: 'summary', summary, cancelled: true });
+        await HistoryStore.append(runId, { type: 'summary', summary, cancelled: true });
+        return;
+      }
+
+      const enableEval = config.flags?.enableEval !== false;
+      let evalObj = null;
+      if (enableEval) {
+        evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
+      }
+
+      emitRunEvent(runId, { type: 'done', exec });
+      await HistoryStore.append(runId, { type: 'done', exec });
+
+      const enableSummary = config.flags?.enableSummary !== false;
+      emitRunEvent(runId, {
+        type: 'completed',
+        exec,
+        evaluation: enableEval ? evalObj : null,
+        summaryPending: enableSummary,
+        resultStream: true,
+        resultStatus: 'final'
+      });
+      await HistoryStore.append(runId, {
+        type: 'completed',
+        exec,
+        evaluation: enableEval ? evalObj : null,
+        summaryPending: enableSummary,
+        resultStream: true,
+        resultStatus: 'final'
+      });
+
+      if (enableSummary) {
+        const summaryResult = await summarizeToolHistory(runId, '', ctx);
+        const summary = summaryResult.summary || '';
+        try { await HistoryStore.setSummary(runId, summary); } catch { }
         emitRunEvent(runId, {
           type: 'summary',
           summary,

@@ -288,6 +288,54 @@ export function parseReplyGateDecisionFromSentraTools(text) {
   return last;
 }
 
+export function parseSentraToolsInvocations(text) {
+  const s = String(text || '').trim();
+  if (!s) return [];
+
+  const maybeParseJson = (v) => {
+    const t = String(v ?? '').trim();
+    if (!t) return '';
+    if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
+      try {
+        return JSON.parse(t);
+      } catch {
+        return t;
+      }
+    }
+    return t;
+  };
+
+  const out = [];
+  try {
+    const toolsBlocks = extractAllFullXMLTags(s, 'sentra-tools');
+    const blocks = toolsBlocks.length > 0 ? toolsBlocks : [s];
+    for (const tb of blocks) {
+      if (!tb || !String(tb).includes('<sentra-tools')) continue;
+      const doc = getXmlParser().parse(`<root>${tb}</root>`);
+      const tools = doc?.root?.['sentra-tools'];
+      if (!tools) continue;
+      const invokes = normalizeToArray(tools.invoke);
+      for (const invoke of invokes) {
+        const name = String(invoke?.name || '').trim();
+        if (!name) continue;
+        const args = {};
+        const params = normalizeToArray(invoke?.parameter);
+        for (const p of params) {
+          const pName = String(p?.name || '').trim();
+          if (!pName) continue;
+          const v = pickFirstTypedValue(p);
+          args[pName] = maybeParseJson(v);
+        }
+        out.push({ aiName: name, args });
+      }
+    }
+  } catch {
+    return [];
+  }
+
+  return out;
+}
+
 // Zod schema for resource validation
 const ResourceSchema = z.object({
   type: z.enum(['image', 'video', 'audio', 'file', 'link']),
@@ -321,29 +369,18 @@ export function buildSentraResultBlock(ev) {
       const gid = ev.groupId != null ? String(ev.groupId) : '';
       const gsize = Number(ev.groupSize || ev.events.length);
       const order = Array.isArray(ev.orderIndices) ? ev.orderIndices.join(',') : '';
-
-      const resultStream = ev?.resultStream === true;
-      const resultStatus = typeof ev?.resultStatus === 'string' ? ev.resultStatus : '';
-      const groupFlushed = ev?.groupFlushed === true;
-
-      const extraAttrs = [];
-      if (resultStream) extraAttrs.push('result_stream="true"');
-      if (resultStatus) extraAttrs.push(`result_status="${String(resultStatus)}"`);
-      if (groupFlushed) extraAttrs.push('group_flushed="true"');
-      const extraAttrText = extraAttrs.length ? ` ${extraAttrs.join(' ')}` : '';
+      const groupStatusRaw = typeof ev?.resultStatus === 'string' ? ev.resultStatus : '';
+      const groupStatus = String(groupStatusRaw).toLowerCase() === 'final' ? 'final' : 'progress';
       const lines = [
-        `<sentra-result-group group_id="${gid}" group_size="${gsize}" order="${order}"${extraAttrText}>`
+        `<sentra-result-group group_id="${gid}" group_size="${gsize}" order="${order}" status="${groupStatus}">`
       ];
-
-      if (resultStream || resultStatus || groupFlushed) {
-        lines.push('  <stream>');
-        if (resultStream) lines.push('    <result_stream>true</result_stream>');
-        if (resultStatus) lines.push(`    <result_status>${valueToXMLString(String(resultStatus), 0)}</result_status>`);
-        if (groupFlushed) lines.push('    <group_flushed>true</group_flushed>');
-        lines.push('  </stream>');
-      }
       for (const item of ev.events) {
-        const xml = buildSingleResultXML(item);
+        const xml = buildSingleResultXML({
+          ...(item && typeof item === 'object' ? item : {}),
+          resultStatus: (item && typeof item === 'object' && typeof item.resultStatus === 'string')
+            ? item.resultStatus
+            : groupStatus
+        });
         const indented = xml.split('\n').map(l => `  ${l}`).join('\n');
         lines.push(indented);
       }
@@ -393,6 +430,8 @@ function buildSingleResultXML(ev) {
   const step = Number(ev?.plannedStepIndex ?? ev?.stepIndex ?? 0);
   const reason = Array.isArray(ev?.reason) ? ev.reason.join('; ') : (ev?.reason || '');
   const success = ev?.result?.success === true;
+  const statusRaw = typeof ev?.resultStatus === 'string' ? ev.resultStatus : '';
+  const status = String(statusRaw).toLowerCase() === 'final' ? 'final' : 'progress';
   const code = ev?.result?.code || '';
   const provider = ev?.result?.provider || ev?.toolMeta?.provider || '';
   const args = ev?.args || {};
@@ -405,27 +444,10 @@ function buildSingleResultXML(ev) {
     if (ev.result.detail !== undefined) extra.detail = ev.result.detail;
   }
 
-  const resultStream = ev?.resultStream === true;
-  const resultStatus = typeof ev?.resultStatus === 'string' ? ev.resultStatus : '';
-  const groupFlushed = ev?.groupFlushed === true;
-  const extraAttrs = [];
-  if (resultStream) extraAttrs.push('result_stream="true"');
-  if (resultStatus) extraAttrs.push(`result_status="${String(resultStatus)}"`);
-  if (groupFlushed) extraAttrs.push('group_flushed="true"');
-  const extraAttrText = extraAttrs.length ? ` ${extraAttrs.join(' ')}` : '';
-
-  const lines = [`<sentra-result step="${step}" tool="${aiName}" success="${success}"${extraAttrText}>`];
+  const lines = [`<sentra-result step="${step}" tool="${aiName}" success="${success}" status="${status}">`];
   if (reason) lines.push(`  <reason>${valueToXMLString(reason, 0)}</reason>`);
   // 同时输出 <aiName> 以便旧解析器兼容
   lines.push(`  <aiName>${valueToXMLString(aiName, 0)}</aiName>`);
-
-  if (resultStream || resultStatus || groupFlushed) {
-    lines.push('  <stream>');
-    if (resultStream) lines.push('    <result_stream>true</result_stream>');
-    if (resultStatus) lines.push(`    <result_status>${valueToXMLString(String(resultStatus), 0)}</result_status>`);
-    if (groupFlushed) lines.push('    <group_flushed>true</group_flushed>');
-    lines.push('  </stream>');
-  }
   try {
     const completion = ev?.completion;
     if (completion && typeof completion === 'object') {

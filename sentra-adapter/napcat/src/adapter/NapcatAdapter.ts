@@ -166,12 +166,12 @@ export class NapcatAdapter extends EventEmitter<{
   }
 
   async sendPrivateReply(user_id: number, reply_to_message_id: number, message: MessageInput) {
-    const msg = [ { type: 'reply', data: { id: reply_to_message_id } }, ...toSegments(message) ] as Message;
+    const msg = [{ type: 'reply', data: { id: reply_to_message_id } }, ...toSegments(message)] as Message;
     return this.call('send_private_msg', { user_id, message: msg });
   }
 
   async sendGroupReply(group_id: number, reply_to_message_id: number, message: MessageInput) {
-    const msg = [ { type: 'reply', data: { id: reply_to_message_id } }, ...toSegments(message) ] as Message;
+    const msg = [{ type: 'reply', data: { id: reply_to_message_id } }, ...toSegments(message)] as Message;
     return this.call('send_group_msg', { group_id, message: msg });
   }
 
@@ -435,7 +435,7 @@ export class NapcatAdapter extends EventEmitter<{
   private filterWhitelist(ev: OneBotEvent): boolean {
     // Only filter message events
     if ((ev as any).post_type !== 'message') return false;
-    
+
     const msgEv = ev as any;
     const messageType = msgEv.message_type;
     const groupId = msgEv.group_id as number | undefined;

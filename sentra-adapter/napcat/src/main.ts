@@ -22,6 +22,16 @@ async function main() {
 
   const sdk = createSDK();
 
+  // 启动消息流服务
+  if (sdk.stream) {
+    try {
+      await sdk.stream.start();
+      log.info({ port: cfg.streamPort }, '✅ 消息流服务已启动');
+    } catch (err) {
+      log.error({ err }, '消息流服务启动失败');
+    }
+  }
+
   const groupNameCache = new Map<number, { name: string; ts: number }>();
   const getGroupNameCached = async (groupId: number | undefined): Promise<string | undefined> => {
     if (!groupId || !Number.isFinite(groupId)) return undefined;
@@ -104,7 +114,7 @@ async function main() {
           if (summaryMode === 'always') log.info(line);
           else log.debug(line);
         }
-      } catch {}
+      } catch { }
     }
 
     // 推送到消息流（如果启用）

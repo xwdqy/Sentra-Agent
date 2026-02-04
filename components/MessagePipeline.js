@@ -346,69 +346,6 @@ function normalizeAssistantContentForHistory(raw) {
   }
 }
 
-async function forceGenerateSentraResponse({
-  chatWithRetry,
-  conversations,
-  model,
-  groupId,
-  msg,
-  toolsXml,
-  mode,
-  phase
-}) {
-  const fallback = '<sentra-response></sentra-response>';
-
-  const normalizedToolsXml = String(toolsXml || '').trim();
-  const safePhase = String(phase || '').trim();
-  const safeMode = mode === 'limit' ? 'limit' : 'promise';
-
-  const sys = [
-    '<sentra-root-directive>',
-    `  <id>tools_only_bridge_${safeMode}_v1</id>`,
-    '  <type>tools_only_bridge</type>',
-    '  <scope>single_turn</scope>',
-    safeMode === 'limit'
-      ? `  <objective>你刚刚输出了纯 <sentra-tools>，但系统已达到工具调用上限，无法继续执行。你必须给用户一个可见的回复：说明你无法继续推进的原因，并给出用户下一步可提供的信息或替代方案。</objective>`
-      : `  <objective>你刚刚输出了纯 <sentra-tools>。请把它当作“你接下来准备做的事”的承诺，并给用户一个自然的过渡回复：告诉用户你将要做什么、需要一点时间/需要进一步信息，但不要暴露工具细节。</objective>`,
-    (safePhase ? `  <phase>${safePhase}</phase>` : null),
-    (normalizedToolsXml
-      ? '  <tools_commitment><![CDATA['
-      : null),
-    (normalizedToolsXml ? normalizedToolsXml : null),
-    (normalizedToolsXml ? '  ]]></tools_commitment>' : null),
-    `  <constraints>`,
-    `    <item>你必须且只能输出一个顶层块：<sentra-response>...</sentra-response>，除此之外不能输出任何内容。</item>`,
-    safeMode === 'limit'
-      ? `    <item>必须包含至少一个 <text1>。语气要像正常聊天：解释你为什么现在不能继续推进，并给出用户下一步可以怎么做。</item>`
-      : `    <item>必须包含至少一个 <text1>。语气要像正常聊天：把工具请求转写成“你接下来准备做的事情/你将要尝试的动作”，给用户一个承上启下的反馈。</item>`,
-    `    <item>严禁输出 <sentra-tools>。</item>`,
-    `  </constraints>`,
-    '</sentra-root-directive>'
-  ].filter(Boolean).join('\n');
-
-  try {
-    if (typeof chatWithRetry !== 'function') return ensureSentraResponseHasTarget(fallback, msg);
-    const baseConv = Array.isArray(conversations) ? conversations : [];
-    const opts = {
-      __sentraExpectedOutput: 'sentra_response'
-    };
-    if (model) {
-      opts.model = model;
-    }
-    const forceResult = await chatWithRetry(
-      [...baseConv, { role: 'system', content: sys }],
-      opts,
-      groupId
-    );
-
-    if (forceResult && forceResult.success && forceResult.response && !forceResult.toolsOnly) {
-      return ensureSentraResponseHasTarget(forceResult.response, msg);
-    }
-  } catch { }
-
-  return ensureSentraResponseHasTarget(fallback, msg);
-}
-
 function normalizeResourceKeys(resources) {
   if (!Array.isArray(resources) || resources.length === 0) return [];
   const keys = [];
@@ -559,55 +496,6 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
     // 压平多行，避免 objective 过长影响日志可读性
     const flat = inner.replace(/\s+/g, ' ').trim();
     return flat ? flat.slice(0, 400) : null;
-  };
-
-  const convertToolsXmlToObjective = (toolsXml) => {
-    const s = String(toolsXml || '').trim();
-    if (!s) return '';
-    try {
-      const invokes = Array.from(
-        s.matchAll(/<invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/invoke>/gi)
-      );
-      if (!invokes.length) {
-        const lines = [];
-        lines.push(s);
-        lines.push('');
-        lines.push('<sentra-tools-guidance>');
-        lines.push('  <language>zh</language>');
-        lines.push('  <note>上面的 <sentra-tools> 仅为参考示例（不一定完整），你可以根据实际任务自由删减、合并或新增 invoke，以更好完成用户目标。</note>');
-        lines.push('  <rules>');
-        lines.push('    <item>不要编造参数/路径/账号；信息不足时先在后续的 <sentra-response> 里向用户追问。</item>');
-        lines.push('    <item>如果某些 invoke 没必要或会显著增加成本，请主动删减或替换为更合适的工具调用。</item>');
-        lines.push('  </rules>');
-        lines.push('</sentra-tools-guidance>');
-        return lines.join('\n');
-      }
-      const lines = [];
-      lines.push(s);
-      lines.push('');
-      lines.push('<sentra-tools-guidance>');
-      lines.push('  <language>zh</language>');
-      lines.push('  <note>上面的 <sentra-tools> 仅为参考示例（不一定完整），你可以根据实际任务自由删减、合并或新增 invoke，以更好完成用户目标。</note>');
-      lines.push('  <rules>');
-      lines.push('    <item>不要编造参数/路径/账号；信息不足时先在后续的 <sentra-response> 里向用户追问。</item>');
-      lines.push('    <item>如果某些 invoke 没必要或会显著增加成本，请主动删减或替换为更合适的工具调用。</item>');
-      lines.push('  </rules>');
-      lines.push('</sentra-tools-guidance>');
-      return lines.join('\n');
-    } catch {
-      const lines = [];
-      lines.push(s);
-      lines.push('');
-      lines.push('<sentra-tools-guidance>');
-      lines.push('  <language>zh</language>');
-      lines.push('  <note>上面的 <sentra-tools> 仅为参考示例（不一定完整），你可以根据实际任务自由删减、合并或新增 invoke，以更好完成用户目标。</note>');
-      lines.push('  <rules>');
-      lines.push('    <item>不要编造参数/路径/账号；信息不足时先在后续的 <sentra-response> 里向用户追问。</item>');
-      lines.push('    <item>如果某些 invoke 没必要或会显著增加成本，请主动删减或替换为更合适的工具调用。</item>');
-      lines.push('  </rules>');
-      lines.push('</sentra-tools-guidance>');
-      return lines.join('\n');
-    }
   };
 
   try {
@@ -1098,111 +986,114 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
     const replyAnchorMsg = senderMessages[senderMessages.length - 1] || msg;
 
     let forceNeedTools = false;
-    try {
-      const routerStartAt = Date.now();
-      logger.debug('ToolRouter: begin', {
-        groupId,
-        hasProactiveRoot: !!proactiveRootXml,
-        userPreview: String(userContentNoRootForRouter || '').slice(0, 160)
-      });
-      const routed = await decideReplyOrTools({
-        chatWithRetry,
-        model: MAIN_AI_MODEL,
-        groupId,
-        baseConversations: conversations,
-        userContentNoRoot: userContentNoRootForRouter,
-        originalRootXml: proactiveRootXml,
-        timeoutMs: getEnvTimeoutMs('TIMEOUT', 180000, 900000)
-      });
+    const delegateToolDecisionToMcp = getEnvBool('MCP_DELEGATE_TOOL_DECISION', true);
+    if (!delegateToolDecisionToMcp) {
+      try {
+        const routerStartAt = Date.now();
+        logger.debug('ToolRouter: begin', {
+          groupId,
+          hasProactiveRoot: !!proactiveRootXml,
+          userPreview: String(userContentNoRootForRouter || '').slice(0, 160)
+        });
+        const routed = await decideReplyOrTools({
+          chatWithRetry,
+          model: MAIN_AI_MODEL,
+          groupId,
+          baseConversations: conversations,
+          userContentNoRoot: userContentNoRootForRouter,
+          originalRootXml: proactiveRootXml,
+          timeoutMs: getEnvTimeoutMs('TIMEOUT', 180000, 900000)
+        });
 
-      logger.debug('ToolRouter: done', {
-        groupId,
-        ms: Date.now() - routerStartAt,
-        kind: routed && typeof routed === 'object' ? routed.kind : null
-      });
+        logger.debug('ToolRouter: done', {
+          groupId,
+          ms: Date.now() - routerStartAt,
+          kind: routed && typeof routed === 'object' ? routed.kind : null
+        });
 
-      if (routed && routed.kind === 'reply' && typeof routed.response === 'string') {
-        if (!convId) convId = randomUUID();
-        pairId = await historyManager.startAssistantMessage(groupId);
+        if (routed && routed.kind === 'reply' && typeof routed.response === 'string') {
+          if (!convId) convId = randomUUID();
+          pairId = await historyManager.startAssistantMessage(groupId);
 
-        try {
-          await historyManager.appendToConversationPairMessages(groupId, pairId, 'user', currentUserContent || '');
-        } catch { }
+          try {
+            await historyManager.appendToConversationPairMessages(groupId, pairId, 'user', currentUserContent || '');
+          } catch { }
 
-        let response = routed.response;
-        const noReply = !!routed.noReply;
+          let response = routed.response;
+          const noReply = !!routed.noReply;
 
-        const rewritten = await maybeRewriteSentraResponse(response);
-        if (rewritten && typeof rewritten === 'string') {
-          response = rewritten;
-        }
+          const rewritten = await maybeRewriteSentraResponse(response);
+          if (rewritten && typeof rewritten === 'string') {
+            response = rewritten;
+          }
 
-        response = ensureSentraResponseHasTarget(response, msg);
+          response = ensureSentraResponseHasTarget(response, msg);
 
-        const responseForHistory = normalizeAssistantContentForHistory(response);
-        await historyManager.appendToAssistantMessage(groupId, responseForHistory, pairId);
+          const responseForHistory = normalizeAssistantContentForHistory(response);
+          await historyManager.appendToAssistantMessage(groupId, responseForHistory, pairId);
 
-        if (!noReply) {
-          await maybeWaitForSupplementBeforeSend();
+          if (!noReply) {
+            await maybeWaitForSupplementBeforeSend();
 
-          const finalMsg = replyAnchorMsg;
-          const swallow = shouldSwallowReplyForConversation(conversationId, hasSupplementDuringTask);
-          if (!swallow) {
-            await smartSend(finalMsg, response, sendAndWaitWithConv, true, { hasTool: false });
-            hasReplied = true;
-            if (ctx.desireManager) {
-              try {
-                await ctx.desireManager.onBotMessage(finalMsg, { proactive: !!msg?._proactive });
-              } catch (e) {
-                logger.debug('DesireManager onBotMessage(ToolRouter) failed', { err: String(e) });
+            const finalMsg = replyAnchorMsg;
+            const swallow = shouldSwallowReplyForConversation(conversationId, hasSupplementDuringTask);
+            if (!swallow) {
+              await smartSend(finalMsg, response, sendAndWaitWithConv, true, { hasTool: false });
+              hasReplied = true;
+              if (ctx.desireManager) {
+                try {
+                  await ctx.desireManager.onBotMessage(finalMsg, { proactive: !!msg?._proactive });
+                } catch (e) {
+                  logger.debug('DesireManager onBotMessage(ToolRouter) failed', { err: String(e) });
+                }
               }
+              markReplySentForConversation(conversationId);
             }
-            markReplySentForConversation(conversationId);
           }
+
+          const saved = await historyManager.finishConversationPair(groupId, pairId, null);
+          if (saved) {
+            const chatType = msg?.group_id ? 'group' : 'private';
+            const userIdForMemory = userid || '';
+            if (isGroupChat && userid) {
+              try {
+                await historyManager.promoteScopedConversationsToShared(groupId, userid);
+              } catch { }
+            }
+            triggerContextSummarizationIfNeeded({ groupId, chatType, userId: userIdForMemory }).catch((e) => {
+              logger.debug(`ContextMemory: 异步摘要触发失败 ${groupId}`, { err: String(e) });
+            });
+            triggerPresetTeachingIfNeeded({
+              groupId,
+              chatType,
+              userId: userIdForMemory,
+              userContent: currentUserContent,
+              assistantContent: response
+            }).catch((e) => {
+              logger.debug(`PresetTeaching: 异步教导触发失败 ${groupId}`, { err: String(e) });
+            });
+            tryEnqueueRagIngestAfterSave({
+              logger,
+              conversationId,
+              groupId,
+              userid: userIdForMemory,
+              userObjective,
+              msg,
+              response
+            });
+          }
+
+          pairId = null;
+          return;
         }
 
-        const saved = await historyManager.finishConversationPair(groupId, pairId, null);
-        if (saved) {
-          const chatType = msg?.group_id ? 'group' : 'private';
-          const userIdForMemory = userid || '';
-          if (isGroupChat && userid) {
-            try {
-              await historyManager.promoteScopedConversationsToShared(groupId, userid);
-            } catch { }
-          }
-          triggerContextSummarizationIfNeeded({ groupId, chatType, userId: userIdForMemory }).catch((e) => {
-            logger.debug(`ContextMemory: 异步摘要触发失败 ${groupId}`, { err: String(e) });
-          });
-          triggerPresetTeachingIfNeeded({
-            groupId,
-            chatType,
-            userId: userIdForMemory,
-            userContent: currentUserContent,
-            assistantContent: response
-          }).catch((e) => {
-            logger.debug(`PresetTeaching: 异步教导触发失败 ${groupId}`, { err: String(e) });
-          });
-          tryEnqueueRagIngestAfterSave({
-            logger,
-            conversationId,
-            groupId,
-            userid: userIdForMemory,
-            userObjective,
-            msg,
-            response
-          });
+        if (routed && routed.kind === 'tools' && typeof routed.toolsXml === 'string' && routed.toolsXml.trim()) {
+          userObjective = routed.toolsXml;
+          forceNeedTools = true;
         }
-
-        pairId = null;
-        return;
+      } catch (e) {
+        logger.debug('ToolRouter: failed (ignored)', { groupId, err: String(e) });
       }
-
-      if (routed && routed.kind === 'tools' && typeof routed.toolsXml === 'string' && routed.toolsXml.trim()) {
-        userObjective = convertToolsXmlToObjective(routed.toolsXml);
-        forceNeedTools = true;
-      }
-    } catch (e) {
-      logger.debug('ToolRouter: failed (ignored)', { groupId, err: String(e) });
     }
 
     // 在 Judge / ToolResult 最终发送前，按需做一次额外静默等待：
@@ -1290,14 +1181,43 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
 
       logger.debug(`MCP identity: ${groupId} channelId=${channelId} identityKey=${identityKey}`);
 
-      for await (const ev of sdk.stream({
-        objective: userObjective,
-        conversation: conversation,
-        overlays,
-        forceNeedTools,
-        channelId,
-        identityKey
-      })) {
+      const willStreamToolsXml = !!(
+        forceNeedTools &&
+        userObjective &&
+        userObjective.trim().startsWith('<sentra-tools>') &&
+        typeof sdk.streamToolsXml === 'function'
+      );
+      if (willStreamToolsXml) {
+        try {
+          const u = String(userObjective || '').trim();
+          logger.info('DirectToolsExec: 使用 streamToolsXml 执行', {
+            groupId,
+            attempt: streamAttempt + 1,
+            length: u.length,
+            preview: u.slice(0, 160)
+          });
+        } catch { }
+      }
+
+      const streamIterator = willStreamToolsXml
+        ? sdk.streamToolsXml({
+          toolsXml: userObjective,
+          objective: userObjective,
+          conversation,
+          overlays,
+          channelId,
+          identityKey
+        })
+        : sdk.stream({
+          objective: userObjective,
+          conversation: conversation,
+          overlays,
+          forceNeedTools,
+          channelId,
+          identityKey
+        });
+
+      for await (const ev of streamIterator) {
         logger.debug('Agent事件', ev);
 
         if (currentTaskId && isTaskCancelled(currentTaskId)) {
@@ -1462,94 +1382,19 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
             }
 
             if (result.toolsOnly && result.rawToolsXml) {
-              if (msg && msg._toolsOnlyFallbackUsed) {
-                logger.warn(
-                  `toolsOnly回退已使用过，本轮仍收到纯 <sentra-tools>，将放弃回退: ${groupId}`
-                );
-                try {
-                  const forced = await forceGenerateSentraResponse({
-                    chatWithRetry,
-                    conversations,
-                    model: MAIN_AI_MODEL,
-                    groupId,
-                    msg,
-                    toolsXml: result.rawToolsXml,
-                    mode: 'limit',
-                    phase: 'Judge'
-                  });
-
-                  if (pairId) {
-                    const forcedForHistory = normalizeAssistantContentForHistory(forced);
-                    await historyManager.appendToAssistantMessage(groupId, forcedForHistory, pairId);
-                  }
-
-                  const latestSenderMessages = getAllSenderMessages();
-                  const finalMsg = replyAnchorMsg;
-                  const swallow = shouldSwallowReplyForConversation(conversationId, hasSupplementDuringTask);
-                  if (!swallow) {
-                    try {
-                      const parsedForced = parseSentraResponse(forced);
-                      if (parsedForced && !parsedForced.shouldSkip) {
-                        await smartSend(finalMsg, forced, sendAndWaitWithConv, true, { hasTool: false });
-                        hasReplied = true;
-                        markReplySentForConversation(conversationId);
-                      }
-                    } catch { }
-                  }
-                } catch { }
-
-                try {
-                  if (pairId) {
-                    const savedForced = await historyManager.finishConversationPair(groupId, pairId, null);
-                    if (savedForced && isGroupChat) {
-                      try {
-                        await historyManager.promoteScopedConversationsToShared(groupId, userid);
-                      } catch { }
-                    }
-                  }
-                } catch { }
-                pairId = null;
-                return;
-              }
-
-              if (msg) {
-                msg._toolsOnlyFallbackUsed = true;
-              }
-
-              try {
-                const promised = await forceGenerateSentraResponse({
-                  chatWithRetry,
-                  conversations,
-                  model: MAIN_AI_MODEL,
+              const toolsXml = String(result.rawToolsXml || '').trim();
+              if (toolsXml) {
+                userObjective = toolsXml;
+                forceNeedTools = true;
+                restartMcp = true;
+                restartObjective = toolsXml;
+                logger.info('toolsOnly→direct-exec: 将直接执行 <sentra-tools>', {
                   groupId,
-                  msg,
-                  toolsXml: result.rawToolsXml,
-                  mode: 'promise',
-                  phase: 'Judge'
+                  attempt: streamAttempt + 2,
+                  length: toolsXml.length,
+                  preview: toolsXml.slice(0, 160)
                 });
-
-                if (pairId) {
-                  const promisedForHistory = normalizeAssistantContentForHistory(promised);
-                  await historyManager.appendToAssistantMessage(groupId, promisedForHistory, pairId);
-                }
-
-                const latestSenderMessages = getAllSenderMessages();
-                const finalMsg = replyAnchorMsg;
-                const swallow = shouldSwallowReplyForConversation(conversationId, hasSupplementDuringTask);
-                if (!swallow) {
-                  try {
-                    const parsedPromised = parseSentraResponse(promised);
-                    if (parsedPromised && !parsedPromised.shouldSkip) {
-                      await smartSend(finalMsg, promised, sendAndWaitWithConv, true, { hasTool: false });
-                      hasReplied = true;
-                      markReplySentForConversation(conversationId);
-                    }
-                  } catch { }
-                }
-              } catch { }
-
-              restartObjective = convertToolsXmlToObjective(result.rawToolsXml);
-              restartMcp = !!restartObjective;
+              }
 
               if (currentRunId && sdk && typeof sdk.cancelRun === 'function') {
                 try {
@@ -1563,13 +1408,12 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
 
               try {
                 if (pairId) {
-                  await historyManager.finishConversationPair(groupId, pairId, null);
+                  await historyManager.cancelConversationPairById(groupId, pairId);
                 }
               } catch { }
               pairId = null;
 
               if (restartMcp) {
-                logger.info(`toolsOnly→objective 回退触发: ${groupId} 将重跑 MCP (attempt=${streamAttempt + 2})`);
                 break;
               }
             }
@@ -2076,70 +1920,19 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
             }
 
             if (scheduleResult.toolsOnly && scheduleResult.rawToolsXml) {
-              if (msg && msg._toolsOnlyFallbackUsed) {
-                logger.warn(
-                  `toolsOnly回退已使用过(ScheduleProgress)，本轮仍收到纯 <sentra-tools>，将仅记录不发送: ${groupId}`
-                );
-                try {
-                  const forced = await forceGenerateSentraResponse({
-                    chatWithRetry,
-                    conversations: convForSchedule,
-                    model: MAIN_AI_MODEL,
-                    groupId,
-                    msg,
-                    toolsXml: scheduleResult.rawToolsXml,
-                    mode: 'limit',
-                    phase: 'ScheduleProgress'
-                  });
-
-                  const forcedForHistory = normalizeAssistantContentForHistory(forced);
-                  await historyManager.appendToAssistantMessage(groupId, forcedForHistory, progressPairId);
-                  await historyManager.finishConversationPair(groupId, progressPairId, null);
-
-                  try {
-                    const parsedForced = parseSentraResponse(forced);
-                    if (parsedForced && !parsedForced.shouldSkip) {
-                      const finalMsgProgress = replyAnchorMsg;
-                      await smartSend(finalMsgProgress, forced, sendAndWaitWithConv, true, { hasTool: true });
-                      hasReplied = true;
-                    }
-                  } catch { }
-                } catch { }
-                continue;
-              }
-
-              if (msg) {
-                msg._toolsOnlyFallbackUsed = true;
-              }
-
-              try {
-                const promised = await forceGenerateSentraResponse({
-                  chatWithRetry,
-                  conversations: convForSchedule,
-                  model: MAIN_AI_MODEL,
+              const toolsXml = String(scheduleResult.rawToolsXml || '').trim();
+              if (toolsXml) {
+                userObjective = toolsXml;
+                forceNeedTools = true;
+                restartObjective = toolsXml;
+                restartMcp = true;
+                logger.info('toolsOnly→direct-exec(ScheduleProgress): 将直接执行 <sentra-tools>', {
                   groupId,
-                  msg,
-                  toolsXml: scheduleResult.rawToolsXml,
-                  mode: 'promise',
-                  phase: 'ScheduleProgress'
+                  attempt: streamAttempt + 2,
+                  length: toolsXml.length,
+                  preview: toolsXml.slice(0, 160)
                 });
-
-                const promisedForHistory = normalizeAssistantContentForHistory(promised);
-                await historyManager.appendToAssistantMessage(groupId, promisedForHistory, progressPairId);
-                await historyManager.finishConversationPair(groupId, progressPairId, null);
-
-                try {
-                  const parsedPromised = parseSentraResponse(promised);
-                  if (parsedPromised && !parsedPromised.shouldSkip) {
-                    const finalMsgProgress = replyAnchorMsg;
-                    await smartSend(finalMsgProgress, promised, sendAndWaitWithConv, true, { hasTool: true });
-                    hasReplied = true;
-                  }
-                } catch { }
-              } catch { }
-
-              restartObjective = convertToolsXmlToObjective(scheduleResult.rawToolsXml);
-              restartMcp = !!restartObjective;
+              }
 
               if (currentRunId && sdk && typeof sdk.cancelRun === 'function') {
                 try {
@@ -2151,10 +1944,11 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
               }
               currentRunId = null;
 
+              try {
+                await historyManager.cancelConversationPairById(groupId, progressPairId);
+              } catch { }
+
               if (restartMcp) {
-                logger.info(
-                  `toolsOnly→objective 回退触发(ScheduleProgress): ${groupId} 将重跑 MCP (attempt=${streamAttempt + 2})`
-                );
                 break;
               }
               continue;
@@ -2221,8 +2015,9 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
         }
 
         if (ev.type === 'tool_result' || ev.type === 'tool_result_group') {
+          const isStreamEvent = !!ev?.resultStream;
           const streamStatus = String(ev?.resultStatus || '').toLowerCase();
-          const isStreamUpdate = !!ev?.resultStream && (streamStatus === 'progress' || streamStatus === 'final');
+          const isStreamProgress = isStreamEvent && (streamStatus === 'progress' || streamStatus === 'final');
           if (!toolResultArrived) {
             toolResultArrived = true;
             for (const waiter of toolResultWaiters) {
@@ -2233,7 +2028,7 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
             toolResultWaiters.clear();
           }
 
-          if (!isStreamUpdate) {
+          if (!isStreamProgress) {
             // 非“结果流进度”事件：保持原行为，仅收集，最终在 completed 阶段统一生成 ToolFinal
             try {
               if (ev.type === 'tool_result') {
@@ -2396,29 +2191,41 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
             );
 
             if (result && result.success && result.toolsOnly && result.rawToolsXml) {
-              if (msg) {
-                msg._toolsOnlyFallbackUsed = true;
-              }
-              try {
-                const promised = await forceGenerateSentraResponse({
-                  chatWithRetry,
-                  conversations: convForTool,
-                  model: MAIN_AI_MODEL,
+              const toolsXml = String(result.rawToolsXml || '').trim();
+              if (toolsXml) {
+                userObjective = toolsXml;
+                forceNeedTools = true;
+                restartObjective = toolsXml;
+                restartMcp = true;
+                logger.info('toolsOnly→direct-exec(ToolProgress): 将直接执行 <sentra-tools>', {
                   groupId,
-                  msg,
-                  toolsXml: result.rawToolsXml,
-                  mode: 'promise',
-                  phase: 'ToolProgress'
+                  attempt: streamAttempt + 2,
+                  length: toolsXml.length,
+                  preview: toolsXml.slice(0, 160)
                 });
-                toolResponse = promised;
-                toolNoReply = false;
-              } catch { }
+              }
             } else if (result && result.success) {
               toolResponse = result.response;
               toolNoReply = !!result.noReply;
             }
           } catch (e) {
             logger.warn('ToolProgress: 生成实时回复异常', { err: String(e) });
+          }
+
+          if (restartMcp) {
+            try {
+              await historyManager.cancelConversationPairById(groupId, toolPairId);
+            } catch { }
+            if (currentRunId && sdk && typeof sdk.cancelRun === 'function') {
+              try {
+                sdk.cancelRun(currentRunId);
+                try {
+                  untrackRunForSender(userid, groupId, currentRunId);
+                } catch { }
+              } catch { }
+            }
+            currentRunId = null;
+            break;
           }
 
           if (toolResponse) {
@@ -2565,95 +2372,24 @@ export async function handleOneMessageCore(ctx, msg, taskId) {
                   groupId
                 );
                 if (result && result.success && result.toolsOnly && result.rawToolsXml) {
-                  if (msg && msg._toolsOnlyFallbackUsed) {
-                    logger.warn(
-                      `toolsOnly回退已使用过(ToolFinal)，本轮仍收到纯 <sentra-tools>，将放弃回退: ${groupId}`
-                    );
-                    try {
-                      const forced = await forceGenerateSentraResponse({
-                        chatWithRetry,
-                        conversations: convForFinal,
-                        model: MAIN_AI_MODEL,
-                        groupId,
-                        msg,
-                        toolsXml: result.rawToolsXml,
-                        mode: 'limit',
-                        phase: 'ToolFinal'
-                      });
-
-                      const forcedForHistory = normalizeAssistantContentForHistory(forced);
-                      await historyManager.appendToAssistantMessage(groupId, forcedForHistory, pairId);
-
-                      try {
-                        const parsedForced = parseSentraResponse(forced);
-                        if (parsedForced && !parsedForced.shouldSkip) {
-                          const finalMsgTool = replyAnchorMsg;
-                          await smartSend(finalMsgTool, forced, sendAndWaitWithConv, true, { hasTool: true });
-                          hasReplied = true;
-                        }
-                      } catch { }
-
-                      try {
-                        const saved = await historyManager.finishConversationPair(groupId, pairId, null);
-                        if (saved) {
-                          tryEnqueueRagIngestAfterSave({
-                            logger,
-                            conversationId,
-                            groupId,
-                            userid,
-                            userObjective,
-                            msg,
-                            response: forced
-                          });
-                        }
-                      } catch { }
-                      pairId = null;
-                    } catch { }
-                    break;
-                  } else {
-                    if (msg) {
-                      msg._toolsOnlyFallbackUsed = true;
-                    }
-
-                    try {
-                      const promised = await forceGenerateSentraResponse({
-                        chatWithRetry,
-                        conversations: convForFinal,
-                        model: MAIN_AI_MODEL,
-                        groupId,
-                        msg,
-                        toolsXml: result.rawToolsXml,
-                        mode: 'promise',
-                        phase: 'ToolFinal'
-                      });
-
-                      const promisedForHistory = normalizeAssistantContentForHistory(promised);
-                      await historyManager.appendToAssistantMessage(groupId, promisedForHistory, pairId);
-
-                      try {
-                        const parsedPromised = parseSentraResponse(promised);
-                        if (parsedPromised && !parsedPromised.shouldSkip) {
-                          const finalMsgTool = replyAnchorMsg;
-                          await smartSend(finalMsgTool, promised, sendAndWaitWithConv, true, { hasTool: true });
-                          hasReplied = true;
-                        }
-                      } catch { }
-
-                      try {
-                        await historyManager.finishConversationPair(groupId, pairId, null);
-                      } catch { }
-                      pairId = null;
-                    } catch { }
-
-                    restartObjective = convertToolsXmlToObjective(result.rawToolsXml);
-                    restartMcp = !!restartObjective;
-                    if (restartMcp) {
-                      logger.info(
-                        `toolsOnly→objective 回退触发(ToolFinal): ${groupId} 将重跑 MCP (attempt=${streamAttempt + 2})`
-                      );
-                      break;
-                    }
+                  const toolsXml = String(result.rawToolsXml || '').trim();
+                  if (toolsXml) {
+                    userObjective = toolsXml;
+                    forceNeedTools = true;
+                    restartObjective = toolsXml;
+                    restartMcp = true;
+                    logger.info('toolsOnly→direct-exec(ToolFinal): 将直接执行 <sentra-tools>', {
+                      groupId,
+                      attempt: streamAttempt + 2,
+                      length: toolsXml.length,
+                      preview: toolsXml.slice(0, 160)
+                    });
                   }
+                  try {
+                    await historyManager.cancelConversationPairById(groupId, pairId);
+                  } catch { }
+                  pairId = null;
+                  break;
                 }
 
                 if (result && result.success) {

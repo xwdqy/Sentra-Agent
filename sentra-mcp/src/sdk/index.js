@@ -66,7 +66,7 @@ function formatRequiredHint(schema = {}) {
   }
 }
 
-const CIRCLED_NUMS = ['①','②','③','④','⑤','⑥','⑦','⑧','⑨','⑩','⑪','⑫','⑬','⑭','⑮','⑯','⑰','⑱','⑲','⑳'];
+const CIRCLED_NUMS = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩', '⑪', '⑫', '⑬', '⑭', '⑮', '⑯', '⑰', '⑱', '⑲', '⑳'];
 function circledNum(n) {
   const idx = Number(n) - 1;
   if (idx >= 0 && idx < CIRCLED_NUMS.length) return CIRCLED_NUMS[idx];
@@ -79,16 +79,16 @@ function toMarkdownCatalog(items = []) {
   const lines = ['# Sentra MCP 工具清单', '', `**可用工具总数**: ${items.length}`, '---', ''];
   for (const t of items) {
     lines.push(`### ${t.name} (${t.aiName})`);
-    
+
     const skill = t.skillDoc && typeof t.skillDoc === 'object' ? t.skillDoc : null;
     const attrs = skill && skill.attributes && typeof skill.attributes === 'object' ? skill.attributes : {};
     const digest = typeof skill?.digest === 'string' ? skill.digest : '';
     const rawMd = typeof skill?.raw === 'string' ? skill.raw : '';
     void attrs;
-    
+
     lines.push(`**描述**: ${t.description || '(无描述)'}`);
     lines.push(`**提供者**: ${t.provider}${t.serverId ? ` | serverId: ${t.serverId}` : ''}`);
-    
+
     const schema = t.inputSchema || {};
     const { required, conditionalGroups } = formatRequiredHint(schema);
     if (!required.length && !conditionalGroups.length) {
@@ -107,7 +107,7 @@ function toMarkdownCatalog(items = []) {
         lines.push(`${idx}. 任选其一：${options}`);
       }
     }
-    
+
     lines.push(`**超时(ms)**: ${t.timeoutMs}ms`);
 
     if (digest) {
@@ -121,7 +121,7 @@ function toMarkdownCatalog(items = []) {
       lines.push('');
       lines.push(rawMd);
     }
-    
+
     lines.push('');
   }
   return lines.join('\n');
@@ -338,6 +338,36 @@ export class SentraMcpSDK {
   }
 
   /**
+   * Stream: execute tools from a single <sentra-tools> XML block directly (bypass planning).
+   * It will still emit the same event types (start/judge/plan/args/tool_result/completed/summary)
+   * so the upper layer can reuse the existing streaming UI/logics.
+   *
+   * @param {{ toolsXml: string, objective?: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, channelId?: string, identityKey?: string }} params
+   * @returns {AsyncIterable<any>}
+   */
+  streamToolsXml({ toolsXml, objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey }) {
+    const self = this;
+    async function* gen() {
+      await self.init();
+      const ov = promptOverlays || overlays;
+      const ctx0 = (context && typeof context === 'object') ? context : {};
+      const ctx1 = (channelId != null || identityKey != null)
+        ? { ...ctx0, ...(channelId != null ? { channelId } : {}), ...(identityKey != null ? { identityKey } : {}) }
+        : ctx0;
+      const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
+      const obj = (typeof objective === 'string' && objective.trim())
+        ? objective
+        : `DIRECT_TOOLS_XML_EXECUTION:\n${String(toolsXml || '').trim()}`;
+
+      const { planThenExecuteStreamToolsXml } = await import('../agent/planners.js');
+      for await (const ev of planThenExecuteStreamToolsXml({ objective: obj, toolsXml, context: ctx, mcpcore: self.mcpcore, conversation })) {
+        yield ev;
+      }
+    }
+    return gen();
+  }
+
+  /**
    * Stream with callback helper. Returns controller with stop() and a completion promise.
    * Note: stop() only stops event consumption; the underlying run will continue to finish.
    * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, forceNeedTools?: boolean, onEvent: (ev:any)=>void }} params
@@ -355,7 +385,7 @@ export class SentraMcpSDK {
         const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
         for await (const ev of planThenExecuteStream({ objective, context: ctx, mcpcore: this.mcpcore, conversation, forceNeedTools })) {
           if (stopped) break;
-          try { onEvent?.(ev); } catch {}
+          try { onEvent?.(ev); } catch { }
         }
       } catch (e) {
         // surface errors via rejection so callers can await .done
@@ -376,7 +406,7 @@ export class SentraMcpSDK {
   cancelRun(runId) {
     try {
       cancelRun(runId);
-    } catch {}
+    } catch { }
   }
 }
 

@@ -341,10 +341,10 @@ export async function getSandboxSystemPrompt() {
 
     '## Result Stream Reply Style (CRITICAL)\n\n' +
     '- If the input context contains `<sentra-result>` or `<sentra-result-group>`, treat this turn as a RESULT UPDATE during an ongoing task.\n' +
+    '- If `<sentra-result>` / `<sentra-result-group>` has attribute `status="final"`, treat this update as the COMPLETION signal for the task (no more steps pending).\n' +
     '- Write your reply as an incremental update: focus on what is NEW in the result and what it changes. Avoid a “final wrap-up / overall conclusion / full recap” tone.\n' +
     '- Do NOT restate the entire original user question. Do NOT add an ending like “总结/最终结论/以上就是…/如需更多…”.\n' +
     '- Keep it short and concrete; prefer 1-3 segments (`<text1>`, `<text2>`, `<text3>`).\n' +
-    '- If the result stream explicitly indicates completion (e.g., `<stream><result_status>final</result_status>...</stream>`), you MAY use a very short “已完成/可以了” closure, but still avoid long recap or summary.\n' +
     '- If information is still incomplete, say what is confirmed so far and what is still pending, without mentioning internal tools/protocol.\n\n' +
 
     '## Output Strategy\n\n' +

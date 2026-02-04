@@ -40,7 +40,7 @@ export class NapcatReverseAdapter extends EventEmitter<{
       try {
         const info = await this.callData<{ user_id: number }>('get_login_info');
         this.selfId = info?.user_id;
-      } catch {}
+      } catch { }
     });
     this.server.on('client_disconnected', (c, r) => this.emit('disconnected', c, r));
     this.server.on('error', (e) => this.emit('error', e));
@@ -85,12 +85,12 @@ export class NapcatReverseAdapter extends EventEmitter<{
   }
 
   async sendPrivateReply(user_id: number, reply_to_message_id: number, message: MessageInput) {
-    const msg = [ { type: 'reply', data: { id: reply_to_message_id } }, ...toSegments(message) ] as Message;
+    const msg = [{ type: 'reply', data: { id: reply_to_message_id } }, ...toSegments(message)] as Message;
     return this.call('send_private_msg', { user_id, message: msg });
   }
 
   async sendGroupReply(group_id: number, reply_to_message_id: number, message: MessageInput) {
-    const msg = [ { type: 'reply', data: { id: reply_to_message_id } }, ...toSegments(message) ] as Message;
+    const msg = [{ type: 'reply', data: { id: reply_to_message_id } }, ...toSegments(message)] as Message;
     return this.call('send_group_msg', { group_id, message: msg });
   }
 
@@ -116,7 +116,7 @@ export class NapcatReverseAdapter extends EventEmitter<{
   private filterWhitelist(ev: OneBotEvent): boolean {
     // Only filter message events
     if ((ev as any).post_type !== 'message') return false;
-    
+
     const msgEv = ev as any;
     const messageType = msgEv.message_type;
     const groupId = msgEv.group_id as number | undefined;

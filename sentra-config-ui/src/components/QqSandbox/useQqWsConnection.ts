@@ -377,6 +377,21 @@ export function useQqWsConnection(opts: {
       cfg = null;
     }
 
+    if (cfg && cfg.enableStream === false) {
+      setStatus('error');
+      setStatusText('Napcat 未启用消息流（ENABLE_STREAM=false）');
+      try {
+        if (toast && !unloadingRef.current) antdMessage.error('Napcat 未启用消息流（ENABLE_STREAM=false）');
+      } catch {
+      }
+      try {
+        setConnectBusy(false);
+        connectToastedRef.current = false;
+      } catch {
+      }
+      return;
+    }
+
     const p = Number.isFinite(streamPort) && streamPort > 0
       ? Math.trunc(streamPort)
       : (Number(cfg?.streamPort || 0) > 0 ? Math.trunc(Number(cfg?.streamPort || 0)) : (defaultStreamPort || 6702));
@@ -386,7 +401,24 @@ export function useQqWsConnection(opts: {
       u.searchParams.set('port', String(p));
       const r = await fetch(u.toString(), { headers });
       const h: any = r.ok ? await r.json() : null;
-      if (!h?.ok) throw new Error(String(h?.error || 'health_failed'));
+      if (!h?.ok) {
+        const errMsg = String(h?.error || 'health_failed');
+        if (/stream_disabled/i.test(errMsg) || /enable_stream\s*=\s*false/i.test(errMsg)) {
+          setStatus('error');
+          setStatusText('Napcat 未启用消息流（ENABLE_STREAM=false）');
+          try {
+            if (toast && !unloadingRef.current) antdMessage.error('Napcat 未启用消息流（ENABLE_STREAM=false）');
+          } catch {
+          }
+          try {
+            setConnectBusy(false);
+            connectToastedRef.current = false;
+          } catch {
+          }
+          return;
+        }
+        throw new Error(errMsg);
+      }
     } catch {
       setStatus('error');
       setStatusText('连接失败（预检未通过）');

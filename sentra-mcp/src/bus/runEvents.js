@@ -23,7 +23,7 @@ export const RunEvents = {
     try {
       const ee = getOrCreate(runId);
       ee.emit('event', event);
-    } catch {}
+    } catch { }
   },
   // Returns an AsyncIterator of events for the given runId
   subscribe(runId) {
@@ -48,7 +48,7 @@ export const RunEvents = {
         return new Promise((resolve) => waiters.push(resolve));
       },
       async return() {
-        try { ee.off('event', onEvent); } catch {}
+        try { ee.off('event', onEvent); } catch { }
         return { done: true };
       },
       [Symbol.asyncIterator]() { return this; },
@@ -59,7 +59,7 @@ export const RunEvents = {
   close(runId) {
     const ee = emitters.get(runId);
     if (ee) {
-      try { ee.removeAllListeners(); } catch {}
+      try { ee.removeAllListeners(); } catch { }
       emitters.delete(runId);
     }
   }

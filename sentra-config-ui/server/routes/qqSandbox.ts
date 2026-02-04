@@ -208,6 +208,19 @@ export async function qqSandboxRoutes(fastify: FastifyInstance) {
     const defaults = getNapcatDefaultsCached();
     const defaultPort = defaults?.streamPort || 6702;
 
+    if (!defaults.enableStream) {
+      return {
+        ok: false,
+        port: defaultPort,
+        upstreamUrl: '',
+        time: Date.now(),
+        error: 'stream_disabled: ENABLE_STREAM=false',
+        enableStream: false,
+        connectMode: defaults.connectMode,
+        envPath: defaults.envPath || '',
+      };
+    }
+
     const portRaw = Number(q?.port);
     const port = Number.isFinite(portRaw) && portRaw > 0 ? Math.trunc(portRaw) : defaultPort;
     const safePort = Number.isFinite(port) && port >= 1 && port <= 65535 ? port : defaultPort;
@@ -221,6 +234,9 @@ export async function qqSandboxRoutes(fastify: FastifyInstance) {
       upstreamUrl,
       time: Date.now(),
       error: res.ok ? '' : (res.error || 'unknown'),
+      enableStream: defaults.enableStream,
+      connectMode: defaults.connectMode,
+      envPath: defaults.envPath || '',
     };
   });
 

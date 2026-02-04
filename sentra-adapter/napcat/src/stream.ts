@@ -553,6 +553,9 @@ export class MessageStream {
    * 启动WebSocket服务器
    */
   start(): Promise<void> {
+    if (this.wss) {
+      return Promise.resolve();
+    }
     return new Promise((resolve, reject) => {
       try {
         this.wss = new WebSocketServer({
