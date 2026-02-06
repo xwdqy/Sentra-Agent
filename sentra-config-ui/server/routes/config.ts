@@ -4,19 +4,75 @@ import { writeEnvFile } from '../utils/envParser';
 import { join, resolve } from 'path';
 import { copyFileSync, existsSync } from 'fs';
 import { EnvVariable } from '../types';
-import { getRuntimeConfig, getRuntimeConfigVersion, reloadRuntimeConfigFromEnvFile } from '../utils/runtimeConfig.ts';
+import { getRuntimeConfig, getRuntimeConfigVersion, reloadRuntimeConfigFromEnvFile, onRuntimeConfigChange, getCurrentConfigVersion, getCurrentConfig } from '../utils/runtimeConfig.ts';
 
 function getRootDir(): string {
   return resolve(process.cwd(), process.env.SENTRA_ROOT || '..');
 }
 
-export async function configRoutes(fastify: FastifyInstance) {
-  fastify.get('/api/configs/runtime', async () => {
+// Track active SSE connections for config changes
+const configConnections = new Set<any>();
+let lastBroadcastVersion = 0;
+
+// Broadcast config changes to all connected clients
+function broadcastConfigChange() {
+  const cfg = getCurrentConfig();
+  const ver = getCurrentConfigVersion();
+
+  // Avoid duplicate broadcasts for same version
+  if (ver <= lastBroadcastVersion) return;
+  lastBroadcastVersion = ver;
+
+  const data = `data: ${JSON.stringify({ version: ver, config: cfg })}\n\n`;
+  for (const conn of configConnections) {
     try {
-      // Best-effort: in case file watcher is delayed.
-      reloadRuntimeConfigFromEnvFile();
+      conn.write(data);
     } catch {
+      configConnections.delete(conn);
     }
+  }
+}
+
+// Listen for config changes from runtimeConfig - use once to avoid duplicate listeners
+let configChangeHandlerSet = false;
+function setupConfigChangeListener() {
+  if (configChangeHandlerSet) return;
+  configChangeHandlerSet = true;
+  onRuntimeConfigChange(() => {
+    broadcastConfigChange();
+  });
+}
+
+// Initialize listener once
+setupConfigChangeListener();
+
+export async function configRoutes(fastify: FastifyInstance) {
+  // SSE endpoint for config changes - no more polling needed!
+  fastify.get('/api/configs/stream', async (request, reply) => {
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'Access-Control-Allow-Origin': '*',
+    });
+
+    // Send initial config
+    const cfg = getRuntimeConfig();
+    const ver = getRuntimeConfigVersion();
+    reply.raw.write(`data: ${JSON.stringify({ version: ver, config: cfg })}\n\n`);
+
+    // Register connection
+    const connection = reply.raw;
+    configConnections.add(connection);
+
+    // Cleanup on close
+    request.raw.on('close', () => {
+      configConnections.delete(connection);
+    });
+  });
+
+  fastify.get('/api/configs/runtime', async () => {
     const cfg = getRuntimeConfig();
     return { version: getRuntimeConfigVersion(), config: cfg };
   });

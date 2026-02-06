@@ -114,6 +114,16 @@ export function onRuntimeConfigChange(handler: (cfg: RuntimeConfig) => void): ()
   return () => emitter.off('change', handler);
 }
 
+// Export config version for broadcasting
+export function getCurrentConfigVersion(): number {
+  return configVersion;
+}
+
+// Export config for broadcasting
+export function getCurrentConfig(): RuntimeConfig {
+  return currentConfig;
+}
+
 export function reloadRuntimeConfigFromEnvFile(envPath?: string): { ok: boolean; error?: string } {
   const p = resolve(envPath || resolve(process.cwd(), '.env'));
   if (!existsSync(p)) {

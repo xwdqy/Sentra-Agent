@@ -416,7 +416,7 @@ export function QqSandbox() {
     storage.getString('sentra_auth_token', { backend: 'session', fallback: '' }) ||
     storage.getString('sentra_auth_token', { backend: 'local', fallback: '' });
 
-  const { uiRuntimeConfigVer, qqLimitsRef } = useQqRuntimeConfig(token);
+  const { uiRuntimeConfigVer, qqLimitsRef } = useQqRuntimeConfig();
 
   const avatarBrokenRef = useRef(new Map<string, number>());
   const [, forceAvatarBrokenVer] = useState(0);

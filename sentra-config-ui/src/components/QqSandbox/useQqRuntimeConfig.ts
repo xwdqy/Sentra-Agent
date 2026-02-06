@@ -23,7 +23,7 @@ function pickNestedNumber(obj: any, path: Array<string>, fallback: number): numb
   return fallback;
 }
 
-export function useQqRuntimeConfig(token: string) {
+export function useQqRuntimeConfig() {
   const [uiRuntimeConfig, setUiRuntimeConfig] = useState<Record<string, any>>({});
   const [uiRuntimeConfigVer, setUiRuntimeConfigVer] = useState(0);
 
@@ -36,46 +36,58 @@ export function useQqRuntimeConfig(token: string) {
     renderPageStep: 120,
   });
 
+  // Use SSE for real-time config updates - no more polling!
   useEffect(() => {
     let disposed = false;
-    let t: any = null;
+    let es: EventSource | null = null;
+    let reconnectTimer: number | null = null;
 
-    const fetchRuntime = async () => {
-      const headers: Record<string, string> = {};
-      if (token) headers['x-auth-token'] = token;
-      try {
-        const r = await fetch('/api/configs/runtime', { headers });
-        if (!r.ok) return;
-        const data: any = await r.json().catch(() => null);
-        if (!data || disposed) return;
-        const ver = Number(data?.version || 0);
-        const cfg = (data?.config && typeof data.config === 'object') ? data.config : {};
-        if (Number.isFinite(ver) && ver > 0) {
-          setUiRuntimeConfigVer((prev) => (prev === ver ? prev : ver));
-        }
-        setUiRuntimeConfig((prev) => {
-          try {
-            const prevJson = JSON.stringify(prev);
-            const nextJson = JSON.stringify(cfg);
-            if (prevJson === nextJson) return prev;
-          } catch {
+    const connectSse = () => {
+      if (disposed) return;
+      const url = '/api/configs/stream';
+      es = new EventSource(url);
+
+      es.onopen = () => {
+        reconnectTimer = null; // Connected, clear reconnect timer
+      };
+
+      es.onmessage = (event) => {
+        if (disposed) return;
+        try {
+          const data = JSON.parse(event.data);
+          if (data?.config) {
+            setUiRuntimeConfig(data.config);
+            setUiRuntimeConfigVer(Number(data.version) || 0);
           }
-          return cfg;
-        });
-      } catch {
-      }
+        } catch {
+          // Silent fail
+        }
+      };
+
+      es.onerror = () => {
+        if (disposed) return;
+        // Only reconnect if not already reconnecting and not connected
+        if (!reconnectTimer && es?.readyState !== EventSource.OPEN) {
+          reconnectTimer = window.setTimeout(() => {
+            reconnectTimer = null;
+            if (disposed) return;
+            es?.close();
+            connectSse();
+          }, 5000);
+        }
+      };
     };
 
-    void fetchRuntime();
-    t = window.setInterval(fetchRuntime, 2500);
+    connectSse();
 
     return () => {
       disposed = true;
-      if (t) {
-        try { window.clearInterval(t); } catch { }
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
       }
+      es?.close();
     };
-  }, [token]);
+  }, []);
 
   useEffect(() => {
     try {
