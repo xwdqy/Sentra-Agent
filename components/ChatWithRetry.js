@@ -22,10 +22,6 @@ function getMaxResponseTokens() {
   return Number.isFinite(raw) ? raw : 260;
 }
 
-function getTokenCountModel() {
-  return getEnv('TOKEN_COUNT_MODEL', 'gpt-4o-mini');
-}
-
 function isStrictFormatCheckEnabled() {
   return getEnvBool('ENABLE_STRICT_FORMAT_CHECK', true);
 }
@@ -152,7 +148,7 @@ function extractAndCountTokens(response) {
     .filter(Boolean);
 
   const combinedText = texts.join(' ');
-  const tokens = tokenCounter.countTokens(combinedText, getTokenCountModel());
+  const tokens = tokenCounter.countTokens(combinedText);
 
   return { text: combinedText, tokens };
 }
@@ -390,7 +386,7 @@ export async function chatWithRetry(agent, conversations, modelOrOptions, groupI
       } else {
         tokenText = extractAndCountTokens(response).text;
       }
-      const tokens = tokenCounter.countTokens(tokenText || '', getTokenCountModel());
+      const tokens = tokenCounter.countTokens(tokenText || '');
       const text = tokenText || '';
       logger.debug(`[${groupId}] Token统计: ${tokens} tokens, 文本长度: ${text.length}`);
 

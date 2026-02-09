@@ -102,9 +102,17 @@ export async function configRoutes(fastify: FastifyInstance) {
       }
 
       const modulePath = join(getRootDir(), moduleName);
+      if (!existsSync(modulePath)) {
+        return reply.code(404).send({ error: 'Module not found', message: `Module directory not found: ${moduleName}` });
+      }
       const envPath = join(modulePath, '.env');
 
-      writeEnvFile(envPath, variables);
+      try {
+        writeEnvFile(envPath, variables);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return reply.code(400).send({ error: 'Invalid configuration', message: msg });
+      }
 
       try {
         if (moduleName === 'sentra-config-ui' || moduleName === '.') {
@@ -134,9 +142,17 @@ export async function configRoutes(fastify: FastifyInstance) {
       }
 
       const pluginPath = join(getRootDir(), 'sentra-mcp', 'plugins', pluginName);
+      if (!existsSync(pluginPath)) {
+        return reply.code(404).send({ error: 'Plugin not found', message: `Plugin directory not found: ${pluginName}` });
+      }
       const envPath = join(pluginPath, '.env');
 
-      writeEnvFile(envPath, variables);
+      try {
+        writeEnvFile(envPath, variables);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return reply.code(400).send({ error: 'Invalid configuration', message: msg });
+      }
 
       try {
         // plugin .env changes do not affect sentra-config-ui runtime config

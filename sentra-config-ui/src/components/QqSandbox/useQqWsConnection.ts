@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRe
 import type { FormattedMessage, StreamEnvelope } from './QqSandbox.types';
 import { useQqRpcTimeoutSweep } from './useQqRpcTimeoutSweep';
 import { useQqWsPageLifecycle } from './useQqWsPageLifecycle';
+import { authedFetch } from '../../services/api';
 
 export type QqWsStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -364,6 +365,17 @@ export function useQqWsConnection(opts: {
     const toast = !!attemptOpts?.toast;
     const allowSchedule = attemptOpts?.allowSchedule !== false;
 
+    if (!token) {
+      setStatus('disconnected');
+      setStatusText('等待鉴权...');
+      try {
+        if (toast && !unloadingRef.current) antdMessage.error('等待鉴权');
+      } catch {
+      }
+      if (allowSchedule) scheduleReconnect('等待鉴权');
+      return;
+    }
+
     const headers: Record<string, string> = {};
     if (token) headers['x-auth-token'] = token;
 
@@ -399,7 +411,7 @@ export function useQqWsConnection(opts: {
     try {
       const u = new URL(`${window.location.origin}/api/qq/sandbox/health`);
       u.searchParams.set('port', String(p));
-      const r = await fetch(u.toString(), { headers });
+      const r = await authedFetch(u.toString(), { headers });
       const h: any = r.ok ? await r.json() : null;
       if (!h?.ok) {
         const errMsg = String(h?.error || 'health_failed');

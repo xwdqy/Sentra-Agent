@@ -48,6 +48,16 @@ export function useQqRuntimeConfig() {
       // Get auth token for SSE connection
       const token = storage.getString('sentra_auth_token', { backend: 'session', fallback: '' }) ||
         storage.getString('sentra_auth_token', { backend: 'local', fallback: '' });
+      if (!token) {
+        if (!reconnectTimer) {
+          reconnectTimer = window.setTimeout(() => {
+            reconnectTimer = null;
+            if (disposed) return;
+            connectSse();
+          }, 800);
+        }
+        return;
+      }
       const url = `/api/configs/stream?token=${encodeURIComponent(token || '')}`;
       es = new EventSource(url);
 

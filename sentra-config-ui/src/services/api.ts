@@ -3,6 +3,70 @@ import { storage } from '../utils/storage';
 
 const API_BASE = '/api';
 
+async function readApiError(response: Response): Promise<string> {
+  const status = response.status;
+  const ct = response.headers.get('content-type') || '';
+  try {
+    if (/application\/(json|problem\+json)/i.test(ct)) {
+      const data: any = await response.json().catch(() => null);
+      const msg = data?.message || data?.error || data?.detail;
+      if (msg) return `HTTP ${status}: ${String(msg)}`;
+      return `HTTP ${status}`;
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const text = await response.text();
+    const s = String(text || '').trim();
+    if (s) return `HTTP ${status}: ${s}`;
+  } catch {
+    // ignore
+  }
+  return `HTTP ${status}`;
+}
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+let backendReadyPromise: Promise<number | null> | null = null;
+
+async function ensureBackendReady(timeoutMs = 12_000): Promise<boolean> {
+  const startedAt = Date.now();
+  if (!backendReadyPromise) {
+    backendReadyPromise = waitForBackend(60, 500);
+  }
+  try {
+    const bootTime = await Promise.race([
+      backendReadyPromise,
+      sleep(Math.max(0, timeoutMs)),
+    ]);
+    return typeof bootTime === 'number' && bootTime > 0;
+  } catch {
+    return Date.now() - startedAt < timeoutMs;
+  }
+}
+
+async function ensureAuthTokenReady(timeoutMs = 6_000): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const token = storage.getString('sentra_auth_token', { backend: 'session', fallback: '' })
+      || storage.getString('sentra_auth_token', { fallback: '' });
+    if (token) return;
+    await sleep(150);
+  }
+}
+
+export async function authedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  // Avoid spamming backend during boot (when it may briefly return 500 for various routes)
+  await ensureBackendReady();
+  // Avoid firing a burst of 401 before auth check finishes / token is restored
+  await ensureAuthTokenReady();
+  return fetch(input, init);
+}
+
 type StreamDebugEvent = {
   type: 'open' | 'chunk' | 'frame' | 'token' | 'done' | 'error';
   at: number;
@@ -314,36 +378,13 @@ export async function verifyToken(token: string): Promise<boolean> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token })
     });
-    const data = await response.json();
-    return data.success;
+    if (!response.ok) return false;
+    const ct = response.headers.get('content-type') || '';
+    if (!/application\/(json|problem\+json)/i.test(ct)) return false;
+    const data: any = await response.json().catch(() => null);
+    return !!data?.success;
   } catch {
     return false;
-  }
-}
-
-export async function savePluginSkill(pluginName: string, content: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/configs/plugin-skill`, {
-    method: 'POST',
-    headers: getAuthHeaders(),
-    body: JSON.stringify({ pluginName, content }),
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.message || 'Failed to save plugin skill');
-  }
-}
-
-export async function restorePluginSkill(pluginName: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/configs/plugin-skill/restore`, {
-    method: 'POST',
-    headers: getAuthHeaders(),
-    body: JSON.stringify({ pluginName }),
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.message || 'Failed to restore plugin skill');
   }
 }
 
@@ -371,11 +412,11 @@ export async function waitForBackend(maxAttempts = 60, interval = 1000): Promise
 
 export async function fetchConfigs(): Promise<ConfigData> {
   // Add timestamp to prevent caching
-  const response = await fetch(`${API_BASE}/configs?t=${Date.now()}`, {
+  const response = await authedFetch(`${API_BASE}/configs?t=${Date.now()}`, {
     headers: getAuthHeaders()
   });
   if (!response.ok) {
-    throw new Error('Failed to fetch configurations');
+    throw new Error(await readApiError(response));
   }
   return response.json();
 }
@@ -443,15 +484,14 @@ export async function saveModuleConfig(
   moduleName: string,
   variables: EnvVariable[]
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/configs/module`, {
+  const response = await authedFetch(`${API_BASE}/configs/module`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ moduleName, variables }),
   });
 
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.message || 'Failed to save module configuration');
+    throw new Error(await readApiError(response));
   }
 }
 
@@ -459,80 +499,75 @@ export async function savePluginConfig(
   pluginName: string,
   variables: EnvVariable[]
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/configs/plugin`, {
+  const response = await authedFetch(`${API_BASE}/configs/plugin`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ pluginName, variables }),
   });
 
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.message || 'Failed to save plugin configuration');
+    throw new Error(await readApiError(response));
   }
 }
 
 export async function restoreModuleConfig(moduleName: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/configs/restore`, {
+  const response = await authedFetch(`${API_BASE}/configs/restore`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ moduleName }),
   });
 
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.message || 'Failed to restore module configuration');
+    throw new Error(await readApiError(response));
   }
 }
 
 export async function restorePluginConfig(pluginName: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/configs/restore`, {
+  const response = await authedFetch(`${API_BASE}/configs/restore`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ pluginName }),
   });
 
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.message || 'Failed to restore plugin configuration');
+    throw new Error(await readApiError(response));
   }
 }
 
 export async function fetchFileContent(path: string): Promise<{ content: string; isBinary: boolean }> {
-  const response = await fetch(`${API_BASE}/files/content?path=${encodeURIComponent(path)}`, {
+  const response = await authedFetch(`${API_BASE}/files/content?path=${encodeURIComponent(path)}`, {
     headers: getAuthHeaders(),
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'Failed to fetch file content');
+    throw new Error(await readApiError(response));
   }
   return response.json();
 }
 
 export async function saveFileContent(path: string, content: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/files/content`, {
+  const response = await authedFetch(`${API_BASE}/files/content`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ path, content }),
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'Failed to save file content');
+    throw new Error(await readApiError(response));
   }
 }
 
 export async function fetchPresets(): Promise<any[]> {
-  const response = await fetch(`${API_BASE}/presets`, {
+  const response = await authedFetch(`${API_BASE}/presets`, {
     headers: getAuthHeaders()
   });
-  if (!response.ok) throw new Error('Failed to fetch presets');
+  if (!response.ok) throw new Error(await readApiError(response));
   return response.json();
 }
 
 export async function fetchPresetFile(path: string): Promise<{ content: string }> {
-  const response = await fetch(`${API_BASE}/presets/file?path=${encodeURIComponent(path)}`, {
+  const response = await authedFetch(`${API_BASE}/presets/file?path=${encodeURIComponent(path)}`, {
     headers: getAuthHeaders()
   });
-  if (!response.ok) throw new Error('Failed to fetch preset file');
+  if (!response.ok) throw new Error(await readApiError(response));
   const data: any = await response.json();
   if (typeof data === 'string') {
     return { content: data };
@@ -548,24 +583,50 @@ export async function fetchPresetFile(path: string): Promise<{ content: string }
 }
 
 export async function savePresetFile(path: string, content: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/presets/file`, {
+  const response = await authedFetch(`${API_BASE}/presets/file`, {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ path, content })
   });
-  if (!response.ok) throw new Error('Failed to save preset file');
+  if (!response.ok) throw new Error(await readApiError(response));
 }
 
 export async function deletePresetFile(path: string): Promise<void> {
   const token = storage.getString('sentra_auth_token', { backend: 'session', fallback: '' })
     || storage.getString('sentra_auth_token', { fallback: '' });
+  await ensureBackendReady();
+  await ensureAuthTokenReady();
   const response = await fetch(`${API_BASE}/presets/file?path=${encodeURIComponent(path)}`, {
     method: 'DELETE',
     headers: {
       'x-auth-token': token || ''
     }
   });
-  if (!response.ok) throw new Error('Failed to delete preset file');
+  if (!response.ok) throw new Error(await readApiError(response));
+}
+
+export async function savePluginSkill(pluginName: string, content: string): Promise<void> {
+  const response = await authedFetch(`${API_BASE}/configs/plugin-skill`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ pluginName, content }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+}
+
+export async function restorePluginSkill(pluginName: string): Promise<void> {
+  const response = await authedFetch(`${API_BASE}/configs/plugin-skill/restore`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ pluginName }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
 }
 
 export async function convertPresetText(params: {

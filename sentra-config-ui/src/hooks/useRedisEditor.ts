@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getAuthHeaders } from '../services/api';
+import { authedFetch, getAuthHeaders } from '../services/api';
 import { storage } from '../utils/storage';
 
 export interface RedisConnectionInfo {
@@ -40,7 +40,7 @@ export function useRedisEditor(addToast: (type: any, title: string, message?: st
 
     const fetchConnections = async () => {
         try {
-            const res = await fetch('/api/redis/connections', { headers: getAuthHeaders() });
+            const res = await authedFetch('/api/redis/connections', { headers: getAuthHeaders() });
             const data = await res.json();
             if (data.connections) {
                 setConnections(data.connections);
@@ -53,7 +53,7 @@ export function useRedisEditor(addToast: (type: any, title: string, message?: st
     const connect = async (name: string, host: string, port: number, password?: string) => {
         const id = `redis-${Date.now()}`;
         try {
-            const res = await fetch('/api/redis/connect', {
+            const res = await authedFetch('/api/redis/connect', {
                 method: 'POST',
                 headers: getAuthHeaders(),
                 body: JSON.stringify({ id, name, host, port, password })
@@ -76,7 +76,7 @@ export function useRedisEditor(addToast: (type: any, title: string, message?: st
 
     const disconnect = async (id: string) => {
         try {
-            await fetch('/api/redis/disconnect', {
+            await authedFetch('/api/redis/disconnect', {
                 method: 'POST',
                 headers: getAuthHeaders(),
                 body: JSON.stringify({ id })
@@ -91,7 +91,7 @@ export function useRedisEditor(addToast: (type: any, title: string, message?: st
 
     const executeCommand = async (id: string, command: string, args: string[] = []) => {
         try {
-            const res = await fetch('/api/redis/command', {
+            const res = await authedFetch('/api/redis/command', {
                 method: 'POST',
                 headers: getAuthHeaders(),
                 body: JSON.stringify({ id, command, args })

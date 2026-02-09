@@ -1,4 +1,4 @@
-import { encoding_for_model } from 'tiktoken';
+import { get_encoding, encoding_for_model } from 'tiktoken';
 import { imageSize } from 'image-size';
 import { imageSizeFromFile } from 'image-size/fromFile';
 import https from 'https';
@@ -18,7 +18,7 @@ export class TokenCounter {
     this.imageSizeCache = new Map();
     // 临时文件目录
     this.tempDir = './temp';
-    
+
     // 确保临时目录存在
     this.ensureTempDir();
   }
@@ -38,21 +38,22 @@ export class TokenCounter {
    * @returns {Object} tiktoken编码器
    */
   getEncoder(modelName) {
-    const effectiveModel = modelName || getEnv('TOKEN_COUNT_MODEL', 'grok-4.1');
-    if (!this.encoders.has(effectiveModel)) {
+    const key = String(modelName || '').trim() || '__default__';
+    if (!this.encoders.has(key)) {
       try {
-        const encoder = encoding_for_model(effectiveModel);
-        this.encoders.set(effectiveModel, encoder);
+        const encoder = (key === '__default__')
+          ? get_encoding('cl100k_base')
+          : encoding_for_model(key);
+        this.encoders.set(key, encoder);
         return encoder;
       } catch (error) {
-        console.warn(`不支持的模型: ${effectiveModel}, 使用默认编码器`);
-        // 使用GPT-4的编码器作为默认
-        const encoder = encoding_for_model('gpt-4o');
-        this.encoders.set(effectiveModel, encoder);
+        console.warn(`不支持的模型: ${key}, 使用默认编码器`);
+        const encoder = get_encoding('cl100k_base');
+        this.encoders.set(key, encoder);
         return encoder;
       }
     }
-    return this.encoders.get(effectiveModel);
+    return this.encoders.get(key);
   }
 
   /**
@@ -63,7 +64,7 @@ export class TokenCounter {
    */
   countTokens(text, modelName) {
     try {
-      const encoder = this.getEncoder(modelName || getEnv('TOKEN_COUNT_MODEL', 'grok-4.1'));
+      const encoder = this.getEncoder(modelName);
       const tokens = encoder.encode(text);
       return tokens.length;
     } catch (error) {
@@ -95,19 +96,19 @@ export class TokenCounter {
 
       // 处理消息角色
       if (message.role) {
-        totalTokens += this.countTokens(message.role, modelName || getEnv('TOKEN_COUNT_MODEL', 'grok-4.1'));
+        totalTokens += this.countTokens(message.role, modelName);
       }
 
       // 处理消息内容
       if (message.content) {
         if (typeof message.content === 'string') {
           // 纯文本消息
-          totalTokens += this.countTokens(message.content, modelName || getEnv('TOKEN_COUNT_MODEL', 'grok-4.1'));
+          totalTokens += this.countTokens(message.content, modelName);
         } else if (Array.isArray(message.content)) {
           // 多模态消息（文本+图片）
           for (const item of message.content) {
             if (item.type === 'text') {
-              totalTokens += this.countTokens(item.text, modelName || getEnv('TOKEN_COUNT_MODEL', 'grok-4.1'));
+              totalTokens += this.countTokens(item.text, modelName);
             } else if (item.type === 'image_url') {
               totalTokens += await this.calculateImageTokens(item);
             }
@@ -160,13 +161,13 @@ export class TokenCounter {
           if (!firstKey) break;
           this.imageSizeCache.delete(firstKey);
         }
-      } catch {}
+      } catch { }
       console.log(`✅ 成功获取图片尺寸 ${imagePath}: ${dimensions.width}x${dimensions.height}`);
       return dimensions;
 
     } catch (error) {
       console.warn(`⚠️ 获取图片尺寸失败 ${imagePath}: ${error.message}`);
-      
+
       // 使用智能默认值
       const fallbackDimensions = this.getSmartDefaultDimensions(imagePath);
       this.imageSizeCache.set(imagePath, fallbackDimensions);
@@ -178,7 +179,7 @@ export class TokenCounter {
           if (!firstKey) break;
           this.imageSizeCache.delete(firstKey);
         }
-      } catch {}
+      } catch { }
       console.warn(`使用默认尺寸: ${fallbackDimensions.width}x${fallbackDimensions.height}`);
       return fallbackDimensions;
     }
@@ -196,7 +197,7 @@ export class TokenCounter {
       return { width: dimensions.width, height: dimensions.height };
     } catch (error) {
       console.warn(`imageSizeFromFile失败，尝试buffer方式: ${error.message}`);
-      
+
       // 降级方案：手动读取文件为buffer
       try {
         const buffer = readFileSync(filePath);
@@ -215,23 +216,23 @@ export class TokenCounter {
    */
   async getNetworkImageDimensions(url) {
     let tempFilePath = null;
-    
+
     try {
       console.log(`开始处理网络图片: ${url}`);
-      
+
       // 下载图片到临时文件
       tempFilePath = await this.downloadImageToTemp(url);
-      
+
       // 读取临时文件获取尺寸
       const buffer = readFileSync(tempFilePath);
       const dimensions = imageSize(buffer);
-      
+
       if (!dimensions || !dimensions.width || !dimensions.height) {
         throw new Error('无法解析图片尺寸');
       }
-      
+
       return { width: dimensions.width, height: dimensions.height };
-      
+
     } finally {
       // 清理临时文件
       if (tempFilePath) {
@@ -311,10 +312,10 @@ export class TokenCounter {
     try {
       // 获取图片实际尺寸
       const dimensions = await this.getImageDimensions(imageUrl);
-      
+
       // 计算tile信息
       const tileInfo = this.calculateImageTiles(dimensions.width, dimensions.height, detail);
-      
+
       // 根据OpenAI公式计算token
       const baseTokens = 85; // 基础开销
       let tokensPerTile;
@@ -428,7 +429,7 @@ export class TokenCounter {
    */
   getSmartDefaultDimensions(imagePath) {
     const pathLower = imagePath.toLowerCase();
-    
+
     // 根据文件扩展名提供合理默认值
     if (pathLower.includes('.gif')) {
       return { width: 400, height: 400 };
@@ -503,7 +504,7 @@ export class TokenCounter {
     }
     this.encoders.clear();
     this.imageSizeCache.clear();
-    
+
     console.log('✨ TokenCounter资源已清理');
   }
 
@@ -547,7 +548,7 @@ export class TokenCounter {
    */
   async calculateMultipleImageTokens(imageItems) {
     const results = [];
-    
+
     for (const imageItem of imageItems) {
       try {
         const tokens = await this.calculateImageTokens(imageItem);
@@ -567,7 +568,7 @@ export class TokenCounter {
         });
       }
     }
-    
+
     return results;
   }
 }

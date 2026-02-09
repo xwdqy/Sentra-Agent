@@ -1,4 +1,4 @@
-import { getAuthHeaders } from './api';
+import { authedFetch, getAuthHeaders } from './api';
 
 async function readJsonOrThrow(res: Response) {
   const text = await res.text();
@@ -46,14 +46,14 @@ export type McpServersTestResponse =
   | { success: false; error?: string; id?: string; type?: McpServerType };
 
 export async function getMcpServersStatus(): Promise<McpServersStatus> {
-  const res = await fetch('/api/mcp-servers/status', {
+  const res = await authedFetch('/api/mcp-servers/status', {
     headers: getAuthHeaders({ json: false }),
   });
   return readJsonOrThrow(res);
 }
 
 export async function ensureMcpServersFile(): Promise<any> {
-  const res = await fetch('/api/mcp-servers/ensure', {
+  const res = await authedFetch('/api/mcp-servers/ensure', {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({}),
@@ -62,14 +62,14 @@ export async function ensureMcpServersFile(): Promise<any> {
 }
 
 export async function fetchMcpServers(): Promise<McpServersItemsResponse> {
-  const res = await fetch('/api/mcp-servers/items', {
+  const res = await authedFetch('/api/mcp-servers/items', {
     headers: getAuthHeaders({ json: false }),
   });
   return readJsonOrThrow(res);
 }
 
 export async function saveMcpServers(items: McpServerDef[]): Promise<{ success: boolean; count?: number }> {
-  const res = await fetch('/api/mcp-servers/items', {
+  const res = await authedFetch('/api/mcp-servers/items', {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify({ items }),
@@ -78,7 +78,7 @@ export async function saveMcpServers(items: McpServerDef[]): Promise<{ success: 
 }
 
 export async function testMcpServer(def: McpServerDef): Promise<McpServersTestResponse> {
-  const res = await fetch('/api/mcp-servers/test', {
+  const res = await authedFetch('/api/mcp-servers/test', {
     method: 'POST',
     headers: getAuthHeaders(),
     body: JSON.stringify(def),

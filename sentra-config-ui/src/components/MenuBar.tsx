@@ -25,7 +25,7 @@ import {
 } from '@ant-design/icons';
 import { fontFiles } from 'virtual:sentra-fonts';
 import { storage } from '../utils/storage';
-import { getAuthHeaders } from '../services/api';
+import { authedFetch, getAuthHeaders } from '../services/api';
 
 interface MenuBarProps {
   title?: string;
@@ -192,7 +192,7 @@ export const MenuBar: React.FC<MenuBarProps> = ({
     try {
       const controller = new AbortController();
       const t = window.setTimeout(() => controller.abort(), 60_000);
-      const res = await fetch('/api/system/update/check', {
+      const res = await authedFetch('/api/system/update/check', {
         method: 'GET',
         headers: getAuthHeaders({ json: false }),
         cache: 'no-store',
@@ -202,7 +202,8 @@ export const MenuBar: React.FC<MenuBarProps> = ({
       const data: any = await res.json().catch(() => null);
       if (!res.ok) {
         setUpdateInfo(null);
-        setUpdateError(`HTTP ${res.status} ${res.statusText}`);
+        const msg = (data && (data.message || data.error)) ? String(data.message || data.error) : '';
+        setUpdateError(msg ? `HTTP ${res.status}: ${msg}` : `HTTP ${res.status} ${res.statusText}`);
         return;
       }
       if (!data?.success) {
