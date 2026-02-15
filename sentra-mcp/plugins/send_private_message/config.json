@@ -1,17 +1,51 @@
 {
   "name": "send_private_message",
-  "description": "Specify a target QQ user and the intended message goal. This tool helps you decide routing.",
+  "description": "Confirm an explicit target QQ user_id and the intended message goal for a private message. Only use this when the user clearly requests sending to a specific QQ user (or when replying in the current private chat and you must include a <user_id> routing tag). Do NOT invent ids; pick an id that exists in the current <sentra-user-question> context or in <sentra-social-context>. If the target is not explicit, ask a clarifying question instead of calling this tool.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "user_id": {
         "type": "string",
         "pattern": "^\\d+$",
-        "description": "Target QQ user_id (digits only)."
+        "minLength": 5,
+        "description": "Target QQ user_id (digits only). MUST be an existing id from context (e.g., <sender_id> in <sentra-user-question>) or from <sentra-social-context>. Do NOT guess or fabricate ids.",
+        "examples": [
+          "474764004"
+        ]
       },
       "content": {
         "type": "string",
-        "description": "Message intent/summary. Write what you want to convey, not a literal template to be copied verbatim."
+        "minLength": 1,
+        "description": "Message intent/summary (what you want to convey). Keep it concise. If you are not sure whether the user really wants to send a private message, do NOT call this tool.",
+        "examples": [
+          "向对方说明我会晚到10分钟并道歉"
+        ]
+      },
+      "schedule": {
+        "type": "object",
+        "properties": {
+          "when": {
+            "type": "string",
+            "description": "时间表达：如 '5分钟后' / '30秒后' / '明天09:00' / '2025-12-16 21:30' / ISO 字符串。请使用清晰、可解析的时间表达，避免使用『稍后』『改天』『有空的时候』『尽快』『5分钟之后』等模糊说法。"
+          },
+          "language": {
+            "type": "string",
+            "description": "语言标识，例如 zh|en（默认 zh）"
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA 时区名称，例如 Asia/Shanghai"
+          },
+          "targetISO": {
+            "type": "string",
+            "description": "预解析好的绝对时间（ISO 字符串），例如 '2025-12-16T21:30:00+08:00'；如提供，将被上游优先用作目标时间。"
+          }
+        },
+        "required": [
+          "when"
+        ],
+        "additionalProperties": true,
+        "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       },
       "media_hints": {
         "type": "array",
@@ -21,7 +55,12 @@
           "properties": {
             "type": {
               "type": "string",
-              "enum": ["image", "video", "record", "file"],
+              "enum": [
+                "image",
+                "video",
+                "record",
+                "file"
+              ],
               "description": "Media type."
             },
             "source_hint": {
@@ -33,12 +72,17 @@
               "description": "Optional caption hint."
             }
           },
-          "required": ["type"],
+          "required": [
+            "type"
+          ],
           "additionalProperties": false
         }
       }
     },
-    "required": ["user_id", "content"],
+    "required": [
+      "user_id",
+      "content"
+    ],
     "additionalProperties": false
   }
 }

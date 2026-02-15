@@ -879,6 +879,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   let groupOf = [];
   let groups = [];
   let groupPending = new Map();
+  let nextGroupToFlush = 0;
   const groupBuffers = new Map();
   const groupArgsBuffers = new Map();
 
@@ -904,7 +905,6 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     for (let i = 0; i < total; i++) {
       for (const d of depsArr[i]) revDepsArr[d].push(i);
     }
-    const isIsolated = Array.from({ length: total }, (_, i) => (depsArr[i].length === 0 && revDepsArr[i].length === 0));
     const undirected = Array.from({ length: total }, () => new Set());
     for (let i = 0; i < total; i++) {
       for (const d of depsArr[i]) { undirected[i].add(d); undirected[d].add(i); }
@@ -912,7 +912,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     groupOf = new Array(total).fill(null);
     groups = [];
     for (let i = 0; i < total; i++) {
-      if (isIsolated[i] || groupOf[i] !== null) continue;
+      if (groupOf[i] !== null) continue;
       const gid = groups.length;
       const nodes = [];
       const q = [i];
@@ -921,7 +921,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         const u = q.shift();
         nodes.push(u);
         for (const v of undirected[u]) {
-          if (!isIsolated[v] && groupOf[v] === null) {
+          if (groupOf[v] === null) {
             groupOf[v] = gid;
             q.push(v);
           }
@@ -933,6 +933,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       const remaining = (g.nodes || []).filter((idx) => !finished.has(idx)).length;
       return [g.id, remaining];
     }));
+    nextGroupToFlush = 0;
     groupArgsBuffers.clear();
     groupBuffers.clear();
     for (const s of (plan.steps || [])) {
@@ -1209,6 +1210,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   };
 
   const emitToolResultGrouped = (ev, plannedStepIndex) => {
+    if (isRunCancelled(runId)) return;
     const gid = groupOf[plannedStepIndex];
     if (gid === null || gid === undefined) {
       // 孤立步骤：先缓冲，由调度器在确认是否“最后一步”时决定 progress/final
@@ -1220,6 +1222,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     groupBuffers.get(gid).set(plannedStepIndex, ev);
   };
   const emitArgsGrouped = (argsEv, plannedStepIndex) => {
+    if (isRunCancelled(runId)) return;
     const gid = groupOf[plannedStepIndex];
     if (gid === null || gid === undefined) {
       // 孤立步骤：args 事件即时发送
@@ -1229,13 +1232,17 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     if (!groupArgsBuffers.has(gid)) groupArgsBuffers.set(gid, new Map());
     groupArgsBuffers.get(gid).set(plannedStepIndex, argsEv);
   };
-  const flushGroupIfReady = (gid, { finalHint } = {}) => {
+  const flushGroupIfReady = (gid, { finalHint, force } = {}) => {
     if (gid === null || gid === undefined) return;
     const g = groups.find((x) => x.id === gid);
-    if (!g || g.flushed) return;
+    if (!g || g.flushed) return false;
     const left = groupPending.get(gid) || 0;
-    if (left > 0) return;
+    if (!force && left > 0) return false;
     const order = topoOrderForGroup(gid);
+    const orderStepIds = order.map((idx) => {
+      const sid = plan?.steps?.[idx]?.stepId;
+      return (typeof sid === 'string' && sid.trim()) ? sid.trim() : `step_${idx}`;
+    });
     const buf = groupBuffers.get(gid) || new Map();
     const bufArgs = groupArgsBuffers.get(gid) || new Map();
 
@@ -1245,12 +1252,12 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       const a = bufArgs.get(idx);
       if (a) argsItems.push(a);
     }
-    if (argsItems.length > 0) {
+    if (!isRunCancelled(runId) && argsItems.length > 0) {
       const argsGroupEvent = {
         type: 'args_group',
         groupId: gid,
         groupSize: (g.nodes?.length || 0),
-        orderIndices: order,
+        orderStepIds,
         items: argsItems,
       };
       emitRunEvent(runId, argsGroupEvent);
@@ -1262,13 +1269,13 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       const ev = buf.get(idx);
       if (ev) resultEvents.push(ev);
     }
-    if (resultEvents.length > 0) {
+    if (!isRunCancelled(runId) && resultEvents.length > 0) {
       const shouldFinal = !!finalHint && !finalResultEmitted;
       const resultGroupEvent = {
         type: 'tool_result_group',
         groupId: gid,
         groupSize: (g.nodes?.length || 0),
-        orderIndices: order,
+        orderStepIds,
         events: resultEvents,
         resultStream: true,
         resultStatus: shouldFinal ? 'final' : 'progress',
@@ -1281,6 +1288,35 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     groupBuffers.delete(gid);
     groupArgsBuffers.delete(gid);
     g.flushed = true;
+    return true;
+  };
+
+  const flushReadyGroupsInOrder = ({ force = false, finalGroupId = null } = {}) => {
+    while (nextGroupToFlush < groups.length) {
+      const g = groups[nextGroupToFlush];
+      if (!g) break;
+      const gid = g.id;
+      const left = groupPending.get(gid) || 0;
+      if (!force && left > 0) break;
+      const shouldMarkFinal = finalGroupId !== null && finalGroupId !== undefined && gid === finalGroupId;
+      const flushed = flushGroupIfReady(gid, { finalHint: shouldMarkFinal, force: true });
+      if (!flushed) break;
+      nextGroupToFlush += 1;
+    }
+  };
+
+  const flushAllOnCancel = () => {
+    try {
+      for (const [idx, ev] of isolatedResultBuffers.entries()) {
+        try {
+          emitRunEvent(runId, { ...ev, resultStream: true, resultStatus: 'progress' });
+        } catch { }
+      }
+      isolatedResultBuffers.clear();
+    } catch { }
+    try {
+      flushReadyGroupsInOrder({ force: true, finalGroupId: null });
+    } catch { }
   };
   // 中文：标记已完成的步骤
   if (retrySteps) {
@@ -1442,8 +1478,10 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
         toolMeta: {},
       };
-      emitToolResultGrouped(ev, i);
-      await HistoryStore.append(runId, ev);
+      if (!isRunCancelled(runId)) {
+        emitToolResultGrouped(ev, i);
+        await HistoryStore.append(runId, ev);
+      }
       if (config.flags.enableVerboseSteps) logger.warn?.('跳过未知工具步骤', { label: 'STEP', aiName });
       return { usedEntry: { aiName, elapsedMs: elapsed, success: res.success, code: res.code }, succeeded: 0 };
     }
@@ -1546,8 +1584,10 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         groupId: (gidA ?? null),
         groupSize: (gidA != null && groups[gidA]?.nodes?.length) ? groups[gidA].nodes.length : 1,
       };
-      emitArgsGrouped(argsEv, i);
-      await HistoryStore.append(runId, argsEv);
+      if (!isRunCancelled(runId)) {
+        emitArgsGrouped(argsEv, i);
+        await HistoryStore.append(runId, argsEv);
+      }
     } catch { }
 
     // === schedule 延迟反馈机制：仅当插件 schema 中定义了 schedule 参数时启用 ===
@@ -1651,7 +1691,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       try {
         emitRunEvent(runId, scheduleEvent);
         await HistoryStore.append(runId, scheduleEvent);
-        logger.info?.('Schedule 延迟反馈: 发送立即确认', {
+        logger.info?.('Schedule 延迟反馈: 已记录调度事件', {
           label: 'SCHEDULE',
           aiName,
           delayMs,
@@ -1729,8 +1769,10 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       };
       ev.scheduleMode = scheduleMode;
     }
-    emitToolResultGrouped(ev, i);
-    await HistoryStore.append(runId, ev);
+    if (!isRunCancelled(runId)) {
+      emitToolResultGrouped(ev, i);
+      await HistoryStore.append(runId, ev);
+    }
 
     if (enablePlanPatchHook && !stopRequested) {
       const ok2 = isResultOk(res);
@@ -1804,6 +1846,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       if (config.flags.enableVerboseSteps) {
         logger.info?.('执行计划检测到取消信号，提前结束调度', { label: 'RUN', runId });
       }
+      flushAllOnCancel();
       break;
     }
     if (pauseForPlanPatch) {
@@ -1831,7 +1874,8 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         const gid2 = groupOf[i];
         if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
           groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-          flushGroupIfReady(gid2, { finalHint: isFinalStep });
+          const finalGid = isFinalStep && groups.length ? groups[groups.length - 1].id : null;
+          flushReadyGroupsInOrder({ force: false, finalGroupId: finalGid });
         }
       }
     }
@@ -1867,7 +1911,8 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
           const gid2 = groupOf[i];
           if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
             groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-            flushGroupIfReady(gid2, { finalHint: isFinalStep });
+            const finalGid = isFinalStep && groups.length ? groups[groups.length - 1].id : null;
+            flushReadyGroupsInOrder({ force: false, finalGroupId: finalGid });
           }
           if (r?.usedEntry) used.push(r.usedEntry);
           if (r?.succeeded) succeeded += r.succeeded;
@@ -1882,7 +1927,8 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
           const gid2 = groupOf[i];
           if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
             groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-            flushGroupIfReady(gid2, { finalHint: isFinalStep });
+            const finalGid = isFinalStep && groups.length ? groups[groups.length - 1].id : null;
+            flushReadyGroupsInOrder({ force: false, finalGroupId: finalGid });
           }
           logger.warn?.('并行执行异常', { label: 'STEP', index: i, error: String(e) });
         }));
@@ -1917,9 +1963,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         }
         // 强制刷新所有已无待完成步数的组
         const finalGid = groups.length ? groups[groups.length - 1].id : null;
-        for (const g of groups) {
-          flushGroupIfReady(g.id, { finalHint: !finalResultEmitted && finalGid !== null && g.id === finalGid });
-        }
+        flushReadyGroupsInOrder({ force: true, finalGroupId: finalGid });
       }
       break;
     }
@@ -1931,7 +1975,12 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   const attempted = used.length;
   const successRate = attempted ? succeeded / attempted : 0;
   // 兜底：循环结束后，若仍有未刷新的组（理论上不应发生），统一刷新
-  for (const g of groups) flushGroupIfReady(g.id, { finalHint: false });
+  if (isRunCancelled(runId)) {
+    flushAllOnCancel();
+  } else {
+    const finalGid = groups.length ? groups[groups.length - 1].id : null;
+    flushReadyGroupsInOrder({ force: true, finalGroupId: finalGid });
+  }
   return { used, attempted, succeeded, successRate };
 }
 
@@ -2209,17 +2258,14 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
       // Execute concurrently (existing executor emits args/tool_result events)
       const exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
 
-      // 若运行在执行阶段被取消，则跳过后续评估/补救/总结，仅发出取消型 done/summary 事件
+      // 若运行在执行阶段被取消，则跳过后续评估/补救/总结，直接发出 cancelled 结束事件
       if (isRunCancelled(runId)) {
         if (config.flags.enableVerboseSteps) {
           logger.info('Run cancelled after executePlan, skip evaluation/reflection/summary', { label: 'RUN', runId });
         }
-        const summary = '本次运行已被上游取消（用户改主意），仅保留已完成的工具结果，不再继续评估与总结。';
-        try { await HistoryStore.setSummary(runId, summary); } catch { }
-        emitRunEvent(runId, { type: 'done', exec, cancelled: true });
-        await HistoryStore.append(runId, { type: 'done', exec, cancelled: true });
-        emitRunEvent(runId, { type: 'summary', summary, cancelled: true });
-        await HistoryStore.append(runId, { type: 'summary', summary, cancelled: true });
+        const summary = '本次运行已被上游取消，仅保留已完成的工具结果，不再继续评估与总结。';
+        emitRunEvent(runId, { type: 'cancelled', exec, summary, cancelled: true });
+        await HistoryStore.append(runId, { type: 'cancelled', exec, summary, cancelled: true });
         return;
       }
 
@@ -2589,7 +2635,7 @@ export async function* planThenExecuteStream({ objective, context = {}, mcpcore,
   try {
     for await (const ev of sub) {
       yield ev;
-      if (ev?.type === 'completed' || ev?.type === 'summary') break;
+      if (ev?.type === 'completed' || ev?.type === 'summary' || ev?.type === 'cancelled') break;
     }
   } finally {
     const cancelled = isRunCancelled(runId);

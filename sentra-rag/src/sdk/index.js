@@ -84,8 +84,8 @@ async function requestAndParseContract(chatOpenai, policy, { task, queryText, co
  * - 默认会加载 .env（等价于 dotenv/config）。
  * - 如需 .env 热更新：在 .env 里设置 RAG_ENV_WATCH=true 或 rag_ENV_WATCH=true。
  */
-export async function createRagSdk({ lang, watchEnv } = {}) {
-  initDotenv({ watch: watchEnv });
+export async function createRagSdk({ lang, watchEnv, envPath } = {}) {
+  initDotenv({ watch: watchEnv, envPath });
 
   const policy = await loadContractPolicy();
   const effectiveLang = lang || policy.lang || 'zh';
@@ -544,4 +544,22 @@ export async function createRagSdk({ lang, watchEnv } = {}) {
 
     policy,
   };
+}
+
+export function getRagRuntimeConfig() {
+  initDotenv();
+  return {
+    timeoutMs: getEnvNumber('TIMEOUT_MS', { defaultValue: 8000 }),
+    cacheTtlMs: getEnvNumber('CACHE_TTL_MS', { defaultValue: 60000 }),
+    maxContextCharsPerItem: getEnvNumber('CONTEXT_MAX_CHARS', { defaultValue: -1 }),
+    maxContextItems: getEnvNumber('CONTEXT_MAX_ITEMS', { defaultValue: 20 }),
+    keywordTopN: getEnvNumber('KEYWORD_TOP_N', { defaultValue: 3 }),
+    keywordFulltextLimit: getEnvNumber('KEYWORD_FULLTEXT_LIMIT', { defaultValue: 4 }),
+    ingestDelayMs: getEnvNumber('INGEST_DELAY_MS', { defaultValue: 0 })
+  };
+}
+
+export function getRagEnvNumber(baseName, defaultValue) {
+  initDotenv();
+  return getEnvNumber(baseName, { defaultValue });
 }

@@ -1,4 +1,4 @@
-import AgentDefault, { Agent } from './src/agentRuntime.js';
+import { Agent } from './src/agentRuntime.js';
 
 export { Agent };
-export default AgentDefault;
+export default Agent;

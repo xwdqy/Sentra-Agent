@@ -120,4 +120,5 @@ utils/emoji-stickers/.env
 
 # User Data (Privacy Protection)
 userData/
+taskData/
 !userData/README.md

@@ -155,7 +155,42 @@ import {
 
 // 导入平台/外部工具相关函数
 import { getMcpTools } from './mcptools.js';
-import { getWeChatSystemPrompt, getQQSystemPrompt, getSandboxSystemPrompt } from './platform.js';
+import {
+  getWeChatSystemPrompt,
+  getQQSystemPrompt,
+  getSandboxSystemPrompt,
+  getRouterSystemPrompt,
+  getSentraProtocolSectionOutputContract,
+  getSentraProtocolSectionTools,
+  getSentraProtocolSectionReadOnlyRag,
+  getSentraProtocolSectionResponse,
+  getSentraProtocolSectionResultSchedule,
+  getSentraProtocolSectionFormat,
+  getSentraProtocolFull,
+  getSentraProtocolResponseOnly,
+  getSentraProtocolToolsOnly,
+  getSentraProtocolToolsWithResultSchedule,
+  getSentraProtocolFullWithFormat,
+  getSentraShortRootAuto,
+  getSentraShortRootRouter,
+  getSentraShortRootResponseOnly,
+  getSentraShortRootToolsOnly,
+
+  // 决策类 prompts
+  getReplyDecisionPromptSystem,
+  getReplyOverridePromptSystem,
+  getReplyFusionPromptSystem,
+  getReplyDedupPromptSystem,
+  getRepairResponsePromptSystem,
+  getRepairDecisionPromptSystem,
+  getRepairPersonaPromptSystem,
+  getPersonaInitialPromptSystem,
+  getPersonaRefinePromptSystem,
+  getPresetConverterPromptSystem,
+  getPresetTeachingPromptSystem,
+  getToolPreReplyConstraints,
+  getTaskCompletionAnalyzerPromptSystem
+} from './platform.js';
 
 /**
  * 函数注册表
@@ -176,7 +211,7 @@ const functionRegistry = {
   getYear,
   getMonth,
   getDay,
-  
+
   // 节日相关函数
   getHolidayInfo,
   getLunarDate,
@@ -187,7 +222,7 @@ const functionRegistry = {
   getNextHoliday,
   getCurrentJieQi,
   getConstellation,
-  
+
   // 系统信息相关函数
   getSystemInfo,
   getNodeVersion,
@@ -212,7 +247,7 @@ const functionRegistry = {
   getNetworkSummary,
   getSystemSummary,
   getFullSystemJSON,
-  
+
   // 文本处理函数
   generateUUID,
   generateRandomString,
@@ -229,7 +264,7 @@ const functionRegistry = {
   countWords,
   countCharacters,
   replaceText,
-  
+
   // 数学计算函数
   randomInt,
   randomFloat,
@@ -249,7 +284,7 @@ const functionRegistry = {
   toCurrency,
   growthRate,
   fibonacci,
-  
+
   // 格式化函数
   formatDateYMD,
   formatDateDMY,
@@ -263,7 +298,7 @@ const functionRegistry = {
   formatPhoneCN,
   formatRelativeTime,
   formatChineseNumber,
-  
+
   // 日常交流函数
   getTimeContext,
   getCurrentSeason,
@@ -297,12 +332,45 @@ const functionRegistry = {
   getMonthProgress,
   getDayProgress
   ,
-  
+
   // 平台与系统扩展
   getWeChatSystemPrompt,
   getQQSystemPrompt,
   getSandboxSystemPrompt,
-  
+  getRouterSystemPrompt,
+
+  // 决策类 prompts
+  getReplyDecisionPromptSystem,
+  getReplyOverridePromptSystem,
+  getReplyFusionPromptSystem,
+  getReplyDedupPromptSystem,
+  getRepairResponsePromptSystem,
+  getRepairDecisionPromptSystem,
+  getRepairPersonaPromptSystem,
+  getPersonaInitialPromptSystem,
+  getPersonaRefinePromptSystem,
+  getPresetConverterPromptSystem,
+  getPresetTeachingPromptSystem,
+  getToolPreReplyConstraints,
+  getTaskCompletionAnalyzerPromptSystem,
+
+  // Sentra 协议板块（可自由拼接）
+  getSentraProtocolSectionOutputContract,
+  getSentraProtocolSectionTools,
+  getSentraProtocolSectionReadOnlyRag,
+  getSentraProtocolSectionResponse,
+  getSentraProtocolSectionResultSchedule,
+  getSentraProtocolSectionFormat,
+  getSentraProtocolFull,
+  getSentraProtocolResponseOnly,
+  getSentraProtocolToolsOnly,
+  getSentraProtocolToolsWithResultSchedule,
+  getSentraProtocolFullWithFormat,
+  getSentraShortRootAuto,
+  getSentraShortRootRouter,
+  getSentraShortRootResponseOnly,
+  getSentraShortRootToolsOnly,
+
   // MCP 工具导出
   getMcpTools
 };
@@ -324,7 +392,7 @@ export function registerFunction(name, fn) {
   if (typeof fn !== 'function') {
     throw new Error(`registerFunction: ${name} 必须是一个函数`);
   }
-  
+
   functionRegistry[name] = fn;
 }
 
@@ -363,7 +431,7 @@ export async function executeFunction(name, ...args) {
   if (!hasFunction(name)) {
     throw new Error(`函数 ${name} 未注册`);
   }
-  
+
   try {
     const result = await functionRegistry[name](...args);
     return result;

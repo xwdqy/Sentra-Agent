@@ -17,18 +17,26 @@ export default async function handler(args = {}) {
 
   return ok({
     action: 'send_private_message',
-    target: { type: 'private', id: userId },
-    content,
+    mode: 'routing_only',
+    can_send_message: false,
+    need_user_confirm: false,
+    target: { type: 'private', user_id: userId },
+    intent: content,
     media_hints: mediaHints,
-    note: `This tool confirms the target and intent only. You must produce the final message text yourself.
-
-Routing rule (MANDATORY): every final <sentra-response> must include EXACTLY ONE target tag.
-- Private: include <user_id>${userId}</user_id> (digits only)
-
-How to choose the id:
-- If replying in the current private chat: use <sender_id> from <sentra-user-question> as <user_id>.
-- If sending to another private chat (cross-chat): use a user id that exists in <sentra-social-context>.
-
-Do NOT use legacy mention/routing text like [[to=user:...]] inside <textN>.`
+    suggested_routing: {
+      tag: 'user_id',
+      value: userId,
+      xml: `<user_id>${userId}</user_id>`
+    },
+    constraints: {
+      must_not_invent_ids: true,
+      must_use_digits_only_id: true,
+      exactly_one_target_tag: true,
+      forbidden_in_text: ['[[to=user:...]]', '[CQ:at,qq=...]', 'to=user']
+    },
+    suggested_next: {
+      action: 'compose_sentra_response',
+      instruction: 'Write the final user-facing message in <textN>. Include EXACTLY ONE routing target tag (<user_id> only) and do not claim it has been sent unless the platform will actually send it.'
+    }
   });
 }

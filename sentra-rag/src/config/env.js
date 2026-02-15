@@ -1,7 +1,20 @@
+let envSource = null;
+
+export function setEnvSource(map) {
+  if (map && typeof map === 'object') {
+    envSource = map;
+  } else {
+    envSource = null;
+  }
+}
+
 function pickEnv(baseName) {
   const candidates = [`RAG_${baseName}`, `rag_${baseName}`];
   for (const key of candidates) {
-    const v = process.env[key];
+    let v;
+    if (envSource && Object.prototype.hasOwnProperty.call(envSource, key)) {
+      v = envSource[key];
+    }
     if (v != null && String(v).length > 0) return { key, value: v };
   }
   return { key: candidates[0], value: undefined };

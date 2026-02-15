@@ -157,7 +157,7 @@ Sentra-MCP 的目标不是追求“最炫”，而是追求“可控、可迁移
 
 如果你要把 Sentra 当作长期运行的服务交给别人维护，Config UI 能显著降低“配置靠口口相传”的风险。
 
-### 核心运行时（Main.js / utils / src/agent）
+### 核心运行时（Main.ts / utils / src/agent）
 
 - **阶段化执行**：将复杂任务拆分为可观测的阶段与边界。
 - **对话治理**：历史管理、群聊隔离、去重、冷却与取消等能力收敛在核心层。
@@ -191,7 +191,7 @@ Sentra-MCP 的目标不是追求“最炫”，而是追求“可控、可迁移
 
 ```
 sentra-agent/
-├── Main.js                      # 主入口
+├── Main.ts                      # 主入口（编译到 dist/Main.js）
 ├── agent.js                     # Agent 核心
 ├── src/
 │   ├── agent/                   # Agent 逻辑（Judge、Plan、ArgGen、Eval、Summary）

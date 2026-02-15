@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
 // Repo root is one level above sentra-config-ui
 const repoRoot = path.resolve(__dirname, '..', '..');
 const appName = 'sentra-agent';
-const entry = path.join(repoRoot, 'Main.js');
+const entry = path.join(repoRoot, 'dist', 'Main.js');
 const ecosystem = path.join(repoRoot, 'ecosystem.config.cjs');
 
 function parseArgs() {

@@ -7,7 +7,7 @@ export function cancelRun(runId) {
   cancelledRuns.add(String(runId));
   try {
     logger.info?.('RunCancel: 标记取消', { label: 'RUN', runId: String(runId) });
-  } catch {}
+  } catch { }
 }
 
 export function isRunCancelled(runId) {

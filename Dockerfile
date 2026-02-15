@@ -12,4 +12,6 @@ COPY . ./
 
 ENV NODE_ENV=production
 
-CMD ["node", "Main.js"]
+RUN pnpm build
+
+CMD ["node", "dist/Main.js"]

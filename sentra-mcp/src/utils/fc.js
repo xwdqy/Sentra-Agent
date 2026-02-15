@@ -560,7 +560,8 @@ ${params}
 /**
  * Format a tool result to Sentra XML format
  * @param {Object} params
- * @param {number} params.stepIndex - Step index
+ * @param {number} params.stepIndex - Legacy fallback index (used only when stepId is missing)
+ * @param {string} params.stepId - Unique step identifier
  * @param {string} params.aiName - Tool name
  * @param {string|Array} params.reason - Reason for using the tool
  * @param {Object} params.args - Tool arguments
@@ -572,18 +573,19 @@ export function formatSentraResult({ stepIndex, stepId, aiName, reason, args, re
   const resultData = result?.data !== undefined ? result.data : result;
   const success = result?.success !== false;
 
-  const safeStep = escapeXmlEntities(String(stepIndex ?? 0));
-  const safeStepId = (typeof stepId === 'string' && stepId.trim()) ? escapeXmlEntities(stepId.trim()) : '';
+  const fallbackId = Number.isFinite(Number(stepIndex)) ? `step_${Number(stepIndex)}` : 'step_0';
+  const safeStepId = escapeXmlEntities(
+    (typeof stepId === 'string' && stepId.trim()) ? stepId.trim() : fallbackId
+  );
   const safeTool = escapeXmlEntities(String(aiName ?? ''));
   const safeSuccess = escapeXmlEntities(String(success));
   const safeReason = escapeXmlEntities(reasonText);
   const argsXml = valueToTypedXml(args || {});
   const dataXml = valueToTypedXml(resultData);
-  const stepIdAttr = safeStepId ? ` step_id="${safeStepId}"` : '';
   
-  return `<sentra-result step="${safeStep}"${stepIdAttr} tool="${safeTool}" success="${safeSuccess}">
+  return `<sentra-result step_id="${safeStepId}" tool="${safeTool}" success="${safeSuccess}">
   <reason>${safeReason}</reason>
-  <arguments>${argsXml}</arguments>
+  <args>${argsXml}</args>
   <data>${dataXml}</data>
 </sentra-result>`;
 }
@@ -612,14 +614,20 @@ export function parseSentraResult(text) {
     const sr = Array.isArray(node) ? node[0] : node;
     if (!sr || typeof sr !== 'object') return null;
 
-    const stepIndex = parseInt(String(sr['@_step'] ?? '0'), 10);
     const stepId = (typeof sr['@_step_id'] === 'string' && sr['@_step_id'].trim()) ? sr['@_step_id'].trim() : '';
+    let stepIndex = parseInt(String(sr['@_step'] ?? ''), 10);
+    if (!Number.isFinite(stepIndex)) {
+      const m = stepId.match(/(\d+)$/);
+      stepIndex = m ? parseInt(m[1], 10) : 0;
+    }
     const aiName = typeof sr['@_tool'] === 'string' ? sr['@_tool'].trim() : '';
     const success = String(sr['@_success'] ?? 'true').toLowerCase() === 'true';
     if (!aiName) return null;
 
     const reason = typeof sr.reason === 'string' ? unescapeXmlEntities(sr.reason) : '';
-    const rawArgs = typeof sr.arguments === 'string' ? sr.arguments : '';
+    const rawArgs = typeof sr.args === 'string'
+      ? sr.args
+      : (typeof sr.arguments === 'string' ? sr.arguments : '');
     const rawData = typeof sr.data === 'string' ? sr.data : '';
 
     let args = {};
@@ -663,18 +671,23 @@ export function parseSentraResult(text) {
       const mTool = attrs.match(/\btool\s*=\s*["']([^"']+)["']/i);
       const mSuccess = attrs.match(/\bsuccess\s*=\s*["']([^"']+)["']/i);
 
-      const stepIndex = mStep ? parseInt(mStep[1], 10) : 0;
       const stepId = mStepId ? String(mStepId[1] || '').trim() : '';
+      let stepIndex = mStep ? parseInt(mStep[1], 10) : NaN;
+      if (!Number.isFinite(stepIndex)) {
+        const m = stepId.match(/(\d+)$/);
+        stepIndex = m ? parseInt(m[1], 10) : 0;
+      }
       const aiName = mTool ? String(mTool[1] || '').trim() : '';
       const success = String(mSuccess?.[1] || 'true').toLowerCase() === 'true';
       if (!aiName) return null;
 
       const reReason = /<\s*reason\s*>([\s\S]*?)<\s*\/\s*reason\s*>/i;
-      const reArgs = /<\s*arguments\s*>([\s\S]*?)<\s*\/\s*arguments\s*>/i;
+      const reArgs = /<\s*args\s*>([\s\S]*?)<\s*\/\s*args\s*>/i;
+      const reArgsLegacy = /<\s*arguments\s*>([\s\S]*?)<\s*\/\s*arguments\s*>/i;
       const reData = /<\s*data\s*>([\s\S]*?)<\s*\/\s*data\s*>/i;
 
       const mReason = contentBlock.match(reReason);
-      const mArgs = contentBlock.match(reArgs);
+      const mArgs = contentBlock.match(reArgs) || contentBlock.match(reArgsLegacy);
       const mData = contentBlock.match(reData);
 
       const reason = mReason ? String(mReason[1] || '').trim() : '';

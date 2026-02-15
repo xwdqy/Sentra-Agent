@@ -4,11 +4,11 @@
  * 提供简洁的API供其他项目使用
  */
 
-import { loadJsonConfig, loadEnvConfig } from './config.js';
+import { loadJsonConfig, loadConfig } from './config.js';
 import { parseTemplate, parseObject, parseTemplates } from './parser.js';
-import { 
-  getFunctionRegistry, 
-  registerFunction, 
+import {
+  getFunctionRegistry,
+  registerFunction,
   unregisterFunction,
   hasFunction,
   getAllFunctionNames,
@@ -24,15 +24,15 @@ if (typeof globalThis.fetch !== 'function') {
 /**
  * 解析单个提示词模板
  * @param {string} template - 模板字符串，包含 {{placeholder}} 格式的占位符
- * @param {string} envPath - .env 文件路径（可选）
+ * @param {string} configPath - JSON 配置文件路径（可选）
  * @returns {Promise<string>} 解析后的字符串
  * 
  * @example
  * const result = await parse('当前时间是 {{time}}，今天是 {{date}}');
  * console.log(result); // 当前时间是 14:30:25，今天是 2025年10月01日
  */
-export async function parse(template, envPath = null) {
-  const envConfig = loadEnvConfig(envPath);
+export async function parse(template, configPath = null) {
+  const envConfig = loadConfig(configPath);
   const functionRegistry = getFunctionRegistry();
   return await parseTemplate(template, envConfig, functionRegistry);
 }
@@ -40,7 +40,7 @@ export async function parse(template, envPath = null) {
 /**
  * 解析对象中的所有模板字符串
  * @param {any} obj - 包含模板字符串的对象
- * @param {string} envPath - .env 文件路径（可选）
+ * @param {string} configPath - JSON 配置文件路径（可选）
  * @returns {Promise<any>} 解析后的对象
  * 
  * @example
@@ -51,8 +51,8 @@ export async function parse(template, envPath = null) {
  * const result = await parseObj(config);
  * console.log(result); // { name: '智能助手', prompt: '当前时间 14:30:25' }
  */
-export async function parseObj(obj, envPath = null) {
-  const envConfig = loadEnvConfig(envPath);
+export async function parseObj(obj, configPath = null) {
+  const envConfig = loadConfig(configPath);
   const functionRegistry = getFunctionRegistry();
   return await parseObject(obj, envConfig, functionRegistry);
 }
@@ -60,7 +60,7 @@ export async function parseObj(obj, envPath = null) {
 /**
  * 批量解析多个模板
  * @param {string[]} templates - 模板数组
- * @param {string} envPath - .env 文件路径（可选）
+ * @param {string} configPath - JSON 配置文件路径（可选）
  * @returns {Promise<string[]>} 解析后的字符串数组
  * 
  * @example
@@ -68,8 +68,8 @@ export async function parseObj(obj, envPath = null) {
  * const results = await parseMultiple(templates);
  * console.log(results); // ['14:30:25', '2025年10月01日', '星期三']
  */
-export async function parseMultiple(templates, envPath = null) {
-  const envConfig = loadEnvConfig(envPath);
+export async function parseMultiple(templates, configPath = null) {
+  const envConfig = loadConfig(configPath);
   const functionRegistry = getFunctionRegistry();
   return await parseTemplates(templates, envConfig, functionRegistry);
 }
@@ -77,16 +77,16 @@ export async function parseMultiple(templates, envPath = null) {
 /**
  * 加载并解析 Agent 配置文件
  * @param {string} agentPath - agent.json 文件路径
- * @param {string} envPath - .env 文件路径（可选）
+ * @param {string} configPath - JSON 配置文件路径（可选）
  * @returns {Promise<Object>} 解析后的 Agent 配置对象
  * 
  * @example
  * const agent = await loadAgent('./agent.json');
  * console.log(agent.systemPrompt); // 解析后的系统提示词
  */
-export async function loadAgent(agentPath, envPath = null) {
+export async function loadAgent(agentPath, configPath = null) {
   const agentConfig = loadJsonConfig(agentPath);
-  const envConfig = loadEnvConfig(envPath);
+  const envConfig = loadConfig(configPath);
   const functionRegistry = getFunctionRegistry();
   return await parseObject(agentConfig, envConfig, functionRegistry);
 }
@@ -94,15 +94,15 @@ export async function loadAgent(agentPath, envPath = null) {
 /**
  * 加载并解析 Agent 配置文件，返回JSON格式
  * @param {string} agentPath - agent.json 文件路径
- * @param {string} envPath - .env 文件路径（可选）
+ * @param {string} configPath - JSON 配置文件路径（可选）
  * @returns {Promise<string>} 解析后的 Agent 配置 JSON 字符串
  * 
  * @example
  * const jsonStr = await loadAgentJSON('./agent.json');
  * console.log(jsonStr); // 格式化的JSON字符串
  */
-export async function loadAgentJSON(agentPath, envPath = null) {
-  const result = await loadAgent(agentPath, envPath);
+export async function loadAgentJSON(agentPath, configPath = null) {
+  const result = await loadAgent(agentPath, configPath);
   return JSON.stringify(result, null, 2);
 }
 
@@ -113,7 +113,7 @@ export async function loadAgentJSON(agentPath, envPath = null) {
  * 
  * @example
  * register('myFunc', () => 'Hello World');
- * // 然后在.env中配置: my_placeholder=myFunc
+ * // 然后在配置中写: { "my_placeholder": "myFunc" }
  */
 export function register(name, fn) {
   registerFunction(name, fn);
@@ -199,22 +199,22 @@ export function getRegistry() {
  * - 传入对象：递归解析对象中的模板
  *
  * @param {string|string[]|Object} input
- * @param {string|null} envPath 可选 .env 路径
+ * @param {string|null} configPath 可选 JSON 配置路径
  * @returns {Promise<any>} 解析结果
  *
  * @example
  * import sentra from 'sentra-prompts';
  * const text = await sentra('现在时间：{{time}}');
  */
-async function SentraPromptsSDK(input, envPath = null) {
+async function SentraPromptsSDK(input, configPath = null) {
   if (Array.isArray(input)) {
-    return await parseMultiple(input, envPath);
+    return await parseMultiple(input, configPath);
   }
   if (typeof input === 'string') {
-    return await parse(input, envPath);
+    return await parse(input, configPath);
   }
   if (input && typeof input === 'object') {
-    return await parseObj(input, envPath);
+    return await parseObj(input, configPath);
   }
   throw new Error('默认函数仅支持 string | string[] | object');
 }

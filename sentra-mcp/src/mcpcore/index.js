@@ -23,7 +23,7 @@ function makeAINameExternal(serverId, name) {
     if (strategy === 'fc') {
       return `ext__${String(serverId ?? '')}__${String(name ?? '')}`;
     }
-  } catch {}
+  } catch { }
 
   const sanitize = (s) => String(s ?? '').replace(/[^a-zA-Z0-9_-]/g, '_');
   const sid = sanitize(serverId);
@@ -177,13 +177,13 @@ export class MCPCore {
         const __dirname = path.dirname(__filename);
         const libRoot = path.resolve(__dirname, '..', '..');
         out.push(path.join(libRoot, 'plugins', dirName));
-      } catch {}
+      } catch { }
       try {
         if (process.env.PLUGINS_DIR) out.push(path.join(path.resolve(process.env.PLUGINS_DIR), dirName));
-      } catch {}
+      } catch { }
       try {
         out.push(path.join(path.resolve(process.cwd(), 'plugins'), dirName));
-      } catch {}
+      } catch { }
       const seen = new Set();
       return out.map((p) => path.resolve(p)).filter((p) => {
         if (seen.has(p)) return false;
@@ -242,7 +242,7 @@ export class MCPCore {
           if (s === '0' || s === 'false' || s === 'off' || s === 'no') enabled = false;
           else if (s === '1' || s === 'true' || s === 'on' || s === 'yes') enabled = true;
         }
-      } catch {}
+      } catch { }
 
       if (!matching.length) {
         if (enabled) needFullReload = true;
@@ -267,8 +267,8 @@ export class MCPCore {
         if (!Number.isNaN(fromEnvA) && fromEnvA > 0) timeoutMs = fromEnvA;
         else if (!Number.isNaN(fromEnvB) && fromEnvB > 0) timeoutMs = fromEnvB;
 
-        try { t.pluginEnv = penv; } catch {}
-        try { t.timeoutMs = timeoutMs; } catch {}
+        try { t.pluginEnv = penv; } catch { }
+        try { t.timeoutMs = timeoutMs; } catch { }
 
         try {
           const prevKeys = new Set(Object.keys(prevEnv || {}));
@@ -301,7 +301,7 @@ export class MCPCore {
               prevTimeoutMs,
             });
           }
-        } catch {}
+        } catch { }
       }
     }
 
@@ -524,8 +524,8 @@ export class MCPCore {
         // Governance check
         const auth = Governance.isAllowed(t, options);
         if (!auth.allowed) {
-          try { await Metrics.incrFailure(t.name, t.providerType, 'FORBIDDEN'); } catch {}
-          try { await Metrics.addLatency(t.name, Date.now() - start, t.providerType); } catch {}
+          try { await Metrics.incrFailure(t.name, t.providerType, 'FORBIDDEN'); } catch { }
+          try { await Metrics.addLatency(t.name, Date.now() - start, t.providerType); } catch { }
           return fail(new Error(auth.reason || 'Forbidden'), 'FORBIDDEN');
         }
 
@@ -630,11 +630,11 @@ export class MCPCore {
           const out = MCPCore._unwrapNestedToolResult(outRaw);
           const okFlag = out?.success === true;
           if (okFlag) {
-            try { await Metrics.incrSuccess(t.name, 'local'); } catch {}
+            try { await Metrics.incrSuccess(t.name, 'local'); } catch { }
           } else {
-            try { await Metrics.incrFailure(t.name, 'local', out?.code || 'ERR'); } catch {}
+            try { await Metrics.incrFailure(t.name, 'local', out?.code || 'ERR'); } catch { }
           }
-          try { await Metrics.addLatency(t.name, Date.now() - start, 'local'); } catch {}
+          try { await Metrics.addLatency(t.name, Date.now() - start, 'local'); } catch { }
           // Write cache on success（过滤掉 data.success === false 的伪成功）
           if (cacheEnabled && cacheKey && MCPCore._isCacheableResult(out)) {
             try {
@@ -709,11 +709,11 @@ export class MCPCore {
           const out = MCPCore._unwrapNestedToolResult(outRaw);
           const okFlag = out?.success === true;
           if (okFlag) {
-            try { await Metrics.incrSuccess(t.name, `external:${t.serverId}`); } catch {}
+            try { await Metrics.incrSuccess(t.name, `external:${t.serverId}`); } catch { }
           } else {
-            try { await Metrics.incrFailure(t.name, `external:${t.serverId}`, out?.code || 'ERR'); } catch {}
+            try { await Metrics.incrFailure(t.name, `external:${t.serverId}`, out?.code || 'ERR'); } catch { }
           }
-          try { await Metrics.addLatency(t.name, Date.now() - start, `external:${t.serverId}`); } catch {}
+          try { await Metrics.addLatency(t.name, Date.now() - start, `external:${t.serverId}`); } catch { }
           if (cacheEnabled && cacheKey && MCPCore._isCacheableResult(out)) {
             try {
               const r = getRedis();
@@ -770,8 +770,8 @@ export class MCPCore {
           continue; // retry once
         }
         const code = e.code || (String(e?.message || '').toLowerCase().includes('timeout') ? 'TIMEOUT' : 'ERR');
-        try { await Metrics.incrFailure(t.name, t.providerType, code); } catch {}
-        try { await Metrics.addLatency(t.name, Date.now() - start, t.providerType); } catch {}
+        try { await Metrics.incrFailure(t.name, t.providerType, code); } catch { }
+        try { await Metrics.addLatency(t.name, Date.now() - start, t.providerType); } catch { }
         const extra = { provider: t.providerType };
         if (code === 'COOLDOWN_ACTIVE') {
           extra.remainMs = Number(e.remainMs || (e.ttl ? e.ttl * 1000 : (t.cooldownMs || 0)));

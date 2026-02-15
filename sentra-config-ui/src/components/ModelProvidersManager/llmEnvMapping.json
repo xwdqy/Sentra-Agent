@@ -51,13 +51,6 @@
             { "key": "AGENT_PRESET_TEACHING_CONTEXT_PAIRS", "group": "主程序 / 预设教导", "kind": "number", "advanced": true },
             { "key": "AGENT_PRESET_TEACHING_BATCH_SIZE", "group": "主程序 / 预设教导", "kind": "number", "advanced": true },
 
-            { "key": "PROACTIVE_DIRECTIVE_BASE_URL", "group": "主程序 / 主动规划", "kind": "base_url" },
-            { "key": "PROACTIVE_DIRECTIVE_API_KEY", "group": "主程序 / 主动规划", "kind": "api_key" },
-            { "key": "PROACTIVE_DIRECTIVE_MODEL", "group": "主程序 / 主动规划", "kind": "model", "picker": "model", "modelScope": "chat" },
-            { "key": "PROACTIVE_DIRECTIVE_TEMPERATURE", "group": "主程序 / 主动规划", "kind": "number", "advanced": true },
-            { "key": "PROACTIVE_DIRECTIVE_MAX_TOKENS", "group": "主程序 / 主动规划", "kind": "number", "advanced": true },
-            { "key": "PROACTIVE_DIRECTIVE_TIMEOUT", "group": "主程序 / 主动规划", "kind": "number" },
-            { "key": "PROACTIVE_DIRECTIVE_MAX_RETRIES", "group": "主程序 / 主动规划", "kind": "number", "advanced": true },
 
             { "key": "REPLY_DECISION_BASE_URL", "group": "主程序 / 回复决策", "kind": "base_url" },
             { "key": "REPLY_DECISION_API_KEY", "group": "主程序 / 回复决策", "kind": "api_key" },

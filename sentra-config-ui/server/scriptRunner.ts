@@ -221,7 +221,10 @@ export class ScriptRunner {
         let proc;
         const windowsHide = os.platform() === 'win32';
         // Standard node scripts (sentiment is also wrapped as a node script to manage PM2 lifecycle)
-        const scriptPath = path.join(process.cwd(), 'scripts', `${scriptName}.mjs`);
+        const scriptFile = scriptName === 'update'
+            ? 'update_with_precompile.mjs'
+            : `${scriptName}.mjs`;
+        const scriptPath = path.join(process.cwd(), 'scripts', scriptFile);
         proc = spawn('node', [scriptPath, ...args], {
             cwd: process.cwd(),
             env: {

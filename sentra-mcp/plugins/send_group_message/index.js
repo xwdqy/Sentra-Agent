@@ -17,18 +17,26 @@ export default async function handler(args = {}) {
 
   return ok({
     action: 'send_group_message',
-    target: { type: 'group', id: groupId },
-    content,
+    mode: 'routing_only',
+    can_send_message: false,
+    need_user_confirm: false,
+    target: { type: 'group', group_id: groupId },
+    intent: content,
     media_hints: mediaHints,
-    note: `This tool confirms the target and intent only. You must produce the final message text yourself.
-
-Routing rule (MANDATORY): every final <sentra-response> must include EXACTLY ONE target tag.
-- Group: include <group_id>${groupId}</group_id> (digits only)
-
-How to choose the id:
-- If replying in the current group chat: use <group_id> from <sentra-user-question>.
-- If sending to another group (cross-chat): use a group id that exists in <sentra-social-context>.
-
-Do NOT use legacy mention/routing text like [[to=user:...]] inside <textN>.`
+    suggested_routing: {
+      tag: 'group_id',
+      value: groupId,
+      xml: `<group_id>${groupId}</group_id>`
+    },
+    constraints: {
+      must_not_invent_ids: true,
+      must_use_digits_only_id: true,
+      exactly_one_target_tag: true,
+      forbidden_in_text: ['[[to=user:...]]', '[CQ:at,qq=...]', 'to=user']
+    },
+    suggested_next: {
+      action: 'compose_sentra_response',
+      instruction: 'Write the final user-facing message in <textN>. Include EXACTLY ONE routing target tag (<group_id> only) and do not claim it has been sent unless the platform will actually send it.'
+    }
   });
 }

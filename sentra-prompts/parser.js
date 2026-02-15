@@ -3,7 +3,7 @@
  * 负责解析模板字符串中的占位符 {{placeholder}} 并替换为实际值
  */
 
-import { loadEnvConfig } from './config.js';
+import { loadConfig } from './config.js';
 import { getFunctionRegistry } from './functions/registry.js';
 
 /**
@@ -20,7 +20,7 @@ export async function parseTemplate(template, envConfig = null, functionRegistry
 
   // 如果没有传入配置，则加载默认配置
   if (!envConfig) {
-    envConfig = loadEnvConfig();
+    envConfig = loadConfig();
   }
 
   if (!functionRegistry) {
@@ -29,7 +29,7 @@ export async function parseTemplate(template, envConfig = null, functionRegistry
 
   // 匹配所有 {{placeholder}} 格式的占位符
   const placeholderRegex = /\{\{(\w+)\}\}/g;
-  
+
   // 收集所有需要解析的占位符
   const placeholders = [];
   let match;
@@ -63,7 +63,7 @@ export async function parseTemplate(template, envConfig = null, functionRegistry
 async function resolvePlaceholder(placeholder, envConfig, functionRegistry) {
   // 检查环境变量配置中是否定义了该占位符
   if (!(placeholder in envConfig)) {
-    console.warn(`警告: 占位符 {{${placeholder}}} 未在 .env 文件中定义`);
+    console.warn(`警告: 占位符 {{${placeholder}}} 未在配置文件中定义`);
     return `{{${placeholder}}}`;
   }
 
@@ -93,7 +93,7 @@ async function resolvePlaceholder(placeholder, envConfig, functionRegistry) {
  */
 export async function parseObject(obj, envConfig = null, functionRegistry = null) {
   if (!envConfig) {
-    envConfig = loadEnvConfig();
+    envConfig = loadConfig();
   }
 
   if (!functionRegistry) {
@@ -134,7 +134,7 @@ export async function parseTemplates(templates, envConfig = null, functionRegist
   }
 
   if (!envConfig) {
-    envConfig = loadEnvConfig();
+    envConfig = loadConfig();
   }
 
   if (!functionRegistry) {

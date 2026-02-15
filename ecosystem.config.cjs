@@ -12,7 +12,7 @@ module.exports = {
   apps: [
     {
       name: 'sentra-agent',
-      script: './Main.js',
+      script: './dist/Main.js',
       interpreter: 'node',
       cwd: repoRoot,
       instances: 1,
