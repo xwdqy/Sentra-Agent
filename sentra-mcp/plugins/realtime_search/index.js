@@ -229,15 +229,17 @@ async function runOneSearchByProvider({
   if (provider === 'tavily') {
     const raw = baseArgs.rawRequest && typeof baseArgs.rawRequest === 'object' ? baseArgs.rawRequest : null;
     const endpoint = `${String(tavilyBaseURL || 'https://api.tavily.com').replace(/\/+$/, '')}/search`;
-    const payload = raw || {
-      api_key: tavilyApiKey,
-      query: String(query || '').trim(),
-      max_results: maxResults,
-      include_domains: include,
-      exclude_domains: exclude,
-      topic: 'general',
-      search_depth: 'advanced',
-    };
+    const payload = raw
+      ? { ...raw, api_key: tavilyApiKey }
+      : {
+        api_key: tavilyApiKey,
+        query: String(query || '').trim(),
+        max_results: maxResults,
+        include_domains: include,
+        exclude_domains: exclude,
+        topic: 'general',
+        search_depth: 'advanced',
+      };
 
     const res = await fetch(endpoint, {
       method: 'POST',
