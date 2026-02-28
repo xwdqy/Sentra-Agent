@@ -2,7 +2,7 @@
 
 ## Capability
 
-- 实时联网检索：通过“支持搜索的模型”生成带引用链接的答案。
+- 实时联网检索：支持 OpenAI 兼容（含 newapi 中转）、Gemini 原生 Google Search、Tavily 搜索。
 - 支持单条查询、批量查询，以及 `rawRequest` 透传（OpenAI chat.completions payload）。
 
 ## Real-world impact
@@ -25,16 +25,20 @@
 - Provide one of:
   - `query` (string)
   - `queries` (string[])：批量同类查询（工具会顺序执行，并在批量项之间 sleep）
-  - `rawRequest` (object)：透传请求（仍会强制使用配置的 model）
+  - `rawRequest` (object)：透传请求（openai_compatible 透传 chat.completions；gemini/tavily 透传各自原生 payload）
 - Optional:
   - `max_results` (integer 1-20; default 5)：写入 system prompt（提示模型最多参考 N 条）
   - `include_domains` (string|string[])：只引用这些域名
   - `exclude_domains` (string|string[])：排除这些域名
 
 运行环境/配置（从插件 env 或进程 env 读取）：
+- `REALTIME_SEARCH_PROVIDER`（默认 `openai_compatible`，可选：`openai_compatible`/`gemini`/`tavily`）
 - `REALTIME_SEARCH_MODEL`（默认 `gpt-4o-search`）
-- `REALTIME_SEARCH_BASE_URL` / `REALTIME_SEARCH_API_KEY`
+- OpenAI 兼容模式：`REALTIME_SEARCH_BASE_URL` / `REALTIME_SEARCH_API_KEY`
+- Gemini 模式：`REALTIME_SEARCH_GEMINI_BASE_URL`（默认 Google 官方地址）/ `REALTIME_SEARCH_GEMINI_API_KEY`
+- Tavily 模式：`REALTIME_SEARCH_TAVILY_BASE_URL` / `REALTIME_SEARCH_TAVILY_API_KEY`
 - `REALTIME_SEARCH_BATCH_DELAY_MS`（批量查询间隔，默认 250ms）
+- provider 对应的 API Key 为空时会直接返回 `INVALID`（避免发起无效请求）
 
 ## Output
 
