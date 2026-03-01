@@ -150,6 +150,7 @@ async function fetchGeminiNativeSearch({ query, apiKey, model, baseURL, timeoutM
     timeout: timeoutMs,
     headers: {
       'x-goog-api-key': apiKey,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
   });
@@ -346,7 +347,8 @@ async function runSearchChain({ client, query, maxResults, include, exclude, pro
       const rawError = String(e?.message || e);
       const safeError = rawError
         .replace(/key=[^&\s]+/gi, 'key=[REDACTED]')
-        .replace(/(x-goog-api-key["':=\s]+)[^,}\s]+/gi, '$1[REDACTED]');
+        .replace(/(x-goog-api-key["':=\s]+)[^,}\s]+/gi, '$1[REDACTED]')
+        .replace(/(Bearer\s+)[^"'\s]+/gi, '$1[REDACTED]');
       providerErrors.push({ provider, error: safeError });
       logger.warn('realtime_search: provider failed', { label: 'PLUGIN', provider, error: safeError });
     }
