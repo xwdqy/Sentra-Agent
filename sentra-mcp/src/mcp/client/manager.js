@@ -351,7 +351,14 @@ export class MCPExternalManager {
       if (!url) throw new Error(`MCP server ${id} ${type} requires url`);
       const parsedUrl = parseServerUrl(url, { id, type });
       const normalizedHeaders = normalizeHeaders(headers, { id });
-      const options = normalizedHeaders ? { headers: normalizedHeaders } : undefined;
+      const options = normalizedHeaders
+        ? {
+            // SDK 1.x streamable HTTP transport reads custom headers from requestInit.
+            // Keep `headers` for forward/backward compatibility across SDK variants.
+            requestInit: { headers: normalizedHeaders },
+            headers: normalizedHeaders,
+          }
+        : undefined;
       transport = new StreamableHTTPClientTransport(parsedUrl, options);
     } else {
       throw new Error(`Unsupported MCP server type: ${type}`);
