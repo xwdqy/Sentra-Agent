@@ -342,7 +342,11 @@ export class MCPExternalManager {
     } else if (type === 'sse') {
       if (!url) throw new Error(`MCP server ${id} ${type} requires url`);
       const parsedUrl = parseServerUrl(url, { id, type });
-      transport = new SSEClientTransport(parsedUrl);
+      const normalizedHeaders = normalizeHeaders(headers, { id });
+      const options = normalizedHeaders
+        ? { eventSourceInitDict: { headers: normalizedHeaders } }
+        : undefined;
+      transport = new SSEClientTransport(parsedUrl, options);
     } else if (type === 'http') {
       if (!url) throw new Error(`MCP server ${id} ${type} requires url`);
       const parsedUrl = parseServerUrl(url, { id, type });
