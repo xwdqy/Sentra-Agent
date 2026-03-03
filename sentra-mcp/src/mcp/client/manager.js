@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import logger from '../../logger/index.js';
 
 function getCanonicalServersJsonPath() {
@@ -25,12 +26,26 @@ function ensureServersJsonExists(absPath) {
   }
 }
 
+const MAX_STDIO_BUFFER_BYTES = Math.max(1024, Number.parseInt(process.env.MCP_STDIO_BUFFER_MAX_BYTES || '1048576', 10) || 1048576);
+
+function maskSensitiveText(text) {
+  if (!text) return '';
+  let sanitized = String(text);
+
+  sanitized = sanitized.replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/ig, '$1[REDACTED]');
+  sanitized = sanitized.replace(/((?:api[-_]?key|token|secret|password)\s*[:=]\s*)[^\s,;]+/ig, '$1[REDACTED]');
+  sanitized = sanitized.replace(/(sk-[a-z0-9_-]{12,})/ig, '[REDACTED]');
+
+  return sanitized;
+}
+
 class StdioClientTransportWinHidden {
   constructor(server) {
     this._serverParams = server;
     this._abortController = new AbortController();
     this._buffer = '';
     this._process = undefined;
+    this._didWarnBufferOverflow = false;
     this.onmessage = undefined;
     this.onerror = undefined;
     this.onclose = undefined;
@@ -74,6 +89,20 @@ class StdioClientTransportWinHidden {
       this._process.stdout?.on('data', (chunk) => {
         try {
           this._buffer += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+          if (this._buffer.length > MAX_STDIO_BUFFER_BYTES) {
+            const idx = this._buffer.lastIndexOf('\n');
+            if (idx >= 0) {
+              this._buffer = this._buffer.slice(Math.max(0, idx + 1));
+            } else {
+              this._buffer = this._buffer.slice(-MAX_STDIO_BUFFER_BYTES);
+            }
+            if (!this._didWarnBufferOverflow) {
+              this._didWarnBufferOverflow = true;
+              const err = new Error(`StdioClientTransportWinHidden read buffer exceeded ${MAX_STDIO_BUFFER_BYTES} bytes and was truncated`);
+              try { this.onerror?.(err); } catch {}
+              logger.warn('MCP stdio read buffer overflow protection triggered; truncated unread buffer', { label: 'MCP', maxBytes: MAX_STDIO_BUFFER_BYTES });
+            }
+          }
           this._processReadBuffer();
         } catch (error) {
           try { this.onerror?.(error); } catch {}
@@ -89,7 +118,7 @@ class StdioClientTransportWinHidden {
           const s = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
           const line = String(s || '').trim();
           if (line) {
-            logger.debug?.(line, { label: 'MCP' });
+            logger.debug?.(maskSensitiveText(line), { label: 'MCP' });
           }
         } catch {}
       });
@@ -121,6 +150,7 @@ class StdioClientTransportWinHidden {
     try { this._abortController.abort(); } catch {}
     this._process = undefined;
     this._buffer = '';
+    this._didWarnBufferOverflow = false;
   }
 
   send(message) {
@@ -150,6 +180,52 @@ function resolveWindowsCommand(command) {
   if (!needsCmd) return cmd;
   if (path.extname(cmd)) return cmd;
   return `${cmd}.cmd`;
+}
+
+
+
+
+function parseServerUrl(rawUrl, { id, type }) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(rawUrl);
+  } catch (e) {
+    throw new Error(`MCP server ${id} has invalid ${type} url: ${rawUrl}. ${String(e)}`);
+  }
+
+  if (type === 'http' && parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    throw new Error(`MCP server ${id} ${type} url must use http/https protocol: ${rawUrl}`);
+  }
+
+  if (type === 'websocket' && parsedUrl.protocol !== 'ws:' && parsedUrl.protocol !== 'wss:') {
+    throw new Error(`MCP server ${id} ${type} url must use ws/wss protocol: ${rawUrl}`);
+  }
+
+  return parsedUrl;
+}
+
+function normalizeHeaders(rawHeaders, { id }) {
+  if (rawHeaders == null) return undefined;
+  if (typeof rawHeaders !== 'object' || Array.isArray(rawHeaders)) {
+    throw new Error(`MCP server ${id} headers must be an object`);
+  }
+
+  const normalized = Object.create(null);
+  for (const [k, v] of Object.entries(rawHeaders)) {
+    const key = String(k || '').trim();
+    if (!key) continue;
+    const valueType = typeof v;
+    if (v == null || (valueType !== 'string' && valueType !== 'number' && valueType !== 'boolean')) {
+      throw new Error(`MCP server ${id} header ${key} has unsupported value type: ${valueType}`);
+    }
+    const value = String(v);
+    if (/[\r\n]/.test(key) || /[\r\n]/.test(value)) {
+      throw new Error(`MCP server ${id} header ${key} contains invalid newline characters`);
+    }
+    normalized[key] = value;
+  }
+
+  return normalized;
 }
 
 function readServersConfig() {
@@ -195,22 +271,27 @@ export class MCPExternalManager {
     if (defs.length) {
       logger.info('外部 MCP 连接开始', { label: 'MCP', count: defs.length });
     }
-    for (const def of defs) {
-      try {
-        await this.connect(def);
-      } catch (e) {
-        const msg = String(e);
-        if (process.platform === 'win32' && msg.includes('spawn npx ENOENT')) {
-          logger.warn('External MCP connect failed: npx not found on Windows (try npx.cmd / check Node.js PATH)', {
-            label: 'MCP',
-            id: def?.id,
-            error: msg,
-          });
-        } else {
-          logger.warn('External MCP connect failed', { label: 'MCP', id: def?.id, error: msg });
-        }
+
+    const results = await Promise.allSettled(defs.map(async (def) => {
+      await this.connect(def);
+      return def;
+    }));
+
+    results.forEach((result, idx) => {
+      if (result.status === 'fulfilled') return;
+      const def = defs[idx];
+      const msg = String(result.reason);
+      if (process.platform === 'win32' && msg.includes('spawn npx ENOENT')) {
+        logger.warn('External MCP connect failed: npx not found on Windows (try npx.cmd / check Node.js PATH)', {
+          label: 'MCP',
+          id: def?.id,
+          error: msg,
+        });
+      } else {
+        logger.warn('External MCP connect failed', { label: 'MCP', id: def?.id, error: msg });
       }
-    }
+    });
+
     if (defs.length) {
       logger.info('外部 MCP 连接完成', { label: 'MCP', connected: this.clients.size });
     }
@@ -240,17 +321,14 @@ export class MCPExternalManager {
         : new StdioClientTransport({ command: resolvedCommand, args });
     } else if (type === 'websocket') {
       if (!url) throw new Error(`MCP server ${id} websocket requires url`);
-      transport = new WebSocketClientTransport({ url });
+      const parsedUrl = parseServerUrl(url, { id, type });
+      transport = new WebSocketClientTransport({ url: parsedUrl.toString() });
     } else if (type === 'http') {
       if (!url) throw new Error(`MCP server ${id} ${type} requires url`);
-      let StreamableHTTPClientTransport;
-      try {
-        ({ StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js'));
-      } catch (e) {
-        throw new Error(`Streamable HTTP client transport not available in current @modelcontextprotocol/sdk. ${String(e)}`);
-      }
-      const init = { url };
-      if (headers && typeof headers === 'object') init.headers = headers;
+      const parsedUrl = parseServerUrl(url, { id, type });
+      const init = { url: parsedUrl };
+      const normalizedHeaders = normalizeHeaders(headers, { id });
+      if (normalizedHeaders) init.headers = normalizedHeaders;
       transport = new StreamableHTTPClientTransport(init);
     } else {
       throw new Error(`Unsupported MCP server type: ${type}`);
