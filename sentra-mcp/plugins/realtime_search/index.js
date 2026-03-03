@@ -31,6 +31,14 @@ function isTimeoutError(e) {
   );
 }
 
+function redactErrorText(errorLike) {
+  return String(errorLike?.message || errorLike || '')
+    .replace(/key=[^&\s]+/gi, 'key=[REDACTED]')
+    .replace(/(x-goog-api-key["':=\s]+)[^,}\s]+/gi, '$1[REDACTED]')
+    .replace(/(Bearer\s+)[^"'\s]+/gi, '$1[REDACTED]')
+    .replace(/((?:api[-_]?key|token|secret|password)\s*[:=]\s*)[^\s,;]+/gi, '$1[REDACTED]');
+}
+
 function buildAdvice(kind, ctx = {}) {
   const personaHint = '请结合你当前的预设/人设继续作答：即使工具失败，也要给出可执行的替代方案、解释原因，并引导用户补充信息。';
   if (kind === 'INVALID') {
@@ -344,11 +352,7 @@ async function runSearchChain({ client, query, maxResults, include, exclude, pro
         return { ...data, provider_chain: providerOrder };
       }
     } catch (e) {
-      const rawError = String(e?.message || e);
-      const safeError = rawError
-        .replace(/key=[^&\s]+/gi, 'key=[REDACTED]')
-        .replace(/(x-goog-api-key["':=\s]+)[^,}\s]+/gi, '$1[REDACTED]')
-        .replace(/(Bearer\s+)[^"'\s]+/gi, '$1[REDACTED]');
+      const safeError = redactErrorText(e);
       providerErrors.push({ provider, error: safeError });
       logger.warn('realtime_search: provider failed', { label: 'PLUGIN', provider, error: safeError });
     }
@@ -359,7 +363,6 @@ async function runSearchChain({ client, query, maxResults, include, exclude, pro
 
 async function runOneSearch({ client, model, baseArgs = {}, query, include, exclude, maxResults, providerMode, env, cache }) {
   const q = String(query || '').trim();
-  if (!q) throw new Error('Query is empty');
 
   const raw = baseArgs.rawRequest && typeof baseArgs.rawRequest === 'object' ? baseArgs.rawRequest : null;
   if (raw) {
@@ -377,6 +380,8 @@ async function runOneSearch({ client, model, baseArgs = {}, query, include, excl
       provider: 'raw_request',
     };
   }
+
+  if (!q) throw new Error('Query is empty');
 
   const cacheKey = getCacheKey({ providerMode, model, q, maxResults, include, exclude });
   const cached = getCached(cacheKey, cache.ttlMs);
@@ -408,7 +413,8 @@ export default async function handler(args = {}, options = {}) {
   const baseURL = String(penv.REALTIME_SEARCH_BASE_URL || process.env.REALTIME_SEARCH_BASE_URL || config.llm.baseURL || 'https://yuanplus.chat/v1');
   const apiKey = String(penv.REALTIME_SEARCH_API_KEY || process.env.REALTIME_SEARCH_API_KEY || config.llm.apiKey || '');
 
-  const maxResults = Number(args.max_results || 5);
+  const parsedMaxResults = Number(args.max_results || 5);
+  const maxResults = Number.isFinite(parsedMaxResults) ? Math.min(20, Math.max(1, Math.floor(parsedMaxResults))) : 5;
   const include = arrifyCsv(args.include_domains);
   const exclude = arrifyCsv(args.exclude_domains);
 
@@ -457,7 +463,7 @@ export default async function handler(args = {}, options = {}) {
         });
         results.push({ query: one, success: true, data });
       } catch (e) {
-        const msg = String(e?.message || e);
+        const msg = redactErrorText(e);
         const isTimeout = isTimeoutError(e);
         logger.error('realtime_search: batch item failed', { label: 'PLUGIN', index: i, query: one, error: msg });
         results.push({
@@ -490,7 +496,7 @@ export default async function handler(args = {}, options = {}) {
     });
     return ok(data);
   } catch (e) {
-    const msg = String(e?.message || e);
+    const msg = redactErrorText(e);
     logger.error('realtime_search: failed', { label: 'PLUGIN', error: msg });
     const isTimeout = isTimeoutError(e);
     return fail(msg, isTimeout ? 'TIMEOUT' : 'ERR', {
