@@ -6,6 +6,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import logger from '../../logger/index.js';
 
 function getCanonicalServersJsonPath() {
@@ -186,19 +187,33 @@ function resolveWindowsCommand(command) {
 
 
 function parseServerUrl(rawUrl, { id, type }) {
+  const normalizeRawUrl = (() => {
+    if (rawUrl instanceof URL) return rawUrl.toString();
+    if (typeof rawUrl === 'string') return rawUrl;
+    if (rawUrl && typeof rawUrl === 'object') {
+      if (typeof rawUrl.url === 'string') return rawUrl.url;
+      if (typeof rawUrl.href === 'string') return rawUrl.href;
+      if (typeof rawUrl.toString === 'function') {
+        const rendered = rawUrl.toString();
+        if (rendered && rendered !== '[object Object]') return rendered;
+      }
+    }
+    return rawUrl;
+  })();
+
   let parsedUrl;
   try {
-    parsedUrl = new URL(rawUrl);
+    parsedUrl = new URL(normalizeRawUrl);
   } catch (e) {
-    throw new Error(`MCP server ${id} has invalid ${type} url: ${rawUrl}. ${String(e)}`);
+    throw new Error(`MCP server ${id} has invalid ${type} url: ${JSON.stringify(rawUrl)}. ${String(e)}`);
   }
 
-  if (type === 'http' && parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-    throw new Error(`MCP server ${id} ${type} url must use http/https protocol: ${rawUrl}`);
+  if ((type === 'http' || type === 'sse') && parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    throw new Error(`MCP server ${id} ${type} url must use http/https protocol: ${parsedUrl.toString()}`);
   }
 
   if (type === 'websocket' && parsedUrl.protocol !== 'ws:' && parsedUrl.protocol !== 'wss:') {
-    throw new Error(`MCP server ${id} ${type} url must use ws/wss protocol: ${rawUrl}`);
+    throw new Error(`MCP server ${id} ${type} url must use ws/wss protocol: ${parsedUrl.toString()}`);
   }
 
   return parsedUrl;
@@ -305,7 +320,8 @@ export class MCPExternalManager {
 
   async connect(def) {
     const { id, command, args = [], url, headers } = def;
-    const type = String(def?.type || '').trim() === 'streamable_http' ? 'http' : def?.type;
+    const rawType = String(def?.type || '').trim();
+    const type = rawType === 'streamable_http' ? 'http' : rawType;
     if (!id) throw new Error('External MCP server missing id');
 
     if (this.clients.has(id)) {
@@ -322,14 +338,17 @@ export class MCPExternalManager {
     } else if (type === 'websocket') {
       if (!url) throw new Error(`MCP server ${id} websocket requires url`);
       const parsedUrl = parseServerUrl(url, { id, type });
-      transport = new WebSocketClientTransport({ url: parsedUrl.toString() });
+      transport = new WebSocketClientTransport(parsedUrl);
+    } else if (type === 'sse') {
+      if (!url) throw new Error(`MCP server ${id} ${type} requires url`);
+      const parsedUrl = parseServerUrl(url, { id, type });
+      transport = new SSEClientTransport(parsedUrl);
     } else if (type === 'http') {
       if (!url) throw new Error(`MCP server ${id} ${type} requires url`);
       const parsedUrl = parseServerUrl(url, { id, type });
-      const init = { url: parsedUrl };
       const normalizedHeaders = normalizeHeaders(headers, { id });
-      if (normalizedHeaders) init.headers = normalizedHeaders;
-      transport = new StreamableHTTPClientTransport(init);
+      const options = normalizedHeaders ? { headers: normalizedHeaders } : undefined;
+      transport = new StreamableHTTPClientTransport(parsedUrl, options);
     } else {
       throw new Error(`Unsupported MCP server type: ${type}`);
     }
