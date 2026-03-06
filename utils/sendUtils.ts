@@ -7,14 +7,14 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import mimeTypes from 'mime-types';
-import { parseSentraResponse } from './protocolUtils.js';
-import type { SentraResponseEmoji, SentraResponseResource } from './protocolUtils.js';
+import { parseSentraMessage } from './protocolUtils.js';
 import { parseTextSegments, buildSegmentMessage } from './messageUtils.js';
 import { updateConversationHistory } from './conversationUtils.js';
 import { createLogger } from './logger.js';
 import { replySendQueue } from './replySendQueue.js';
 import { getEnv, getEnvBool, getEnvInt, onEnvReload } from './envHotReloader.js';
 import { randomUUID } from 'crypto';
+import { buildGroupScopeId, buildPrivateScopeId } from './conversationId.js';
 
 const logger = createLogger('SendUtils');
 
@@ -86,6 +86,14 @@ type SendResult = {
   data?: { status?: string; retcode?: number | string; message?: string; message_id?: string | number };
   [key: string]: unknown;
 };
+type SegmentDeliveryEntry = {
+  segmentIndex: number;
+  messageId: string;
+};
+type SendBatchPlan = {
+  parts: MessagePart[];
+  segmentIndexes: number[];
+};
 type SmartSendOptions = { hasTool?: boolean; immediate?: boolean };
 type SmartSendMeta = {
   groupId: string;
@@ -112,6 +120,8 @@ type LinkSegment = {
   routeTarget: RouteTarget;
   segmentIndex: number | null;
 };
+
+const MUSIC_PROVIDERS = new Set(['qq', '163', 'kugou', 'migu', 'kuwo']);
 type SegmentPlan = { text: string; routeTarget: RouteTarget };
 
 let _fetchCached: FetchFn | null = null;
@@ -445,6 +455,123 @@ function _isAdapterSendFailed(result: SendResult | null | undefined): boolean {
   }
 }
 
+function _extractRpcSendMessageId(result: SendResult | null | undefined): string | number | null {
+  if (!result || typeof result !== 'object') return null;
+  const data = result.data && typeof result.data === 'object'
+    ? result.data as Record<string, unknown>
+    : {};
+
+  const direct = data.message_id;
+  if (direct != null && String(direct).trim() && String(direct).trim() !== '0') {
+    return direct as string | number;
+  }
+
+  const nestedData = data.data && typeof data.data === 'object'
+    ? data.data as Record<string, unknown>
+    : {};
+  const nested = nestedData.message_id;
+  if (nested != null && String(nested).trim() && String(nested).trim() !== '0') {
+    return nested as string | number;
+  }
+
+  return null;
+}
+
+function _normalizeMessageIdText(value: unknown): string {
+  if (value == null) return '';
+  const s = String(value).trim();
+  if (!s || s === '0') return '';
+  return s;
+}
+
+function _tryResolvePokeArgs(
+  rawBatch: MessagePart[] | null | undefined,
+  routeKind: 'group' | 'private'
+): [number] | [number, number] | null {
+  if (!Array.isArray(rawBatch) || rawBatch.length !== 1) return null;
+  const seg = rawBatch[0];
+  const type = String(seg?.type || '').trim().toLowerCase();
+  if (type !== 'poke') return null;
+
+  const data = seg?.data && typeof seg.data === 'object'
+    ? seg.data as Record<string, unknown>
+    : {};
+  const userId = Number(String(data.user_id ?? '').trim());
+  const groupId = Number(String(data.group_id ?? '').trim());
+
+  if (!Number.isFinite(userId) || userId <= 0) {
+    throw new Error('poke segment missing valid user_id');
+  }
+
+  if (routeKind === 'group') {
+    if (!Number.isFinite(groupId) || groupId <= 0) {
+      throw new Error('group poke segment missing valid group_id');
+    }
+    return [Math.trunc(userId), Math.trunc(groupId)];
+  }
+
+  return [Math.trunc(userId)];
+}
+
+function _tryResolveRecallMessageId(rawBatch: MessagePart[] | null | undefined): number | null {
+  if (!Array.isArray(rawBatch) || rawBatch.length !== 1) return null;
+  const seg = rawBatch[0];
+  const type = String(seg?.type || '').trim().toLowerCase();
+  if (type !== 'recall') return null;
+
+  const data = seg?.data && typeof seg.data === 'object'
+    ? seg.data as Record<string, unknown>
+    : {};
+  const messageIdRaw = String(data.message_id ?? '').trim();
+  if (!/^\d+$/.test(messageIdRaw)) {
+    throw new Error('recall segment missing valid message_id');
+  }
+
+  let messageIdNum = Number.NaN;
+  try {
+    const bi = BigInt(messageIdRaw);
+    if (bi <= 0n) {
+      throw new Error('recall segment message_id must be > 0');
+    }
+    if (bi > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('recall segment message_id exceeds max safe integer');
+    }
+    messageIdNum = Number(messageIdRaw);
+  } catch (error) {
+    if (error instanceof Error) throw error;
+    throw new Error('recall segment missing valid message_id');
+  }
+
+  if (!Number.isFinite(messageIdNum) || messageIdNum <= 0) {
+    throw new Error('recall segment missing valid message_id');
+  }
+  return Math.trunc(messageIdNum);
+}
+
+function _assertRpcResult(
+  result: SendResult | null | undefined,
+  mode: 'message' | 'poke' | 'recall',
+  routeKind: 'group' | 'private',
+  routeId: string,
+  batchIndex: number,
+  batchTotal: number
+): asserts result is SendResult {
+  const prefix = mode === 'poke'
+    ? 'send poke rpc'
+    : (mode === 'recall' ? 'send recall rpc' : 'send rpc');
+  if (!result) {
+    throw new Error(
+      `${prefix} failed or timed out (route=${routeKind}:${routeId}, batch=${batchIndex}/${batchTotal})`
+    );
+  }
+  if (_isAdapterSendFailed(result)) {
+    const errMsg = String(result?.data?.message || result?.message || 'unknown send failure');
+    throw new Error(
+      `${prefix} returned failed status (route=${routeKind}:${routeId}, batch=${batchIndex}/${batchTotal}, error=${errMsg})`
+    );
+  }
+}
+
 function _toFileUrlIfLikelyLocal(p: unknown): string {
   const s = String(p || '').trim();
   if (!s) return s;
@@ -551,6 +678,8 @@ function _collectUserProvidedTextForCrossAuth(msg: MsgLike): string {
   };
 
   push(msg?.text);
+  push((msg as any)?.summary_text);
+  push((msg as any)?.objective_text);
   push(msg?.summary);
   push(msg?.raw?.text);
   push(msg?.raw?.summary);
@@ -651,1013 +780,436 @@ function _isCrossRouteAllowed(msg: MsgLike, routeTarget: RouteTarget, crossCfg: 
  */
 type SendAndWaitFn = (payload: Record<string, unknown>) => Promise<unknown>;
 
+function _normalizeOutgoingSegment(
+  seg: { type?: string; data?: Record<string, unknown> } | null | undefined,
+  allowReply: boolean,
+  normalizePositiveId: (value: unknown) => string,
+  routeContext?: { kind: 'group' | 'private'; id: string }
+): MessagePart | null {
+  if (!seg || typeof seg !== 'object') return null;
+  const type = String(seg.type || '').trim().toLowerCase();
+  if (!type) return null;
+  const data = seg.data && typeof seg.data === 'object' ? seg.data : {};
+
+  const toSafeIntLike = (digits: string): number | string => {
+    try {
+      const bi = BigInt(digits);
+      if (bi <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(digits);
+      return digits;
+    } catch {
+      const n = Number(digits);
+      return Number.isFinite(n) ? n : digits;
+    }
+  };
+
+  if (type === 'text') {
+    const text = typeof data.text === 'string' ? data.text.trim() : '';
+    if (!text) return null;
+    return { type: 'text', data: { text } };
+  }
+
+  if (type === 'reply') {
+    if (!allowReply) return null;
+    const rid = normalizePositiveId((data as Record<string, unknown>).id);
+    if (!rid) return null;
+    return { type: 'reply', data: { id: toSafeIntLike(rid) } };
+  }
+
+  if (type === 'at') {
+    const rawQq = (data as Record<string, unknown>).qq;
+    const qq = String(rawQq ?? '').trim().toLowerCase();
+    if (!qq) return null;
+    if (qq === 'all') {
+      return { type: 'at', data: { qq: 'all' } };
+    }
+    const qid = normalizePositiveId(rawQq);
+    if (!qid) return null;
+    return { type: 'at', data: { qq: qid } };
+  }
+
+  if (type === 'music') {
+    const provider = String((data as Record<string, unknown>).type ?? '').trim().toLowerCase();
+    if (!provider || !MUSIC_PROVIDERS.has(provider)) return null;
+    const rawId = (data as Record<string, unknown>).id;
+    const idText = rawId == null ? '' : String(rawId).trim();
+    if (!idText) return null;
+    const normalizedId = /^\d+$/.test(idText) ? toSafeIntLike(idText) : idText;
+    return { type: 'music', data: { type: provider, id: normalizedId } };
+  }
+
+  if (type === 'poke') {
+    const userId = normalizePositiveId((data as Record<string, unknown>).user_id);
+    if (!userId) return null;
+    const groupId = normalizePositiveId((data as Record<string, unknown>).group_id);
+    if (routeContext?.kind === 'group') {
+      if (!groupId) return null;
+      if (routeContext.id && groupId !== routeContext.id) return null;
+      return {
+        type: 'poke',
+        data: {
+          user_id: toSafeIntLike(userId),
+          group_id: toSafeIntLike(groupId)
+        }
+      };
+    }
+    if (groupId) return null;
+    return {
+      type: 'poke',
+      data: { user_id: toSafeIntLike(userId) }
+    };
+  }
+
+  if (type === 'recall') {
+    const recallMessageId = normalizePositiveId((data as Record<string, unknown>).message_id);
+    if (!recallMessageId) return null;
+    return {
+      type: 'recall',
+      data: { message_id: toSafeIntLike(recallMessageId) }
+    };
+  }
+
+  if (type === 'image' || type === 'record' || type === 'video' || type === 'file') {
+    const file = String((data as Record<string, unknown>).file ?? '').trim();
+    if (!file) return null;
+    const cleanData = { ...data, file } as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(cleanData, 'message_id')) {
+      delete cleanData.message_id;
+    }
+    return { type, data: cleanData };
+  }
+
+  return null;
+}
+
 async function _smartSendInternal(
   msg: MsgLike,
   response: string,
   sendAndWaitResult: SendAndWaitFn,
   allowReply = true
 ): Promise<unknown> {
-  const parsed = parseSentraResponse(response);
+  const normalizePositiveId = (value: unknown): string => {
+    const s = value != null ? String(value).trim() : '';
+    if (!/^\d+$/.test(s)) return '';
+    try {
+      return BigInt(s) > 0n ? s : '';
+    } catch {
+      const n = Number(s);
+      return Number.isFinite(n) && n > 0 ? s : '';
+    }
+  };
+
+  const parsed = parseSentraMessage(response);
   if (parsed && parsed.shouldSkip) {
-    logger.warn('smartSend: 解析结果标记为 shouldSkip，本次不发送任何内容');
-    return;
-  }
-  const textSegments = Array.isArray(parsed.textSegments) && parsed.textSegments.length > 0
-    ? parsed.textSegments
-    : [response];
-  const protocolResources: SentraResponseResource[] = Array.isArray(parsed.resources) ? parsed.resources : [];
-  const emoji: SentraResponseEmoji | null =
-    parsed && typeof parsed.emoji === 'object' && parsed.emoji ? parsed.emoji : null;
-  const replyMode = parsed.replyMode || 'none';
-  const mentionsBySegment: Record<string, Array<string | number>> =
-    parsed && typeof parsed.mentionsBySegment === 'object' && parsed.mentionsBySegment
-      ? parsed.mentionsBySegment
-      : {};
-  const hasSendDirective = typeof response === 'string' && response.includes('<send>');
-  const sendAndWait = async (payload: Record<string, unknown>) => {
-    return (await sendAndWaitResult(payload)) as SendResult | null | undefined;
-  };
-  const updateIfMessageId = async (res: SendResult | null | undefined, isCurrent: boolean) => {
-    const msgId = res?.data?.message_id;
-    if (isCurrent && msgId != null) {
-      await updateConversationHistory(msg, msgId, true);
-    }
-  };
-
-
-  const normalizeMentionIds = (ids: unknown): string[] => {
-    if (!Array.isArray(ids)) return [];
-    const out: string[] = [];
-    const seen = new Set();
-    for (const mid of ids) {
-      const raw = String(mid ?? '').trim();
-      if (!raw) continue;
-      const lowered = raw.toLowerCase ? raw.toLowerCase() : raw;
-      const normalized = (lowered === '@all') ? 'all' : raw;
-      if (normalized !== 'all' && !/^\d+$/.test(normalized)) continue;
-      if (seen.has(normalized)) continue;
-      seen.add(normalized);
-      out.push(normalized);
-      if (out.length >= 20) break;
-    }
-    return out;
-  };
-
-  const defaultRoute: RouteSpec | null = (parsed && parsed.group_id)
-    ? { kind: 'group', id: String(parsed.group_id) }
-    : ((parsed && parsed.user_id) ? { kind: 'private', id: String(parsed.user_id) } : null);
-
-  const crossCfg = _getCrossChatSendConfig();
-  const maxMediaPartsPerMessage = Math.max(1, Number(_getCfg().maxMediaPartsPerMessage || 8));
-
-  const _splitBatches = <T,>(arr: T[], maxSize: number): T[][] => {
-    const out: T[][] = [];
-    const max = Math.max(1, Number(maxSize || 1));
-    if (!Array.isArray(arr) || arr.length === 0) return out;
-    for (let i = 0; i < arr.length; i += max) {
-      const batch: T[] = [];
-      const limit = Math.min(arr.length, i + max);
-      for (let j = i; j < limit; j++) {
-        const item = arr[j];
-        if (item !== undefined) batch.push(item);
-      }
-      out.push(batch);
-    }
-    return out;
-  };
-
-  logger.debug(`文本段落数: ${textSegments.length}`);
-  logger.debug(`协议资源数: ${protocolResources.length}`);
-  if (emoji) {
-    logger.debug(`表情包: ${emoji.source}`);
+    logger.warn('smartSend: parse result marked shouldSkip, nothing will be sent');
+    return null;
   }
 
-  // 只从AI的resources中提取文件（支持本地路径和 HTTP/HTTPS 链接）
-  const protocolFiles: ProtocolFile[] = [];
-  const linkSegments: LinkSegment[] = [];
-  const segmentCountHint = Array.isArray(textSegments) ? textSegments.length : 0;
-  for (const res of protocolResources) {
-    const parsedRoute = _extractRoutePrefix(String(res.source || ''));
-    const routeTarget = _resolveRouteTargetWithDefault(msg, parsedRoute, defaultRoute);
-    const source = parsedRoute.rest;
+  const packetSegments = Array.isArray((parsed as { message?: unknown[] }).message)
+    ? ((parsed as { message?: Array<{ type?: string; data?: Record<string, unknown> }> }).message || [])
+    : [];
+  if (packetSegments.length === 0) {
+    logger.warn('smartSend(sentra-message): no valid message segments, skip send');
+    return null;
+  }
 
-    logger.debug(`处理协议资源: ${res.type} ${source}`);
-    if (source) {
-      const isHttpUrl = /^https?:\/\//i.test(source);
-      const resolvedLocalPath = (!isHttpUrl) ? _resolveLocalPathFromFileField(source) : '';
-      const segIdxRaw = res && res.segment_index != null ? Number(res.segment_index) : NaN;
-      const segmentIndex = Number.isFinite(segIdxRaw) && segIdxRaw > 0 ? Math.floor(segIdxRaw) : null;
-      const segmentIndexOk = segmentIndex && (segmentCountHint <= 0 || segmentIndex <= segmentCountHint);
+  const explicitGroupId = normalizePositiveId(parsed?.group_id);
+  const explicitUserId = normalizePositiveId(parsed?.user_id);
+  const parsedChatType = typeof parsed?.chat_type === 'string'
+    ? parsed.chat_type.trim().toLowerCase()
+    : '';
+  if (parsedChatType !== 'group' && parsedChatType !== 'private') {
+    logger.warn('smartSend(sentra-message): missing/invalid chat_type, skip send', {
+      chat_type: parsed?.chat_type ?? null
+    });
+    return null;
+  }
 
-      if (segmentIndex && !segmentIndexOk) {
-        logger.warn(`协议资源 segment_index 超出范围，将忽略并按默认顺序发送: ${source}`, {
-          segment_index: segmentIndex,
-          textSegments: segmentCountHint
-        });
-      }
+  let routeKind: 'group' | 'private' = parsedChatType;
+  let routeId = '';
 
-      const normalizedResType = String(res?.type || '').trim().toLowerCase();
-      const isLinkType = normalizedResType === 'link' || normalizedResType === 'url';
+  if (parsedChatType === 'group') {
+    if (explicitUserId) {
+      logger.warn('smartSend(sentra-message): chat_type=group cannot carry user_id, skip send', {
+        group_id: parsed?.group_id ?? null,
+        user_id: parsed?.user_id ?? null
+      });
+      return null;
+    }
+    if (!explicitGroupId) {
+      logger.warn('smartSend(sentra-message): chat_type=group requires valid group_id, skip send', {
+        group_id: parsed?.group_id ?? null
+      });
+      return null;
+    }
+    routeKind = 'group';
+    routeId = explicitGroupId;
+  } else {
+    if (explicitGroupId) {
+      logger.warn('smartSend(sentra-message): chat_type=private cannot carry group_id, skip send', {
+        group_id: parsed?.group_id ?? null,
+        user_id: parsed?.user_id ?? null
+      });
+      return null;
+    }
+    if (!explicitUserId) {
+      logger.warn('smartSend(sentra-message): chat_type=private requires valid user_id, skip send', {
+        user_id: parsed?.user_id ?? null
+      });
+      return null;
+    }
+    routeKind = 'private';
+    routeId = explicitUserId;
+  }
 
-      let httpProbe = null;
-      if (isHttpUrl) {
-        const urlPath = _firstSplitPart(source, '?');
+  if (!routeId) {
+    logger.warn('smartSend(sentra-message): missing valid route target, skip send', {
+      chat_type: parsed?.chat_type ?? null,
+      routeKind,
+      routeId,
+      explicitGroupId: parsed?.group_id ?? null,
+      explicitUserId: parsed?.user_id ?? null
+    });
+    return null;
+  }
 
-        if (isLinkType) {
-          const cap = (typeof res?.caption === 'string' && res.caption.trim()) ? `${res.caption.trim()}\n` : '';
-          linkSegments.push({
-            text: `${cap}${source}`,
-            routeTarget,
-            segmentIndex: segmentIndexOk ? segmentIndex : null
+  const messageParts: MessagePart[] = [];
+  const messagePartSegmentIndexes: number[] = [];
+  for (let si = 0; si < packetSegments.length; si++) {
+    const seg = packetSegments[si];
+    const normalized = _normalizeOutgoingSegment(
+      seg,
+      allowReply,
+      normalizePositiveId,
+      { kind: routeKind, id: routeId }
+    );
+    if (normalized) {
+      messageParts.push(normalized);
+      messagePartSegmentIndexes.push(si + 1);
+    }
+  }
+
+  if (messageParts.length === 0) {
+    logger.warn('smartSend(sentra-message): all segments invalid after normalization, skip send');
+    return null;
+  }
+
+  const hasImageSegment = (parts: MessagePart[] | null | undefined): boolean => {
+    if (!Array.isArray(parts) || parts.length === 0) return false;
+    return parts.some((p) => p && String(p.type || '').trim().toLowerCase() === 'image');
+  };
+
+  const buildSendBatches = (parts: MessagePart[], segmentIndexes: number[]): SendBatchPlan[] => {
+    const batches: SendBatchPlan[] = [];
+    let pendingReply: MessagePart | null = null;
+    let pendingReplySegmentIndex: number | null = null;
+    let pendingAfterReply: MessagePart[] = [];
+    let pendingAfterReplySegmentIndexes: number[] = [];
+    const isReplyAnchor = (type: unknown): boolean => {
+      const t = String(type || '').trim().toLowerCase();
+      return t === 'text' || t === 'image';
+    };
+    const isReplyCompatibleInterSegment = (type: unknown): boolean => {
+      const t = String(type || '').trim().toLowerCase();
+      return t === 'at';
+    };
+    const flushPendingStandalone = () => {
+      if (pendingAfterReply.length > 0) {
+        for (let pi = 0; pi < pendingAfterReply.length; pi++) {
+          const p = pendingAfterReply[pi];
+          const idx = pendingAfterReplySegmentIndexes[pi];
+          if (!p) continue;
+          const segmentIndexesForPart =
+            typeof idx === 'number' && Number.isFinite(idx)
+              ? [idx]
+              : [];
+          batches.push({
+            parts: [p],
+            segmentIndexes: segmentIndexesForPart
           });
-          logger.debug(`HTTP link 资源将作为文本发送: ${source}`);
-          continue;
-        }
-
-        const inferredMime = mimeTypes.lookup(urlPath);
-        const guessedMime = typeof inferredMime === 'string' ? inferredMime : '';
-        const guessedHtml = guessedMime === 'text/html';
-
-        if (!guessedMime || guessedHtml) {
-          try {
-            httpProbe = await _probeHttpResource(source, {
-              timeoutMs: readEnvInt('SEND_HTTP_PROBE_TIMEOUT_MS', 10000),
-              maxBytes: readEnvInt('SEND_HTTP_PROBE_BYTES', 2048)
-            });
-          } catch (e) {
-            logger.warn('HTTP 资源探针失败', { url: source, err: String(e) });
-          }
-
-          if (httpProbe?.isHtml) {
-            const cap = (typeof res?.caption === 'string' && res.caption.trim()) ? `${res.caption.trim()}\n` : '';
-            linkSegments.push({
-              text: `${cap}${source}`,
-              routeTarget,
-              segmentIndex: segmentIndexOk ? segmentIndex : null
-            });
-            logger.debug(`HTTP 资源探测为 HTML，将作为链接文本发送: ${source}`);
-            continue;
-          }
         }
       }
+      pendingAfterReply = [];
+      pendingAfterReplySegmentIndexes = [];
+    };
 
-      // 本地文件：检查是否存在
-      if (!isHttpUrl && (!resolvedLocalPath || !fs.existsSync(resolvedLocalPath))) {
-        logger.warn(`协议资源文件不存在: ${source}`, {
-          resolvedLocalPath: resolvedLocalPath || '(empty)'
+    for (let pidx = 0; pidx < parts.length; pidx++) {
+      const part = parts[pidx];
+      const segmentIndex = Number(segmentIndexes[pidx]);
+      if (!part) continue;
+      const type = String(part.type || '').trim().toLowerCase();
+
+      if (type === 'reply') {
+        if (pendingReply) {
+          logger.warn('smartSend(sentra-message): found unresolved reply before next anchor; drop previous unresolved reply');
+          flushPendingStandalone();
+        }
+        pendingReply = part;
+        pendingReplySegmentIndex = Number.isFinite(segmentIndex) ? segmentIndex : null;
+        pendingAfterReply = [];
+        pendingAfterReplySegmentIndexes = [];
+        continue;
+      }
+
+      if (!pendingReply) {
+        batches.push({
+          parts: [part],
+          segmentIndexes: Number.isFinite(segmentIndex) ? [segmentIndex] : []
         });
         continue;
       }
 
-      // 提取文件扩展名（支持 URL 中的扩展名）
-      let ext = '';
-      if (isHttpUrl) {
-        // 从 URL 中提取扩展名（去除查询参数）
-        const urlPath = _firstSplitPart(source, '?');
-        ext = path.extname(urlPath).toLowerCase();
-      } else {
-        ext = path.extname(resolvedLocalPath || source).toLowerCase();
+      if (isReplyAnchor(type)) {
+        const groupedIndexes: number[] = [];
+        if (pendingReplySegmentIndex != null) groupedIndexes.push(pendingReplySegmentIndex);
+        groupedIndexes.push(...pendingAfterReplySegmentIndexes.filter((x) => Number.isFinite(x)));
+        if (Number.isFinite(segmentIndex)) groupedIndexes.push(segmentIndex);
+        batches.push({
+          parts: [pendingReply, ...pendingAfterReply, part],
+          segmentIndexes: groupedIndexes
+        });
+        pendingReply = null;
+        pendingReplySegmentIndex = null;
+        pendingAfterReply = [];
+        pendingAfterReplySegmentIndexes = [];
+        continue;
       }
 
-      // 根据扩展名 / 探针 / magic number 判断文件类型
-      let fileType = 'file';
-      {
-        const inferredMime = mimeTypes.lookup(isHttpUrl ? _firstSplitPart(source, '?') : (resolvedLocalPath || source));
-        const mime = typeof inferredMime === 'string' ? inferredMime : '';
-        const forcedByResType = (() => {
-          if (normalizedResType === 'image') return 'image';
-          if (normalizedResType === 'video') return 'video';
-          if (normalizedResType === 'record' || normalizedResType === 'audio') return 'record';
-          return '';
-        })();
-
-        if (forcedByResType) {
-          fileType = forcedByResType;
-        } else if (httpProbe?.mime) {
-          fileType = _inferFileTypeFromMime(httpProbe.mime);
-        } else if (mime) {
-          fileType = _inferFileTypeFromMime(mime);
-        } else if (!isHttpUrl && resolvedLocalPath) {
-          const localProbe = _probeLocalFileType(resolvedLocalPath);
-          if (localProbe?.ok) fileType = localProbe.fileType;
-        }
+      if (isReplyCompatibleInterSegment(type)) {
+        pendingAfterReply.push(part);
+        if (Number.isFinite(segmentIndex)) pendingAfterReplySegmentIndexes.push(segmentIndex);
+        continue;
       }
 
-      // 提取文件名
-      let fileName = '';
-      if (isHttpUrl) {
-        const urlPath = _firstSplitPart(source, '?');
-        fileName = (httpProbe?.fileNameFromCd || '').trim() || path.basename(urlPath) || 'download';
-      } else {
-        fileName = path.basename(resolvedLocalPath || source);
-      }
-
-      if (isHttpUrl && httpProbe?.ext) {
-        const currentExt = path.extname(fileName).toLowerCase();
-        if (!currentExt) {
-          fileName = `${fileName}${httpProbe.ext}`;
-        }
-      }
-
-      const fileItem: ProtocolFile = {
-        type: normalizedResType,
-        path: isHttpUrl ? source : (resolvedLocalPath || source),
-        fileName: fileName,
-        fileType,
-        isHttpUrl,  // 标记是否为 HTTP 链接
-        routeTarget,
-        segmentIndex: segmentIndexOk ? segmentIndex : null
-      };
-      if (typeof res.caption === 'string' && res.caption.trim()) {
-        fileItem.caption = res.caption;
-      }
-      protocolFiles.push(fileItem);
-
-      if (isHttpUrl) {
-        logger.debug(`添加 HTTP 资源: ${fileType} ${fileName} (${source})`);
-      } else {
-        logger.debug(`添加本地文件: ${fileType} ${fileName}`);
-      }
-    }
-  }
-
-  // 解析文本段落
-  const segments: SegmentPlan[] = parseTextSegments(textSegments)
-    .map((seg) => {
-      const extracted = _extractRoutePrefix(seg?.text || '');
-      const routeTarget = _resolveRouteTargetWithDefault(msg, extracted, defaultRoute);
-      return {
-        text: extracted.rest,
-        routeTarget
-      };
-    })
-    .filter((seg): seg is SegmentPlan => !!seg && typeof seg.text === 'string' && seg.text.trim().length > 0);
-  const linkSendPlans: LinkSegment[] = [];
-  if (linkSegments.length) {
-    for (const s of linkSegments) {
-      if (!s || typeof s.text !== 'string' || !s.text.trim()) continue;
-      linkSendPlans.push({
-        text: s.text,
-        routeTarget: s.routeTarget,
-        segmentIndex: s.segmentIndex
+      logger.warn('smartSend(sentra-message): reply anchor must be text/image; unresolved reply dropped due to incompatible segment type', {
+        incompatibleType: type || '(empty)'
+      });
+      pendingReply = null;
+      pendingReplySegmentIndex = null;
+      flushPendingStandalone();
+      batches.push({
+        parts: [part],
+        segmentIndexes: Number.isFinite(segmentIndex) ? [segmentIndex] : []
       });
     }
+
+    if (pendingReply) {
+      logger.warn('smartSend(sentra-message): unresolved reply without text/image anchor, drop reply segment');
+      flushPendingStandalone();
+    }
+
+    return batches;
+  };
+
+  const sendBatches = buildSendBatches(messageParts, messagePartSegmentIndexes);
+  if (sendBatches.length === 0) {
+    logger.warn('smartSend(sentra-message): no sendable batches after composition, skip send');
+    return null;
   }
 
-  //logger.debug(`文本段落数: ${segments.length}`);
-  //logger.debug(`资源文件数: ${protocolFiles.length}`);
-  segments.forEach((seg, i) => {
-    //logger.debug(`  段落${i+1}: "${seg.text.slice(0, 60)}${seg.text.length > 60 ? '...' : ''}"`);
-  });
-  protocolFiles.forEach((f, i) => {
-    //logger.debug(`  文件${i+1}: ${f.fileName} (${f.fileType})`);
-  });
-
-  if (segments.length === 0 && protocolFiles.length === 0 && !emoji) {
-    logger.warn('无内容可发送');
-    return;
-  }
-
-  // 更新用户消息历史
   await updateConversationHistory(msg);
+  let lastResult: SendResult | null | undefined = null;
+  const segmentDeliveryMap = new Map<number, string>();
+  const rpcPath = routeKind === 'group' ? 'send.group' : 'send.private';
+  const targetId = Number(routeId);
 
-  // 决定发送策略
-  const isPrivateChat = msg.type === 'private';
-  const isGroupChat = msg.type === 'group';
-  const selfId = msg?.self_id;
-  const userAtSelf = isGroupChat && Array.isArray(msg?.at_users) && typeof selfId === 'number' && msg.at_users.includes(selfId);
-  const finalReplyMode = hasSendDirective ? replyMode : 'none';
+  for (let i = 0; i < sendBatches.length; i++) {
+    const batch = sendBatches[i];
+    const rawBatch = batch?.parts;
+    if (!Array.isArray(rawBatch) || rawBatch.length === 0) continue;
 
-  // Model-controlled quoting: only quote when <send> is present AND a valid <reply_to_message_id> is provided.
-  // If parsing fails or id is missing/invalid, we MUST NOT quote.
-  const replyMessageId = (allowReply && hasSendDirective && parsed?.replyToMessageId)
-    ? String(parsed.replyToMessageId)
-    : null;
-  let usedReply = false;
-
-  const emojiSegIdxRaw = emoji && emoji.segment_index != null ? Number(emoji.segment_index) : NaN;
-  const emojiSegmentIndex = Number.isFinite(emojiSegIdxRaw) && emojiSegIdxRaw > 0 ? Math.floor(emojiSegIdxRaw) : null;
-  let emojiSentInSegmentFlow = false;
-
-  logger.debug(`发送策略: 段落=${segments.length}, replyMode=${finalReplyMode}(${hasSendDirective ? 'by_send' : 'fallback'}), allowReply=${allowReply}, replyTo=${replyMessageId || '(none)'}`);
-
-  let skippedCrossRouteCount = 0;
-  let crossOps = 0;
-
-  const attachedFilesBySegAndTarget = new Map<string, ProtocolFile[]>();
-  const attachedLinksBySegAndTarget = new Map<string, LinkSegment[]>();
-  const deferredProtocolFiles: ProtocolFile[] = [];
-  for (const f of protocolFiles) {
-    const rt = f?.routeTarget || _resolveRouteTarget(msg, { kind: 'current', id: '' });
-    const segIdx = Number(f?.segmentIndex || 0);
-    if (segIdx > 0 && segments.length > 0 && segIdx <= segments.length) {
-      const k = `${segIdx}|${rt.kind}:${rt.id}`;
-      const list = attachedFilesBySegAndTarget.get(k);
-      if (list) {
-        list.push(f);
-      } else {
-        attachedFilesBySegAndTarget.set(k, [f]);
-      }
-    } else {
-      deferredProtocolFiles.push(f);
+    const recallMessageId = _tryResolveRecallMessageId(rawBatch);
+    if (recallMessageId != null) {
+      const result = await sendAndWaitResult({
+        type: 'sdk',
+        path: 'message.recall',
+        args: [recallMessageId],
+        requestId: `${routeKind}-recall-v1-${Date.now()}-${i + 1}`
+      }) as SendResult | null | undefined;
+      _assertRpcResult(result, 'recall', routeKind, routeId, i + 1, sendBatches.length);
+      lastResult = result;
+      await updateConversationHistory(msg, null, true);
+      continue;
     }
-  }
-  for (const l of linkSendPlans) {
-    const rt = l?.routeTarget || _resolveRouteTarget(msg, { kind: 'current', id: '' });
-    const segIdx = Number(l?.segmentIndex || 0);
-    if (segIdx > 0 && segments.length > 0 && segIdx <= segments.length) {
-      const k = `${segIdx}|${rt.kind}:${rt.id}`;
-      const list = attachedLinksBySegAndTarget.get(k);
-      if (list) {
-        list.push(l);
-      } else {
-        attachedLinksBySegAndTarget.set(k, [l]);
+
+    const pokeArgs = _tryResolvePokeArgs(rawBatch, routeKind);
+    if (pokeArgs) {
+      const result = await sendAndWaitResult({
+        type: 'sdk',
+        path: 'user.sendPoke',
+        args: pokeArgs,
+        requestId: `${routeKind}-poke-v1-${Date.now()}-${i + 1}`
+      }) as SendResult | null | undefined;
+      _assertRpcResult(result, 'poke', routeKind, routeId, i + 1, sendBatches.length);
+      lastResult = result;
+      const sentMid = _extractRpcSendMessageId(result);
+      const sentMidText = _normalizeMessageIdText(sentMid);
+      if (sentMidText && Array.isArray(batch?.segmentIndexes)) {
+        for (const idx of batch.segmentIndexes) {
+          if (Number.isFinite(idx) && idx > 0) segmentDeliveryMap.set(Math.floor(idx), sentMidText);
+        }
       }
-    } else {
-      segments.push({ text: l.text, routeTarget: rt });
+      await updateConversationHistory(msg, sentMid, true);
+      continue;
     }
-  }
 
-  // 发送文本段落
-  if (segments.length > 0) {
-    for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i];
-      if (!segment) continue;
-      const routeTarget = segment?.routeTarget || _resolveRouteTarget(msg, { kind: 'current', id: '' });
+    const normalizedBatchRaw = _withNormalizedFileField(rawBatch);
+    let normalizedBatch = Array.isArray(normalizedBatchRaw) && normalizedBatchRaw.length > 0
+      ? normalizedBatchRaw
+      : rawBatch;
 
-      if (!routeTarget?.id) {
-        logger.warn('发送目标缺少 id，已跳过该段', { kind: routeTarget?.kind });
-        continue;
-      }
+    const requestId = `${routeKind}-msg-v2-${Date.now()}-${i + 1}`;
+    let result = await sendAndWaitResult({
+      type: 'sdk',
+      path: rpcPath,
+      args: [targetId, normalizedBatch],
+      requestId
+    }) as SendResult | null | undefined;
 
-      if (!_isCrossRouteAllowed(msg, routeTarget, crossCfg)) {
-        skippedCrossRouteCount++;
-        continue;
-      }
-
-      if (!routeTarget.isCurrent) {
-        if (crossOps >= crossCfg.maxCrossOpsPerResponse) {
-          skippedCrossRouteCount++;
-          continue;
-        }
-        crossOps++;
-      }
-
-      let messageParts: MessagePart[] = buildSegmentMessage(segment);
-
-      if (messageParts.length === 0) continue;
-      const segKey = `${i + 1}|${routeTarget.kind}:${routeTarget.id}`;
-
-      logger.debug(`发送第${i + 1}段: ${messageParts.map(p => p.type).join(', ')}`);
-
-      const isGroupTarget = routeTarget.kind === 'group';
-      const isPrivateTarget = routeTarget.kind === 'private';
-
-      // 仅在“当前会话”中允许 mentions（避免跨群误 @）
-      const segMentions = (() => {
-        if (!hasSendDirective) return [];
-        if (!routeTarget.isCurrent || !isGroupTarget) return [];
-        const bySeg = mentionsBySegment && typeof mentionsBySegment === 'object' ? mentionsBySegment[String(i + 1)] : null;
-        return normalizeMentionIds(bySeg);
-      })();
-
-      if (segMentions.length > 0) {
-        const atParts: MessagePart[] = segMentions.map((qq) => ({ type: 'at', data: { qq } }));
-        messageParts = [
-          ...atParts,
-          { type: 'text', data: { text: ' ' } },
-          ...messageParts
-        ];
-      }
-
-      let sentMessageId = null;
-
-      // 根据协议选择是否使用引用回复
-      const wantReply = routeTarget.isCurrent && replyMessageId && allowReply && (
-        (finalReplyMode === 'always') || (finalReplyMode === 'first' && i === 0)
-      );
-      if (wantReply) {
-        if (isPrivateTarget) {
-          const result = await sendAndWait({
-            type: "sdk",
-            path: "send.privateReply",
-            args: [Number(routeTarget.id), replyMessageId, messageParts],
-            requestId: `private-reply-${Date.now()}-${i}`
-          });
-          sentMessageId = result?.data?.message_id;
-        } else if (isGroupTarget) {
-          const result = await sendAndWait({
-            type: "sdk",
-            path: "send.groupReply",
-            args: [Number(routeTarget.id), replyMessageId, messageParts],
-            requestId: `group-reply-${Date.now()}-${i}`
-          });
-          sentMessageId = result?.data?.message_id;
-        }
-        usedReply = true;
-      } else {
-        // 普通发送
-        if (isPrivateTarget) {
-          const result = await sendAndWait({
-            type: "sdk",
-            path: "send.private",
-            args: [Number(routeTarget.id), messageParts],
-            requestId: `private-${Date.now()}-${i}`
-          });
-          sentMessageId = result?.data?.message_id;
-        } else if (isGroupTarget) {
-          const result = await sendAndWait({
-            type: "sdk",
-            path: "send.group",
-            args: [Number(routeTarget.id), messageParts],
-            requestId: `group-${Date.now()}-${i}`
-          });
-          sentMessageId = result?.data?.message_id;
-        }
-      }
-
-      // 更新消息历史（仅对当前会话写入，避免跨群污染）
-      if (routeTarget.isCurrent && sentMessageId) {
-        await updateConversationHistory(msg, sentMessageId, true);
-        logger.debug(`第${i + 1}段发送成功，消息ID: ${sentMessageId}`);
-      }
-
-      const attachedLinks: LinkSegment[] = attachedLinksBySegAndTarget.get(segKey) || [];
-      const attachedFiles: ProtocolFile[] = attachedFilesBySegAndTarget.get(segKey) || [];
-
-      if (attachedLinks.length > 0) {
-        const isGroupTarget2 = routeTarget.kind === 'group';
-        const replyForAddon = routeTarget.isCurrent && replyMessageId && allowReply && (
-          finalReplyMode === 'always' || (finalReplyMode === 'first' && !usedReply)
-        );
-
-        for (const l of attachedLinks) {
-          const addonText = String(l?.text || '').trim();
-          if (!addonText) continue;
-          const delay = 200 + Math.random() * 500;
-          await new Promise(resolve => setTimeout(resolve, delay));
-          const parts: MessagePart[] = buildSegmentMessage({ text: addonText });
-          if (parts.length === 0) continue;
-          if (routeTarget.kind === 'private') {
-            const result = await sendAndWait({
-              type: "sdk",
-              path: replyForAddon ? "send.privateReply" : "send.private",
-              args: replyForAddon ? [Number(routeTarget.id), replyMessageId, parts] : [Number(routeTarget.id), parts],
-              requestId: `private-link-${Date.now()}-${i}`
-            });
-            if (routeTarget.isCurrent && result?.data?.message_id) {
-              await updateConversationHistory(msg, result.data.message_id, true);
-            }
-            if (replyForAddon) usedReply = true;
-          } else if (isGroupTarget2) {
-            const result = await sendAndWait({
-              type: "sdk",
-              path: replyForAddon ? "send.groupReply" : "send.group",
-              args: replyForAddon ? [Number(routeTarget.id), replyMessageId, parts] : [Number(routeTarget.id), parts],
-              requestId: `group-link-${Date.now()}-${i}`
-            });
-            if (routeTarget.isCurrent && result?.data?.message_id) {
-              await updateConversationHistory(msg, result.data.message_id, true);
-            }
-            if (replyForAddon) usedReply = true;
-          }
-        }
-      }
-
-      if (attachedFiles.length > 0) {
-        const delay = 200 + Math.random() * 700;
-        await new Promise(resolve => setTimeout(resolve, delay));
-
-        const mediaParts: MessagePart[] = [];
-        const normalFiles: ProtocolFile[] = [];
-        const mediaFilesOnly: ProtocolFile[] = [];
-        for (const file of attachedFiles) {
-          const fileType = file.fileType || '';
-          if (['image', 'video', 'record'].includes(fileType)) {
-            mediaFilesOnly.push(file);
-            if (fileType === 'image') mediaParts.push({ type: 'image', data: { file: _toFileUrlIfLikelyLocal(file.path) } });
-            else if (fileType === 'video') mediaParts.push({ type: 'video', data: { file: _toFileUrlIfLikelyLocal(file.path) } });
-            else if (fileType === 'record') mediaParts.push({ type: 'record', data: { file: _toFileUrlIfLikelyLocal(file.path) } });
-          } else {
-            normalFiles.push(file);
-          }
-        }
-
-        const shouldReplyForMedia = routeTarget.isCurrent && replyMessageId && allowReply && (
-          finalReplyMode === 'always' || (finalReplyMode === 'first' && !usedReply)
-        );
-
-        if (mediaParts.length > 0) {
-          const batches = _splitBatches(mediaParts, maxMediaPartsPerMessage);
-          logger.debug(`分批发送媒体: 总数=${mediaParts.length}, 单批上限=${maxMediaPartsPerMessage}, 批次数=${batches.length}`);
-
-          const shouldAttachCaptionToSingleImage = (() => {
-            if (mediaFilesOnly.length !== 1) return false;
-            const f = mediaFilesOnly[0];
-            if (!f || f.fileType !== 'image') return false;
-            const cap = typeof f.caption === 'string' ? f.caption.trim() : '';
-            if (!cap) return false;
-            return true;
-          })();
-          const firstMedia = mediaFilesOnly[0];
-          const singleImageCaption = shouldAttachCaptionToSingleImage && firstMedia && typeof firstMedia.caption === 'string'
-            ? firstMedia.caption.trim()
-            : '';
-
-          for (let bi = 0; bi < batches.length; bi++) {
-            const batch = batches[bi];
-            const useReply = shouldReplyForMedia && !usedReply;
-            const requestId = `${routeTarget.kind}-segmedia-${Date.now()}-${i}-${bi}`;
-            let partsToSend = batch;
-            if (shouldAttachCaptionToSingleImage && bi === 0 && Array.isArray(batch) && batch.length === 1 && batch[0]?.type === 'image') {
-              partsToSend = [{ type: 'text', data: { text: singleImageCaption } }, ...batch];
-            }
-            let normalizedParts = _withNormalizedFileField(partsToSend);
-            let result = await sendAndWait({
-              type: "sdk",
-              path: routeTarget.kind === 'private'
-                ? (useReply ? "send.privateReply" : "send.private")
-                : (useReply ? "send.groupReply" : "send.group"),
-              args: routeTarget.kind === 'private'
-                ? (useReply ? [Number(routeTarget.id), replyMessageId, normalizedParts] : [Number(routeTarget.id), normalizedParts])
-                : (useReply ? [Number(routeTarget.id), replyMessageId, normalizedParts] : [Number(routeTarget.id), normalizedParts]),
-              requestId
-            });
-            if (result && _isAdapterSendFailed(result)) {
-              const fb = _withBase64FallbackForImages(normalizedParts);
-              if (fb.changed) {
-                const retryId = `${requestId}-base64`;
-                normalizedParts = fb.parts;
-                result = await sendAndWait({
-                  type: "sdk",
-                  path: routeTarget.kind === 'private'
-                    ? (useReply ? "send.privateReply" : "send.private")
-                    : (useReply ? "send.groupReply" : "send.group"),
-                  args: routeTarget.kind === 'private'
-                    ? (useReply ? [Number(routeTarget.id), replyMessageId, normalizedParts] : [Number(routeTarget.id), normalizedParts])
-                    : (useReply ? [Number(routeTarget.id), replyMessageId, normalizedParts] : [Number(routeTarget.id), normalizedParts]),
-                  requestId: retryId
-                });
-              }
-            }
-            if (useReply) usedReply = true;
-            if (routeTarget.isCurrent && result?.data?.message_id) {
-              await updateConversationHistory(msg, result.data.message_id, true);
-            }
-            if (bi < batches.length - 1) {
-              const gap = 250 + Math.random() * 700;
-              await new Promise(resolve => setTimeout(resolve, gap));
-            }
-          }
-        }
-
-        if (normalFiles.length > 0) {
-          const delay2 = 200 + Math.random() * 800;
-          await new Promise(resolve => setTimeout(resolve, delay2));
-          for (const file of normalFiles) {
-            const fileField = _toFileUrlIfLikelyLocal(file.path);
-            const requestId = `segfile-${routeTarget.kind}-${Date.now()}-${i}`;
-            let result = await sendAndWait({
-              type: "sdk",
-              path: routeTarget.kind === 'private' ? "file.uploadPrivate" : "file.uploadGroup",
-              args: routeTarget.kind === 'private'
-                ? [Number(routeTarget.id), fileField, file.fileName]
-                : [Number(routeTarget.id), fileField, file.fileName, ""],
-              requestId
-            });
-            if (result && _isAdapterSendFailed(result)) {
-              const b64 = _readBase64FileIfAllowed(fileField);
-              if (b64) {
-                result = await sendAndWait({
-                  type: "sdk",
-                  path: routeTarget.kind === 'private' ? "file.uploadPrivate" : "file.uploadGroup",
-                  args: routeTarget.kind === 'private'
-                    ? [Number(routeTarget.id), b64, file.fileName]
-                    : [Number(routeTarget.id), b64, file.fileName, ""],
-                  requestId: `${requestId}-base64`
-                });
-              }
-            }
-            await new Promise(resolve => setTimeout(resolve, 300));
-          }
-        }
-      }
-
-      if (!emojiSentInSegmentFlow && emoji && emoji.source && emojiSegmentIndex && emojiSegmentIndex === (i + 1)) {
-        const extracted = _extractRoutePrefix(String(emoji.source || ''));
-        const rt = _resolveRouteTargetWithDefault(msg, extracted, defaultRoute);
-        const emojiPath = extracted.rest;
-
-        if (rt?.id && _isCrossRouteAllowed(msg, rt, crossCfg)) {
-          if (!rt.isCurrent) {
-            if (crossOps >= crossCfg.maxCrossOpsPerResponse) {
-              skippedCrossRouteCount++;
-            } else {
-              crossOps++;
-            }
-          }
-
-          if (rt?.id && (rt.isCurrent || crossOps <= crossCfg.maxCrossOpsPerResponse)) {
-            if (fs.existsSync(emojiPath)) {
-              const delay3 = 200 + Math.random() * 800;
-              await new Promise(resolve => setTimeout(resolve, delay3));
-
-              const emojiMessageParts: MessagePart[] = [
-                { type: 'image', data: { file: _toFileUrlIfLikelyLocal(emojiPath) } }
-              ];
-
-              if (rt.kind === 'private') {
-                const requestId = `private-emoji-${Date.now()}`;
-                let normalizedParts = _withNormalizedFileField(emojiMessageParts);
-                let result = await sendAndWait({
-                  type: "sdk",
-                  path: "send.private",
-                  args: [Number(rt.id), normalizedParts],
-                  requestId
-                });
-                if (result && _isAdapterSendFailed(result)) {
-                  const fb = _withBase64FallbackForImages(normalizedParts);
-                  if (fb.changed) {
-                    const retryId = `${requestId}-base64`;
-                    normalizedParts = fb.parts;
-                    result = await sendAndWait({
-                      type: "sdk",
-                      path: "send.private",
-                      args: [Number(rt.id), normalizedParts],
-                      requestId: retryId
-                    });
-                  }
-                }
-              } else if (rt.kind === 'group') {
-                const requestId = `group-emoji-${Date.now()}`;
-                let normalizedParts = _withNormalizedFileField(emojiMessageParts);
-                let result = await sendAndWait({
-                  type: "sdk",
-                  path: "send.group",
-                  args: [Number(rt.id), normalizedParts],
-                  requestId
-                });
-                if (result && _isAdapterSendFailed(result)) {
-                  const fb = _withBase64FallbackForImages(normalizedParts);
-                  if (fb.changed) {
-                    const retryId = `${requestId}-base64`;
-                    normalizedParts = fb.parts;
-                    result = await sendAndWait({
-                      type: "sdk",
-                      path: "send.group",
-                      args: [Number(rt.id), normalizedParts],
-                      requestId: retryId
-                    });
-                  }
-                }
-              }
-
-              emojiSentInSegmentFlow = true;
-              if (rt.isCurrent && replyMessageId && allowReply && finalReplyMode === 'first') {
-                usedReply = true;
-              }
-            } else {
-              logger.warn(`表情包文件不存在: ${emojiPath}`);
-            }
-          }
-        }
-      }
-
-      if (i < segments.length - 1) {
-        const delay = 800 + Math.random() * 2200; // 0.8-3秒随机间隔
-        logger.debug(`等待 ${Math.round(delay)}ms 后发送下一段`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+    const shouldTryImageFallback = (!result || _isAdapterSendFailed(result)) && hasImageSegment(normalizedBatch);
+    if (shouldTryImageFallback) {
+      const fallback = _withBase64FallbackForImages(normalizedBatch);
+      if (fallback.changed && Array.isArray(fallback.parts) && fallback.parts.length > 0) {
+        const retryRequestId = `${routeKind}-msg-v2-${Date.now()}-${i + 1}-b64`;
+        normalizedBatch = fallback.parts;
+        result = await sendAndWaitResult({
+          type: 'sdk',
+          path: rpcPath,
+          args: [targetId, normalizedBatch],
+          requestId: retryRequestId
+        }) as SendResult | null | undefined;
       }
     }
+
+    _assertRpcResult(result, 'message', routeKind, routeId, i + 1, sendBatches.length);
+
+    lastResult = result;
+    const sentMid = _extractRpcSendMessageId(result);
+    const sentMidText = _normalizeMessageIdText(sentMid);
+    if (sentMidText && Array.isArray(batch?.segmentIndexes)) {
+      for (const idx of batch.segmentIndexes) {
+        if (Number.isFinite(idx) && idx > 0) segmentDeliveryMap.set(Math.floor(idx), sentMidText);
+      }
+    }
+    await updateConversationHistory(msg, sentMid, true);
   }
 
-  // 分类文件：媒体文件 vs 普通文件
-  const mediaFiles: ProtocolFile[] = deferredProtocolFiles.filter((f) => ['image', 'video', 'record'].includes(f.fileType || ''));
-  const uploadFiles: ProtocolFile[] = deferredProtocolFiles.filter((f) => f.fileType === 'file');
+  const segmentMessageIds = Array.from(segmentDeliveryMap.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([segmentIndex, messageId]) => ({ segmentIndex, messageId }));
 
-  logger.debug(`媒体文件: ${mediaFiles.length}个, 普通文件: ${uploadFiles.length}个`);
-
-  // 发送媒体文件（图片、视频、语音）
-  if (mediaFiles.length > 0) {
-    if (segments.length > 0) {
-      const delay = 800 + Math.random() * 800;
-      logger.debug(`等待 ${Math.round(delay)}ms 后发送媒体`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-
-    const grouped = new Map<string, { routeTarget: RouteTarget; files: ProtocolFile[] }>();
-    for (const file of mediaFiles) {
-      const rt = file?.routeTarget || _resolveRouteTarget(msg, { kind: 'current', id: '' });
-      if (!rt?.id) {
-        skippedCrossRouteCount++;
-        continue;
+  if (lastResult && typeof lastResult === 'object') {
+    return {
+      ...lastResult,
+      __sentraDeliveryMeta: {
+        segmentMessageIds
       }
-      if (!_isCrossRouteAllowed(msg, rt, crossCfg)) {
-        skippedCrossRouteCount++;
-        continue;
-      }
-      if (!rt.isCurrent) {
-        if (crossOps >= crossCfg.maxCrossOpsPerResponse) {
-          skippedCrossRouteCount++;
-          continue;
-        }
-        crossOps++;
-      }
-      const key = rt.kind + ':' + rt.id;
-      const bucket = grouped.get(key);
-      if (bucket) {
-        bucket.files.push(file);
-      } else {
-        grouped.set(key, { routeTarget: rt, files: [file] });
-      }
-    }
-
-    for (const group of grouped.values()) {
-      const rt = group.routeTarget;
-      const mediaMessageParts: MessagePart[] = [];
-      group.files.forEach((file: ProtocolFile) => {
-        const fileType = file.fileType || '';
-        logger.debug('添加媒体: ' + fileType + ' - ' + (file.fileName || ''));
-        if (fileType === 'image') {
-          mediaMessageParts.push({ type: 'image', data: { file: _toFileUrlIfLikelyLocal(file.path) } });
-        } else if (fileType === 'video') {
-          mediaMessageParts.push({ type: 'video', data: { file: _toFileUrlIfLikelyLocal(file.path) } });
-        } else if (fileType === 'record') {
-          mediaMessageParts.push({ type: 'record', data: { file: _toFileUrlIfLikelyLocal(file.path) } });
-        }
-      });
-
-      if (mediaMessageParts.length === 0) continue;
-
-      if (segments.length === 0 && hasSendDirective && rt.isCurrent && rt.kind === 'group') {
-        const ids = mentionsBySegment && typeof mentionsBySegment === 'object' ? mentionsBySegment['1'] : null;
-        const segMentions = normalizeMentionIds(ids);
-        if (segMentions.length > 0) {
-          const atParts: MessagePart[] = segMentions.map((qq) => ({ type: 'at', data: { qq } }));
-          mediaMessageParts.unshift(...atParts);
-        }
-      }
-
-      const replyForMedia = rt.isCurrent && replyMessageId && allowReply && (
-        finalReplyMode === 'always' || (finalReplyMode === 'first' && !usedReply)
-      );
-
-      const prefixParts: MessagePart[] = [];
-      const mediaOnlyParts: MessagePart[] = [...mediaMessageParts];
-      while (mediaOnlyParts.length > 0 && mediaOnlyParts[0] && mediaOnlyParts[0].type === 'at') {
-        const shifted = mediaOnlyParts.shift();
-        if (shifted) prefixParts.push(shifted);
-      }
-      const mediaBatches = _splitBatches(mediaOnlyParts, maxMediaPartsPerMessage);
-
-      for (let bi = 0; bi < mediaBatches.length; bi++) {
-        const batch = mediaBatches[bi];
-        if (!Array.isArray(batch) || batch.length === 0) continue;
-        const useReply = replyForMedia && !usedReply;
-        const requestId = `${rt.kind}-media-${Date.now()}-${bi}`;
-        const parts = (bi === 0 && prefixParts.length > 0) ? [...prefixParts, ...batch] : batch;
-        let normalizedParts = _withNormalizedFileField(parts);
-        let result = await sendAndWait({
-          type: "sdk",
-          path: rt.kind === 'private'
-            ? (useReply ? "send.privateReply" : "send.private")
-            : (useReply ? "send.groupReply" : "send.group"),
-          args: rt.kind === 'private'
-            ? (useReply ? [Number(rt.id), replyMessageId, normalizedParts] : [Number(rt.id), normalizedParts])
-            : (useReply ? [Number(rt.id), replyMessageId, normalizedParts] : [Number(rt.id), normalizedParts]),
-          requestId
-        });
-        if (result && _isAdapterSendFailed(result)) {
-          const fb = _withBase64FallbackForImages(normalizedParts);
-          if (fb.changed) {
-            const retryId = `${requestId}-base64`;
-            normalizedParts = fb.parts;
-            result = await sendAndWait({
-              type: "sdk",
-              path: rt.kind === 'private'
-                ? (useReply ? "send.privateReply" : "send.private")
-                : (useReply ? "send.groupReply" : "send.group"),
-              args: rt.kind === 'private'
-                ? (useReply ? [Number(rt.id), replyMessageId, normalizedParts] : [Number(rt.id), normalizedParts])
-                : (useReply ? [Number(rt.id), replyMessageId, normalizedParts] : [Number(rt.id), normalizedParts]),
-              requestId: retryId
-            });
-          }
-        }
-        if (useReply) usedReply = true;
-        logger.debug('媒体发送结果', {
-          ok: !!result?.ok,
-          requestId,
-          target: { kind: rt.kind, id: String(rt.id), isCurrent: !!rt.isCurrent },
-          message_id: result?.data?.message_id,
-          data: result?.data
-        });
-        if (bi < mediaBatches.length - 1) {
-          const gap = 350 + Math.random() * 900;
-          await new Promise(resolve => setTimeout(resolve, gap));
-        }
-      }
-    }
+    };
   }
-
-  // 上传普通文件
-  if (uploadFiles.length > 0) {
-    logger.debug(`准备上传 ${uploadFiles.length} 个普通文件`);
-
-    const delay = 1000 + Math.random() * 1000;
-    await new Promise(resolve => setTimeout(resolve, delay));
-
-    for (const file of uploadFiles) {
-      logger.debug(`上传文件: ${file.fileName}`);
-
-      const rt = file?.routeTarget || _resolveRouteTarget(msg, { kind: 'current', id: '' });
-      if (!rt?.id) {
-        skippedCrossRouteCount++;
-        continue;
-      }
-
-      if (!_isCrossRouteAllowed(msg, rt, crossCfg)) {
-        skippedCrossRouteCount++;
-        continue;
-      }
-
-      if (!rt.isCurrent) {
-        if (crossOps >= crossCfg.maxCrossOpsPerResponse) {
-          skippedCrossRouteCount++;
-          continue;
-        }
-        crossOps++;
-      }
-
-      if (rt.kind === 'private') {
-        const requestId = `file-upload-private-${Date.now()}`;
-        const fileField = _toFileUrlIfLikelyLocal(file.path);
-        let result = await sendAndWait({
-          type: "sdk",
-          path: "file.uploadPrivate",
-          args: [Number(rt.id), fileField, file.fileName],
-          requestId
-        });
-
-        if (result && _isAdapterSendFailed(result)) {
-          const b64 = _readBase64FileIfAllowed(fileField);
-          if (b64) {
-            result = await sendAndWait({
-              type: "sdk",
-              path: "file.uploadPrivate",
-              args: [Number(rt.id), b64, file.fileName],
-              requestId: `${requestId}-base64`
-            });
-          }
-        }
-      } else if (rt.kind === 'group') {
-        const requestId = `file-upload-group-${Date.now()}`;
-        const fileField = _toFileUrlIfLikelyLocal(file.path);
-        let result = await sendAndWait({
-          type: "sdk",
-          path: "file.uploadGroup",
-          args: [Number(rt.id), fileField, file.fileName, ""],
-          requestId
-        });
-
-        if (result && _isAdapterSendFailed(result)) {
-          const b64 = _readBase64FileIfAllowed(fileField);
-          if (b64) {
-            result = await sendAndWait({
-              type: "sdk",
-              path: "file.uploadGroup",
-              args: [Number(rt.id), b64, file.fileName, ""],
-              requestId: `${requestId}-base64`
-            });
-          }
-        }
-      }
-
-      await new Promise(resolve => setTimeout(resolve, 800));
+  return {
+    __sentraDeliveryMeta: {
+      segmentMessageIds
     }
-  }
-
-  // 发送表情包（如果有）
-  if (emoji && emoji.source && !emojiSentInSegmentFlow) {
-    const extracted = _extractRoutePrefix(String(emoji.source || ''));
-    const rt = _resolveRouteTargetWithDefault(msg, extracted, defaultRoute);
-    const emojiPath = extracted.rest;
-
-    if (!rt?.id) {
-      skippedCrossRouteCount++;
-      logger.success('发送完成');
-      return;
-    }
-
-    if (!_isCrossRouteAllowed(msg, rt, crossCfg)) {
-      skippedCrossRouteCount++;
-      logger.success('发送完成');
-      return;
-    }
-
-    if (!rt.isCurrent) {
-      if (crossOps >= crossCfg.maxCrossOpsPerResponse) {
-        skippedCrossRouteCount++;
-        logger.success('发送完成');
-        return;
-      }
-      crossOps++;
-    }
-
-    logger.debug(`准备发送表情包: ${emojiPath}`);
-
-    // 验证文件存在性
-    if (!fs.existsSync(emojiPath)) {
-      logger.warn(`表情包文件不存在: ${emojiPath}`);
-    } else {
-      // 等待一小段时间
-      const delay = (textSegments.length > 0 || protocolFiles.length > 0) ? (600 + Math.random() * 800) : 0;
-      if (delay > 0) {
-        logger.debug(`等待 ${Math.round(delay)}ms 后发送表情包`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-
-      // 构建图片消息
-      const emojiMessageParts: MessagePart[] = [
-        { type: 'image', data: { file: _toFileUrlIfLikelyLocal(emojiPath) } }
-      ];
-
-      logger.debug('发送表情包作为图片消息');
-
-      if (rt.kind === 'private') {
-        const requestId = `private-emoji-${Date.now()}`;
-        let normalizedParts = _withNormalizedFileField(emojiMessageParts);
-        let result = await sendAndWait({
-          type: "sdk",
-          path: "send.private",
-          args: [Number(rt.id), normalizedParts],
-          requestId
-        });
-
-        if (result && _isAdapterSendFailed(result)) {
-          const fb = _withBase64FallbackForImages(normalizedParts);
-          if (fb.changed) {
-            const retryId = `${requestId}-base64`;
-            normalizedParts = fb.parts;
-            result = await sendAndWait({
-              type: "sdk",
-              path: "send.private",
-              args: [Number(rt.id), normalizedParts],
-              requestId: retryId
-            });
-          }
-        }
-        logger.debug('表情包发送结果', {
-          ok: !!result?.ok,
-          requestId,
-          target: { kind: rt.kind, id: String(rt.id), isCurrent: !!rt.isCurrent },
-          message_id: result?.data?.message_id,
-          data: result?.data
-        });
-      } else if (rt.kind === 'group') {
-        const requestId = `group-emoji-${Date.now()}`;
-        let normalizedParts = _withNormalizedFileField(emojiMessageParts);
-        let result = await sendAndWait({
-          type: "sdk",
-          path: "send.group",
-          args: [Number(rt.id), normalizedParts],
-          requestId
-        });
-
-        if (result && _isAdapterSendFailed(result)) {
-          const fb = _withBase64FallbackForImages(normalizedParts);
-          if (fb.changed) {
-            const retryId = `${requestId}-base64`;
-            normalizedParts = fb.parts;
-            result = await sendAndWait({
-              type: "sdk",
-              path: "send.group",
-              args: [Number(rt.id), normalizedParts],
-              requestId: retryId
-            });
-          }
-        }
-        logger.debug('表情包发送结果', {
-          ok: !!result?.ok,
-          requestId,
-          target: { kind: rt.kind, id: String(rt.id), isCurrent: !!rt.isCurrent },
-          message_id: result?.data?.message_id,
-          data: result?.data
-        });
-      }
-
-      if (rt.isCurrent && replyMessageId && allowReply && finalReplyMode === 'first') {
-        usedReply = true;
-      }
-    }
-  }
-
-  if (skippedCrossRouteCount > 0) {
-    logger.warn('部分跨会话路由目标未获授权或未启用，已跳过发送', { skipped: skippedCrossRouteCount });
-  }
-
-  logger.success('发送完成');
-  return undefined;
+  };
 }
 /**
  * 智能发送消息（队列控制版本）
@@ -1676,65 +1228,73 @@ export async function smartSend(
   allowReply = true,
   options: SmartSendOptions = {}
 ): Promise<unknown> {
-  const groupId = msg?.group_id ? `G:${msg.group_id}` : `U:${msg.sender_id}`;
+  const groupId = msg?.group_id ? buildGroupScopeId(msg.group_id) : buildPrivateScopeId(msg?.sender_id);
   const taskId = `${groupId}-${Date.now()}-${randomUUID().substring(0, 8)}`;
+  const normalizedResponse = typeof response === 'string'
+    ? response
+    : String(response ?? '');
 
   // 预解析一次用于去重的文本和资源信息
   let textForDedup = '';
   let resourceKeys: string[] = [];
-  let emojiKey = '';
   try {
-    if (typeof response === 'string') {
-      const parsed = parseSentraResponse(response);
+    const parsed = parseSentraMessage(normalizedResponse);
 
-      // 如果解析结果表明应跳过发送，则直接返回，不进入发送队列
-      if (parsed && parsed.shouldSkip) {
-        logger.warn(`smartSend: 解析结果标记为 shouldSkip，跳过发送任务 (groupId=${groupId})`);
-        return null;
-      }
-
-      const segments = Array.isArray(parsed.textSegments) ? parsed.textSegments : [];
-      textForDedup = segments
-        .map((s) => (typeof s === 'string' ? s.trim() : ''))
-        .filter(Boolean)
-        .join('\n');
-
-      const resources = Array.isArray(parsed.resources) ? parsed.resources : [];
-      resourceKeys = resources
-        .map((r) => {
-          const t = r?.type || '';
-          const src = r?.source || '';
-          return t && src ? `${t}|${src}` : '';
-        })
-        .filter(Boolean);
-
-      const targetKey = parsed?.group_id
-        ? `target|group:${String(parsed.group_id)}`
-        : (parsed?.user_id ? `target|private:${String(parsed.user_id)}` : '');
-      if (targetKey) {
-        resourceKeys.push(targetKey);
-      }
-
-      if (parsed?.emoji?.source) {
-        emojiKey = `emoji|${parsed.emoji.source}`;
-      }
-
-      if (resourceKeys.length > 0) {
-        resourceKeys = Array.from(new Set(resourceKeys));
-      }
-      // 文本去重仅基于纯文本内容，资源和表情通过 resourceKeys 独立参与资源集合去重。
-      // 这里不再将资源信息混入文本指纹，避免资源差异被语义文本相似度误伤。
+    // 如果解析结果表明应跳过发送，则直接返回，不进入发送队列
+    if (parsed && parsed.shouldSkip) {
+      logger.warn(`smartSend: 解析结果标记为 shouldSkip，跳过发送任务 (groupId=${groupId})`);
+      return null;
     }
+
+    const packetSegs = Array.isArray((parsed as { message?: unknown[] }).message)
+      ? ((parsed as { message?: Array<{ type?: string; data?: Record<string, unknown> }> }).message || [])
+      : [];
+    if (packetSegs.length === 0) {
+      logger.warn(`smartSend: sentra-message has no segments, skip enqueue (groupId=${groupId})`);
+      return null;
+    }
+    const parts: string[] = [];
+    for (const seg of packetSegs) {
+      if (!seg || typeof seg !== 'object') continue;
+      const type = String(seg.type || '').trim().toLowerCase();
+      const data = seg.data && typeof seg.data === 'object' ? seg.data : {};
+      if (type === 'text') {
+        const t = typeof data.text === 'string' ? data.text.trim() : '';
+        if (t) parts.push(t);
+      } else {
+        const stable = JSON.stringify(data);
+        resourceKeys.push(`seg|${type}|${stable}`);
+      }
+    }
+    textForDedup = parts.join('\\n');
+
+    const parsedChatType = typeof parsed?.chat_type === 'string'
+      ? parsed.chat_type.trim().toLowerCase()
+      : '';
+    const targetKey = parsedChatType === 'group' && parsed?.group_id
+      ? `target|group:${String(parsed.group_id)}`
+      : (parsedChatType === 'private' && parsed?.user_id
+        ? `target|private:${String(parsed.user_id)}`
+        : '');
+    if (targetKey) {
+      resourceKeys.push(targetKey);
+    }
+
+    if (resourceKeys.length > 0) {
+      resourceKeys = Array.from(new Set(resourceKeys));
+    }
+    // 文本去重仅基于纯文本内容，资源和表情通过 resourceKeys 独立参与资源集合去重。
+    // 这里不再将资源信息混入文本指纹，避免资源差异被语义文本相似度误伤。
   } catch (e) {
-    logger.warn('smartSend: 预解析用于去重的 sentra-response 失败，将回退为基于完整响应字符串的去重', { err: String(e) });
+    logger.warn('smartSend: 预解析用于去重的 sentra-message 失败，将回退为基于完整响应字符串的去重', { err: String(e) });
   }
 
   // 将发送任务加入队列（附带去重所需的元信息）
   const meta: SmartSendMeta = {
     groupId,
-    response: typeof response === 'string' ? response : String(response ?? ''),
+    response: normalizedResponse,
     textForDedup,
-    resourceKeys: emojiKey ? [...resourceKeys, emojiKey] : resourceKeys,
+    resourceKeys,
     sourceMessageId: msg?.message_id != null ? String(msg.message_id) : null,
     allowReply: !!allowReply
   };
@@ -1751,8 +1311,4 @@ export async function smartSend(
     return await _smartSendInternal(msg, meta.response, sendAndWaitResult, !!meta.allowReply);
   }, taskId, meta);
 }
-
-
-
-
 

@@ -16,15 +16,12 @@ function schemaKey(schema) {
   try { return JSON.stringify(schema); } catch { return String(schema); }
 }
 
-function shallowPickSchemaProps(schema = {}, data = {}) {
+function deepCloneJsonLike(value) {
   try {
-    const props = Object.keys((schema.properties || {}));
-    if (!props.length || typeof data !== 'object' || data == null) return { ...data };
-    const out = {};
-    for (const k of Object.keys(data)) if (props.includes(k)) out[k] = data[k];
-    return out;
+    return JSON.parse(JSON.stringify(value));
   } catch {
-    return { ...data };
+    if (value && typeof value === 'object') return { ...value };
+    return value;
   }
 }
 
@@ -36,14 +33,21 @@ export function validateAndRepairArgs(schema = {}, args = {}) {
       validate = ajv.compile(schema || { type: 'object' });
       compiled.set(key, validate);
     } catch (e) {
-      // If schema can't compile, treat as pass-through
-      return { valid: true, output: args, errors: [] };
+      // Fail-closed: schema compile failure must block execution.
+      return {
+        valid: false,
+        output: args,
+        errors: [{
+          keyword: 'schema_compile_exception',
+          message: String(e),
+        }],
+      };
     }
   }
-  // 1) prune extras to reduce accidental noise
-  const candidate = shallowPickSchemaProps(schema, args);
-  // 2) run validation with coercion & defaults (mutates candidate)
-  const data = JSON.parse(JSON.stringify(candidate)); // deep clone to avoid mutating callers
+  // Keep full args payload. Do not shallow-prune root keys, otherwise
+  // valid fields under oneOf/allOf/patternProperties/additionalProperties
+  // can be dropped before schema validation.
+  const data = deepCloneJsonLike(args); // deep clone to avoid mutating callers
   const ok = validate(data);
   return { valid: !!ok, output: data, errors: validate.errors || [] };
 }

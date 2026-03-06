@@ -1,0 +1,3 @@
+{
+  "en": "Previous output did not produce a valid step_mini_eval call.\n\nPlease output ONE <sentra-tools> block with invoke name \"step_mini_eval\".\n- decision must be one of: pass, retry_same, retry_regen, replan, fail_fast\n- reason must be a non-empty concrete explanation from evidence\n- if decision != pass, include failureClass\n- if known, include failedCriteria and evidence arrays\n- Tool call MUST use Sentra XML typed parameter nodes (<string>/<number>/<array>/<object>), not raw JSON text inside <parameter>\n\nAttempt {{attempt}}/{{max_retries}}\nLast error: {{error}}"
+}

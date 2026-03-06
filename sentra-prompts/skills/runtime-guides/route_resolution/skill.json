@@ -1,0 +1,46 @@
+{
+  "id": "route_resolution",
+  "uuid": "8c6fa5eb-17a9-4b2e-874f-d8e295ddf501",
+  "title": "Route Resolution and Top-Level Gate",
+  "summary": "Resolves group/private targets from sentra-input and enforces one-block top-level output gate.",
+  "selection": "auto",
+  "when": [
+    "full",
+    "response_only",
+    "tools_only",
+    "router"
+  ],
+  "priority": 80,
+  "deps": [
+    "runtime_sandbox_communication",
+    "confidentiality_nondisclosure"
+  ],
+  "tags": [
+    "protocol",
+    "route_resolution",
+    "gate",
+    "output_contract"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "route",
+      "routing",
+      "group_id",
+      "user_id",
+      "chat_type",
+      "group chat",
+      "private chat",
+      "路由",
+      "群聊",
+      "私聊",
+      "群号",
+      "用户号",
+      "艾特",
+      "@"
+    ],
+    "regex": [
+      "/(route|routing|group_id|user_id|chat_type|group\\s*chat|private\\s*chat|路由|群聊|私聊|群号|用户号|艾特|@)/i"
+    ]
+  }
+}

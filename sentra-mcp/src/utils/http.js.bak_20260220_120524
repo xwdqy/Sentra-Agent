@@ -1,0 +1,46 @@
+import axios from 'axios';
+import { getRuntimeSignal } from './runtime_context.js';
+import { mergeAbortSignals } from './signal.js';
+
+const instance = axios.create({
+  maxRedirects: 5,
+  maxBodyLength: Infinity,
+  maxContentLength: Infinity,
+});
+
+function withRuntimeSignal(config = {}) {
+  const cfg = { ...(config || {}) };
+  const runtimeSignal = getRuntimeSignal();
+  if (!runtimeSignal) return cfg;
+  const merged = mergeAbortSignals([cfg.signal, runtimeSignal]);
+  if (merged) cfg.signal = merged;
+  return cfg;
+}
+
+instance.interceptors.request.use((cfg) => withRuntimeSignal(cfg));
+
+export async function httpRequest(config = {}) {
+  const { timeoutMs, ...rest } = config || {};
+  const req = withRuntimeSignal({
+    ...rest,
+    timeout: timeoutMs,
+  });
+  return instance.request(req);
+}
+
+export async function httpGet(url, options = {}) {
+  const { timeoutMs, headers, responseType, validateStatus, signal } = options || {};
+  return httpRequest({
+    method: 'get',
+    url,
+    headers,
+    responseType,
+    validateStatus,
+    timeoutMs,
+    signal,
+  });
+}
+
+export const httpClient = instance;
+
+export default { httpRequest, httpGet, httpClient };

@@ -1,10 +1,14 @@
-﻿import { createLogger } from './logger.js';
+import { createLogger } from './logger.js';
 import { escapeXml, extractAllFullXMLTags } from './xmlUtils.js';
 import { Agent } from '../src/agentRuntime.js';
 import { getEnv, getEnvInt, getEnvTimeoutMs } from './envHotReloader.js';
 import path from 'node:path';
 import SentraPromptsSDK from 'sentra-prompts';
 import type { ChatMessage, ExpectedOutput } from '../src/types.js';
+import {
+  buildSentraRootDirectiveFromContract,
+  normalizeExpectedOutputToFormatContract
+} from './sentraToolsContractEngine.js';
 
 const logger = createLogger('FormatRepair');
 
@@ -41,7 +45,7 @@ async function getRepairResponseSystemPrompt(): Promise<string> {
       return system;
     }
   } catch (e) {
-    logger.warn('FormatRepair: 鍔犺浇 repair_response prompt 澶辫触锛屽皢浣跨敤绠€鍖栧洖閫€鏂囨', {
+    logger.warn('FormatRepair: failed to load repair_response prompt, using fallback', {
       err: String(e)
     });
   }
@@ -62,7 +66,7 @@ async function getRepairDecisionSystemPrompt(): Promise<string> {
       return system;
     }
   } catch (e) {
-    logger.warn('FormatRepair: 鍔犺浇 repair_decision prompt 澶辫触锛屽皢浣跨敤绠€鍖栧洖閫€鏂囨', {
+    logger.warn('FormatRepair: failed to load repair_decision prompt, using fallback', {
       err: String(e)
     });
   }
@@ -83,7 +87,7 @@ async function getRepairPersonaSystemPrompt(): Promise<string> {
       return system;
     }
   } catch (e) {
-    logger.warn('FormatRepair: 鍔犺浇 repair_persona prompt 澶辫触锛屽皢浣跨敤绠€鍖栧洖閫€鏂囨', {
+    logger.warn('FormatRepair: failed to load repair_persona prompt, using fallback', {
       err: String(e)
     });
   }
@@ -91,15 +95,15 @@ async function getRepairPersonaSystemPrompt(): Promise<string> {
 }
 
 /**
- * 浣跨敤宸ュ叿璋冪敤灏嗘ā鍨嬭緭鍑轰慨澶嶄负鍚堣鐨?<sentra-response> XML
- * - 鍒嗘 text 涓哄繀椤伙紙1-5 娈碉紝姣忔 1-3 鍙ワ級
- * - resources 鍙€夛紙浠呭綋鍘熷鏂囨湰涓寘鍚彲瑙ｆ瀽鐨?URL/璺緞鏃讹級
- * - 涓嶆敼鍙樺師濮嬭涔夛紝涓嶆坊鍔犲嚟绌哄唴瀹?
- * - 涓嶈緭鍑轰换浣曞彧璇荤郴缁熸爣绛撅紙sentra-user-question/sentra-result 绛夛級
+ * Repair arbitrary model output into a valid <sentra-message> XML block.
+ * - Keep concise text segments (usually 1-3, max 5).
+ * - Keep resources only when they are explicitly present in the source text.
+ * - Remove extra prose, markdown wrappers, and unrelated tags.
+ * - Normalize to the current sentra message protocol and keep route tags intact.
  *
- * @param {string} rawText - API 鍘熷鏂囨湰锛堜笉鍚堣鐨勮緭鍑猴紝浣嗘湁浜虹被鍙鍐呭锛?
+ * @param {string} rawText - Raw model output to repair.
  * @param {{ agent?: Agent, model?: string, temperature?: number }} opts
- * @returns {Promise<string>} 鍚堣 XML 瀛楃涓?
+ * @returns {Promise<string>} A normalized sentra-message XML string.
  */
 export async function repairSentraResponse(rawText: string, opts: RepairOptions = {}): Promise<string> {
   if (!rawText || typeof rawText !== 'string') {
@@ -130,7 +134,7 @@ export async function repairSentraResponse(rawText: string, opts: RepairOptions 
 
   const systemPrompt = await getRepairResponseSystemPrompt();
 
-  const rootDirective = buildRootDirectiveRepair('sentra_response', 'format_repair');
+  const rootDirective = buildRootDirectiveRepair('sentra_message', 'format_repair');
   const userPrompt = [
     rootDirective,
     '',
@@ -146,18 +150,19 @@ export async function repairSentraResponse(rawText: string, opts: RepairOptions 
         rootDirective,
         '',
         '<raw>',
-        'Okay, here is the answer: <sentra-response><text1>Hi!</text1></sentra-response> extra text.',
+        'Okay, here is the answer: <sentra-message><message><segment index="1"><type>text</type><data><text>Hi!</text></data></segment></message></sentra-message> extra text.',
         '</raw>'
       ].join('\n')
     },
     {
       role: 'assistant',
       content: [
-        '<sentra-response>',
+        '<sentra-message>',
         '  <user_id>{{user_id}}</user_id>',
-        '  <text1>Hi!</text1>',
-        '  <resources></resources>',
-        '</sentra-response>'
+        '  <message>',
+        '    <segment index="1"><type>text</type><data><text>Hi!</text></data></segment>',
+        '  </message>',
+        '</sentra-message>'
       ].join('\n')
     },
     {
@@ -173,11 +178,12 @@ export async function repairSentraResponse(rawText: string, opts: RepairOptions 
     {
       role: 'assistant',
       content: [
-        '<sentra-response>',
+        '<sentra-message>',
         '  <group_id>{{group_id}}</group_id>',
-        '  <text1>Hello there.</text1>',
-        '  <resources></resources>',
-        '</sentra-response>'
+        '  <message>',
+        '    <segment index="1"><type>text</type><data><text>Hello there.</text></data></segment>',
+        '  </message>',
+        '</sentra-message>'
       ].join('\n')
     }
   ];
@@ -202,10 +208,10 @@ export async function repairSentraResponse(rawText: string, opts: RepairOptions 
     throw new Error('FormatRepair: invalid model response');
   }
 
-  const blocks = extractAllFullXMLTags(result, 'sentra-response') || [];
+  const blocks = extractAllFullXMLTags(result, 'sentra-message') || [];
   const fixed = blocks.length > 0 ? blocks[0] : '';
   if (!fixed) {
-    throw new Error('FormatRepair: missing <sentra-response>');
+    throw new Error('FormatRepair: missing <sentra-message>');
   }
 
   logger.success('FormatRepair: response repaired');
@@ -215,7 +221,7 @@ export async function repairSentraResponse(rawText: string, opts: RepairOptions 
 export function shouldRepair(text: string | null | undefined): boolean {
   if (!text || typeof text !== 'string') return false;
   if (!text.trim()) return false;
-  return !text.includes('<sentra-response>');
+  return !text.includes('<sentra-message>');
 }
 
 export function shouldRepairTools(text: string | null | undefined): boolean {
@@ -225,6 +231,46 @@ export function shouldRepairTools(text: string | null | undefined): boolean {
 }
 
 export function buildRootDirectiveRepair(expectedOutput: ExpectedOutput, lastErrorReason: string = ''): string {
+  const eo = String(expectedOutput || '').trim();
+  const normalizedExpectedOutput = (
+    eo === 'reply_gate_decision_tools' || eo === 'override_intent_decision_tools'
+      ? 'sentra_tools'
+      : eo
+  );
+  if (
+    normalizedExpectedOutput === 'sentra_message' ||
+    normalizedExpectedOutput === 'sentra_tools' ||
+    normalizedExpectedOutput === 'sentra_tools_or_message'
+  ) {
+    const contractId = normalizeExpectedOutputToFormatContract(normalizedExpectedOutput);
+    const args: {
+      contractId: string;
+      idPrefix: string;
+      scope: string;
+      lastErrorReason?: string;
+      extraBlocks?: string[];
+    } = {
+      contractId,
+      idPrefix: 'format_retry',
+      scope: 'single_turn'
+    };
+    const reason = String(lastErrorReason || '').trim();
+    if (reason) args.lastErrorReason = reason;
+    if (normalizedExpectedOutput === 'sentra_message') {
+      args.extraBlocks = [
+        '  <output_template>',
+        '    <sentra-message>',
+        '      <group_id_or_user_id>...</group_id_or_user_id>',
+        '      <message>',
+        '        <segment index="1"><type>text</type><data><text>...</text></data></segment>',
+        '      </message>',
+        '    </sentra-message>',
+        '  </output_template>'
+      ];
+    }
+    return buildSentraRootDirectiveFromContract(args);
+  }
+
   const escapeXmlValue = (v: unknown): string => {
     try {
       return String(v ?? '')
@@ -239,10 +285,10 @@ export function buildRootDirectiveRepair(expectedOutput: ExpectedOutput, lastErr
   };
 
   const reason = lastErrorReason ? escapeXmlValue(lastErrorReason) : '';
-  const expected = escapeXmlValue(expectedOutput || 'sentra_response');
+  const expected = escapeXmlValue(normalizedExpectedOutput || 'sentra_message');
 
-  const isToolsOnly = expectedOutput === 'sentra_tools' || expectedOutput === 'reply_gate_decision_tools' || expectedOutput === 'override_intent_decision_tools';
-  const isToolsOrResponse = expectedOutput === 'sentra_tools_or_response';
+  const isToolsOnly = normalizedExpectedOutput === 'sentra_tools';
+  const isToolsOrResponse = normalizedExpectedOutput === 'sentra_tools_or_message';
 
   return [
     '<sentra-root-directive>',
@@ -257,18 +303,19 @@ export function buildRootDirectiveRepair(expectedOutput: ExpectedOutput, lastErr
     ...(isToolsOnly
       ? ['    <item>Only output <sentra-tools>...</sentra-tools>; no other tags or text.</item>']
       : isToolsOrResponse
-        ? ['    <item>Output exactly one of: <sentra-tools>...</sentra-tools> OR <sentra-response>...</sentra-response>.</item>']
-        : ['    <item>Only output <sentra-response>...</sentra-response>; no other sentra-xxx tags.</item>']),
-    '    <item><sentra-response> may contain: <group_id> or <user_id> (only one), <textN>, <resources>, optional <emoji>, optional <send>.</item>',
+        ? ['    <item>Output exactly one of: <sentra-tools>...</sentra-tools> OR <sentra-message>...</sentra-message>.</item>']
+        : ['    <item>Only output <sentra-message>...</sentra-message>; no other sentra-xxx tags.</item>']),
+    '    <item><sentra-message> should use segment model: <message><segment index="N"><type>...</type><data>...</data></segment></message>.</item>',
     '    <item>Target tag must be explicit: <group_id> for group chats or <user_id> for private chats.</item>',
     '    <item>Do not mention internal tools, fields, or execution steps.</item>',
     '  </constraints>',
     '  <output_template>',
-    '    <sentra-response>',
+    '    <sentra-message>',
     '      <group_id_or_user_id>...</group_id_or_user_id>',
-    '      <text1>...</text1>',
-    '      <resources></resources>',
-    '    </sentra-response>',
+    '      <message>',
+    '        <segment index="1"><type>text</type><data><text>...</text></data></segment>',
+    '      </message>',
+    '    </sentra-message>',
     '  </output_template>',
     '</sentra-root-directive>'
   ].join('\n');
@@ -287,7 +334,7 @@ function buildDecisionRepairRootDirective(lastErrorReason: string = ''): string 
     '  <constraints>',
     '    <item>Output exactly one <sentra-decision> block and nothing else.</item>',
     '    <item><sentra-decision> must contain only <need>, <reason>, <confidence>.</item>',
-    '    <item>Do not output any sentra-response/sentra-tools/sentra-result/sentra-user-question tags.</item>',
+    '    <item>Do not output any sentra-message/sentra-tools/sentra-result/sentra-input/current_messages/sentra-message tags.</item>',
     '    <item>Keep original meaning; do not invent facts.</item>',
     '  </constraints>',
     '  <output_template>',
@@ -314,7 +361,7 @@ function buildPersonaRepairRootDirective(lastErrorReason: string = ''): string {
     '  <constraints>',
     '    <item>Output exactly one <sentra-persona> block and nothing else.</item>',
     '    <item><sentra-persona> must include <summary>; other fields are optional if supported by raw content.</item>',
-    '    <item>Do not output any sentra-response/sentra-tools/sentra-result/sentra-user-question tags.</item>',
+    '    <item>Do not output any sentra-message/sentra-tools/sentra-result/sentra-input/current_messages/sentra-message tags.</item>',
     '    <item>Keep original meaning; do not invent facts.</item>',
     '  </constraints>',
     '  <output_template>',
@@ -506,3 +553,7 @@ export async function repairWithProfile(profile: RepairProfile, rawText: string,
   if (profile === 'persona') return repairSentraPersona(rawText, opts);
   throw new Error(`Unknown repair profile: ${profile}`);
 }
+
+
+
+

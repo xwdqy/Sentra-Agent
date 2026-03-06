@@ -1,46 +1,53 @@
 # html_to_app
 
-## 功能
+## Capability
 
-- 将 HTML 代码或应用需求描述转换为完整的桌面应用项目（基于 Electron）
-- 支持原生 HTML、React、Vue 等框架
-- 自动生成项目结构、依赖配置、打包脚本
-- 可直接运行和打包为 exe/dmg/AppImage
+- Generate an Electron app project from description/html details.
+- Can optionally run install/build/zip automation.
 
-## 实际影响
+## Real-world impact
 
-- 写本地文件：生成完整的项目目录到 `artifacts/`
-- 外部网络请求：可能下载依赖包
+- Writes project files to local workspace.
+- May install dependencies and run build commands.
 
-## 使用场景
+## When to use
 
-- 用户要"生成/打包/转桌面应用"
-- 能拿到 description、app_name、details
+- User asks to generate a desktop app project.
+- Required app description fields are available.
 
-## 禁止场景
+## When not to use
 
-- 缺少必填参数（description/app_name/details）
-- 需求描述不明确
+- Required fields are missing.
+- Task is read-only.
 
-## 输入
+## Input
 
-- 必填：
-  - `description`：应用描述或需求
-  - `app_name`：应用名称（英文，用于生成项目文件夹）
-  - `details`：细节补充要求（UI/UX、颜色、字体、动画等，越详细越好）
-- 可选：
-  - `html_content`：已有的 HTML 代码
-  - `framework`：前端框架（vanilla/react/vue，默认 vanilla）
-  - `features`：功能特性（文件读写、系统托盘、自动更新、数据库等）
+- Required:
+  - `description`
+  - `app_name`
+  - `details`
+- Optional:
+  - `html_content`
+  - `framework`
+  - automation flags
 
-## 输出
+## Output
 
-- 项目结构：`{ project_path, files: [{ path, content }] }`
-- 项目目录在 `artifacts/`
+- Project generation result with file list and instructions.
 
-## 失败模式
+## Failure modes
 
-- `INVALID`：缺必填参数
-- `TEMPLATE_FAILED`：模板生成失败
-- `DEPS_FAILED`：依赖安装失败
-- `TIMEOUT`：生成超时（最长 10 分钟）
+- `INVALID`
+- `PROJECT_EXISTS`
+- `INVALID_XML`
+- `INVALID_PROJECT`
+- `TIMEOUT`
+- `GENERATION_ERROR`
+
+## Success Criteria
+
+- Success requires `result.success === true`, `result.code === "OK"`, and `data.action === "html_to_app"`.
+- Required output evidence: non-empty `data.project_path`, non-empty `data.app_name`, numeric `data.files_count > 0`, and non-empty `data.files`.
+- `data.generation_info` must exist.
+- If `data.automation` exists, each present sub-block (`install`, `build`, `zip`) must be structurally valid.
+- Missing project path or empty file list means failure.

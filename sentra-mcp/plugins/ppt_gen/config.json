@@ -92,5 +92,19 @@
     ],
     "additionalProperties": true
   },
-  "timeoutMs": 120000
+  "timeoutMs": 120000,
+  "trigger_keywords": [
+    "PPT",
+    "幻灯片",
+    "演示文稿",
+    "ppt生成",
+    "slides"
+  ],
+  "trigger_patterns": [
+    "(PPT|幻灯片).{0,12}(演示文稿|ppt生成|slides)",
+    "(演示文稿|ppt生成|slides).{0,12}(PPT|幻灯片)",
+    "(PPT|幻灯片|演示文稿|ppt生成|slides)"
+  ],
+  "keyword_boost": 67,
+  "regex_boost": 91
 }

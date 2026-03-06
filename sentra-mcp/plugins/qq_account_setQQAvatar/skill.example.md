@@ -12,13 +12,19 @@
 
 ## When to use
 
-- 用户明确要求更换头像，并提供了头像图片的本地绝对路径。
+- 目标与工具能力一致：把当前 QQ 账号的头像换成你提供的图片。
+- 可提供必需入参：`file`。
 
-## When NOT to use
+## When not to use
 
-- 没有本地图片路径（不要猜文件名/相对路径）。
-- 用户没有确认要改头像。
+- 缺少必需入参时不要调用：`file`。
 
+## Success Criteria
+
+- Must have `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be non-empty, `data.request.requestId` must be present, and `data.request.args` must match this call (`{ file }`).
+- `data.response` must be present (non-null object/string), proving RPC was sent and acknowledged.
+- Retry guidance: timeout/network may retry once with same args; input/schema errors should regenerate args; business rejection should replan.
 ## Input
 
 - Required:

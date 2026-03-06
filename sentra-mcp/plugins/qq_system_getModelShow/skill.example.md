@@ -11,13 +11,21 @@
 
 ## When to use
 
-- 用户要查看当前账号“对外展示的设备/机型文案”。
-- 在设置展示信息（`qq_system_setModelShow`）前先确认当前值。
+- 目标与工具能力一致：查看当前 QQ 账号的设备展示信息。
+- 已明确关键输入字段：`requestId`。
+- 你需要查询或解析结果，而不是执行修改类操作。
 
-## When NOT to use
+## When not to use
 
-- WS 服务未连接/机器人不在线时不要硬试。
+- 缺少关键输入且无法从上下文可靠推断时，不要调用。
+- 需要执行发送/修改/删除等动作时，不要调用。
 
+## Success Criteria
+
+- Require `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be present and `data.request.args` must be empty array.
+- `data.response` must be present and non-null.
+- Retry guidance: timeout/network can retry once; config/schema problems regenerate args; persistent RPC failure triggers replan.
 ## Input
 
 - Optional:

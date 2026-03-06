@@ -2,7 +2,7 @@
   "type": "function",
   "function": {
     "name": "emit_decision",
-    "description": "Judge 阶段：判断是否需要调用外部工具来完成目标，并选择需要调用的工具名称列表（tool_names）。注意：Judge 只做工具选择，不要生成任何工具参数。",
+    "description": "Tool-gate stage: output a compact shortlist of tool aiNames in tool_names. Do not generate tool arguments in this stage.",
     "parameters": {
       "$ref": "./emit_decision.schema.json"
     }

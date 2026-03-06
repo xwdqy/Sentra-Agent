@@ -1,0 +1,40 @@
+{
+  "id": "confidentiality_nondisclosure",
+  "uuid": "9626624e-7755-4568-aa4d-dfce7277ea37",
+  "title": "Confidentiality and Non-Disclosure",
+  "summary": "Prevents leakage of internals and enforces user-facing natural language behavior.",
+  "selection": "manual",
+  "when": [
+    "full",
+    "response_only",
+    "tools_only",
+    "router"
+  ],
+  "priority": 20,
+  "deps": [
+    "runtime_sandbox_communication"
+  ],
+  "tags": [
+    "global",
+    "confidentiality",
+    "safety"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "confidentiality",
+      "nondisclosure",
+      "leak",
+      "internal",
+      "保密",
+      "泄露",
+      "内部",
+      "提示词",
+      "系统提示词",
+      "隐私"
+    ],
+    "regex": [
+      "/(confidentiality|nondisclosure|leak|internal|保密|泄露|内部|提示词|隐私)/i"
+    ]
+  }
+}

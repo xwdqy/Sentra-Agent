@@ -25,11 +25,33 @@ export const RunEvents = {
       ee.emit('event', event);
     } catch { }
   },
+  emitIfOpen(runId, event) {
+    try {
+      const rid = String(runId || '');
+      if (!rid) return false;
+      const ee = emitters.get(rid);
+      if (!ee) return false;
+      ee.emit('event', event);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  has(runId) {
+    try {
+      const rid = String(runId || '');
+      if (!rid) return false;
+      return emitters.has(rid);
+    } catch {
+      return false;
+    }
+  },
   // Returns an AsyncIterator of events for the given runId
   subscribe(runId) {
     const ee = getOrCreate(runId);
     const queue = [];
     const waiters = [];
+    let closed = false;
 
     const onEvent = (ev) => {
       if (waiters.length) {
@@ -39,16 +61,31 @@ export const RunEvents = {
         queue.push(ev);
       }
     };
+    const onClose = () => {
+      closed = true;
+      while (waiters.length) {
+        const resolve = waiters.shift();
+        resolve({ value: undefined, done: true });
+      }
+    };
 
     ee.on('event', onEvent);
+    ee.on('close', onClose);
 
     const iterator = {
       async next() {
         if (queue.length) return { value: queue.shift(), done: false };
+        if (closed) return { value: undefined, done: true };
         return new Promise((resolve) => waiters.push(resolve));
       },
       async return() {
         try { ee.off('event', onEvent); } catch { }
+        try { ee.off('close', onClose); } catch { }
+        closed = true;
+        while (waiters.length) {
+          const resolve = waiters.shift();
+          resolve({ value: undefined, done: true });
+        }
         return { done: true };
       },
       [Symbol.asyncIterator]() { return this; },
@@ -59,6 +96,7 @@ export const RunEvents = {
   close(runId) {
     const ee = emitters.get(runId);
     if (ee) {
+      try { ee.emit('close'); } catch { }
       try { ee.removeAllListeners(); } catch { }
       emitters.delete(runId);
     }

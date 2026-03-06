@@ -19,33 +19,6 @@
       "prompt": {
         "type": "string",
         "description": "必填：你希望从该网页获取什么/解决什么问题（会优先用于视觉读图提示词）。建议包含目标、关注点与输出形式，例如：\"总结 README 的核心功能、安装步骤与关键配置\" / \"提取页面里的产品定价表\" / \"判断页面是否包含 UI 截图或品牌视觉元素\""
-      },
-      "schedule": {
-        "type": "object",
-        "properties": {
-          "when": {
-            "type": "string",
-            "description": "时间表达：如 '5分钟后' / '30秒后' / '明天09:00' / '2025-12-16 21:30' / ISO 字符串。请使用清晰、可解析的时间表达，避免使用『稍后』『改天』『有空的时候』『尽快』『5分钟之后』等模糊说法。"
-          },
-          "language": {
-            "type": "string",
-            "description": "语言标识，例如 zh|en（默认 zh）"
-          },
-          "timezone": {
-            "type": "string",
-            "description": "IANA 时区名称，例如 Asia/Shanghai"
-          },
-          "targetISO": {
-            "type": "string",
-            "description": "预解析好的绝对时间（ISO 字符串），例如 '2025-12-16T21:30:00+08:00'；如提供，将被上游优先用作目标时间。"
-          }
-        },
-        "required": [
-          "when",
-          "targetISO"
-        ],
-        "additionalProperties": true,
-        "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
     "required": [
@@ -66,5 +39,19 @@
     "additionalProperties": false
   },
   "cooldownMs": 0,
-  "timeoutMs": 35000
+  "timeoutMs": 35000,
+  "trigger_keywords": [
+    "网页解析",
+    "抓取网页",
+    "提取正文",
+    "web parse",
+    "extract page"
+  ],
+  "trigger_patterns": [
+    "(网页解析|抓取网页).{0,12}(提取正文|web parse|extract page)",
+    "(提取正文|web parse|extract page).{0,12}(网页解析|抓取网页)",
+    "(网页解析|抓取网页|提取正文|web parse|extract page)"
+  ],
+  "keyword_boost": 63,
+  "regex_boost": 88
 }

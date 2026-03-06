@@ -289,23 +289,6 @@ async function main() {
             }
           }
 
-          // 正文包含转发消息（非引用场景）时不推送实时流，避免出现占位符/过长内容
-          const forwardSegments = msg.message.filter((s: any) => s.type === 'forward');
-          const hasReply = !!replyContext?.reply;
-          if (!hasReply && forwardSegments.length > 0) {
-            if (process.env.LOG_LEVEL === 'debug') {
-              log.warn(
-                {
-                  message_id: msg.message_id,
-                  forward_count: forwardSegments.length,
-                  forward_ids: forwardSegments.map((s: any) => s.data?.id || s.data?.message_id).filter(Boolean),
-                },
-                '跳过推送：正文转发消息（非引用场景）',
-              );
-            }
-            return;
-          }
-
           await streamInstance.push(ev as MessageEvent, replyContext);
         }
       } catch (err) {

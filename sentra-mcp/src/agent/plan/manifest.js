@@ -1,4 +1,7 @@
-import { config } from '../../config/index.js';
+import {
+  buildTerminalRuntimeManifestEntry,
+  pinTerminalRuntimeInManifest
+} from '../../runtime/terminal/spec.js';
 
 function escapeXmlEntities(str) {
   return String(str ?? '')
@@ -9,9 +12,15 @@ function escapeXmlEntities(str) {
     .replace(/'/g, '&apos;');
 }
 
-function toXmlCData(text) {
-  const s = String(text ?? '');
-  return s.replace(/]]>/g, ']]]]><![CDATA[>');
+function toFiniteNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatScore(value, digits = 4) {
+  const n = toFiniteNumber(value);
+  if (n === null) return '';
+  return String(Number(n.toFixed(digits)));
 }
 
 function extractRequiredGroups(schema = {}) {
@@ -110,16 +119,29 @@ export function buildToolContextSystem(manifest = []) {
 }
 
 // 中文：构造“规划期”使用的工具清单（只展示必填字段的 schema）
-export function buildPlanningManifest(mcpcore) {
+export function buildPlanningManifest(mcpcore, options = {}) {
   const tools = mcpcore.getAvailableTools();
-  return tools.map((t) => ({
+  const base = tools.map((t) => ({
     aiName: t.aiName,
     name: t.name,
+    provider: t.provider || '',
+    executor: 'mcp',
+    actionRef: '',
     description: t.description || '',
     inputSchema: requiredOnlySchema(t.inputSchema || {}),
     meta: t.meta || {},
     skillDoc: t.skillDoc || null,
   }));
+  const includeRuntimeExecutors = options.includeRuntimeExecutors !== false;
+  if (!includeRuntimeExecutors) return base;
+  const runtimeEntry = buildTerminalRuntimeManifestEntry();
+  return pinTerminalRuntimeInManifest([...
+    base, {
+    ...runtimeEntry,
+    // Keep full runtime terminal schema so arggen can see shell/execution knobs
+    // (terminalType/sessionMode/timeout/etc.) instead of command-only.
+    inputSchema: runtimeEntry.inputSchema || {},
+  }], { insertIfMissing: true });
 }
 
 // 中文：将 manifest 渲染为简洁的项目符号文本（仅显示必填字段名）
@@ -127,8 +149,25 @@ export function manifestToBulletedText(manifest = []) {
   const lines = [];
   for (const m of manifest) {
     const req = Array.isArray(m?.inputSchema?.required) ? m.inputSchema.required : [];
-    lines.push(`- aiName: ${m.aiName} | name: ${m.name} | required: [${req.join(', ')}]`);
+    const skill = m?.skillDoc && typeof m.skillDoc === 'object' ? m.skillDoc : null;
+    const whenToUse = Array.isArray(skill?.whenToUse)
+      ? skill.whenToUse.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 3)
+      : [];
+    const whenNotToUse = Array.isArray(skill?.whenNotToUse)
+      ? skill.whenNotToUse.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 2)
+      : [];
+    const successCriteria = Array.isArray(skill?.successCriteria)
+      ? skill.successCriteria.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 4)
+      : [];
+    const executor = String(m?.executor || '').trim();
+    const actionRef = String(m?.actionRef || '').trim();
+    const executorText = executor ? ` | executor: ${executor}` : '';
+    const actionText = actionRef ? ` | action: ${actionRef}` : '';
+    lines.push(`- aiName: ${m.aiName} | name: ${m.name}${executorText}${actionText} | required: [${req.join(', ')}]`);
     if (m.description) lines.push(`  描述: ${m.description}`);
+    if (whenToUse.length) lines.push(`  when_to_use: ${whenToUse.join(' | ')}`);
+    if (whenNotToUse.length) lines.push(`  when_not_to_use: ${whenNotToUse.join(' | ')}`);
+    if (successCriteria.length) lines.push(`  success_criteria: ${successCriteria.join(' | ')}`);
   }
   return lines.join('\n');
 }
@@ -196,31 +235,82 @@ export function manifestToXmlToolsCatalog(manifest = []) {
   try {
     const lines = [];
     const total = Array.isArray(manifest) ? manifest.length : 0;
-    const cfg = (config && config.skillDoc && typeof config.skillDoc === 'object') ? config.skillDoc : {};
-    const includeMarkdown = cfg.includeMarkdown === true;
+    const rerankHintCount = (manifest || []).filter((m) => m && m.rerank && typeof m.rerank === 'object').length;
 
     lines.push('<sentra-mcp-tools>');
-    lines.push(`  <summary>${escapeXmlEntities(`共有 ${total} 个 MCP 工具可用于本次任务。以下为工具清单和关键参数概览，仅供你在规划和参数生成时参考。`)}</summary>`);
+    lines.push(`  <summary>${escapeXmlEntities(`共有 ${total} 个 MCP 工具可用于本次任务。以下为工具清单和关键参数概览，仅供你在规划和参数生成时参考。${rerankHintCount > 0 ? `其中 ${rerankHintCount} 个工具附带 rerank_hint（rank/probability/final_score），可作为软优先级参考。` : ''}`)}</summary>`);
     (manifest || []).forEach((m, idx) => {
       if (!m) return;
       const aiName = m.aiName || '';
       const name = m.name || '';
+      const executor = m.executor || '';
+      const actionRef = m.actionRef || '';
       const desc = m.description || '';
       const schema = m.inputSchema || {};
       const req = Array.isArray(schema.required) ? schema.required : [];
       const props = schema.properties || {};
       const skill = m.skillDoc || null;
-      const mdRaw = skill && typeof skill.raw === 'string' ? skill.raw : '';
-      const md = mdRaw ? mdRaw : '';
+      const whenToUse = Array.isArray(skill?.whenToUse)
+        ? skill.whenToUse.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 3)
+        : [];
+      const whenNotToUse = Array.isArray(skill?.whenNotToUse)
+        ? skill.whenNotToUse.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 2)
+        : [];
+      const successCriteria = Array.isArray(skill?.successCriteria)
+        ? skill.successCriteria.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 4)
+        : [];
       const index = idx + 1;
       lines.push(`  <tool index="${escapeXmlEntities(index)}">`);
       if (aiName) lines.push(`    <ai_name>${escapeXmlEntities(aiName)}</ai_name>`);
       if (name) lines.push(`    <name>${escapeXmlEntities(name)}</name>`);
+      if (executor) lines.push(`    <executor>${escapeXmlEntities(executor)}</executor>`);
+      if (actionRef) lines.push(`    <action_ref>${escapeXmlEntities(actionRef)}</action_ref>`);
       if (desc) lines.push(`    <description>${escapeXmlEntities(desc)}</description>`);
-      if (includeMarkdown && md) {
-        lines.push('    <skill_markdown><![CDATA[');
-        lines.push(`${toXmlCData(md)}`);
-        lines.push('    ]]></skill_markdown>');
+      if (whenToUse.length) {
+        lines.push('    <when_to_use>');
+        for (const hint of whenToUse) {
+          lines.push(`      <hint>${escapeXmlEntities(hint)}</hint>`);
+        }
+        lines.push('    </when_to_use>');
+      }
+      if (whenNotToUse.length) {
+        lines.push('    <when_not_to_use>');
+        for (const hint of whenNotToUse) {
+          lines.push(`      <hint>${escapeXmlEntities(hint)}</hint>`);
+        }
+        lines.push('    </when_not_to_use>');
+      }
+      if (successCriteria.length) {
+        lines.push('    <success_criteria>');
+        for (const hint of successCriteria) {
+          lines.push(`      <rule>${escapeXmlEntities(hint)}<\/rule>`);
+        }
+        lines.push('    </success_criteria>');
+      }
+      const rr = (m.rerank && typeof m.rerank === 'object') ? m.rerank : null;
+      if (rr) {
+        const rank = toFiniteNumber(rr.rank);
+        const probability = formatScore(rr.probability, 6);
+        const finalScore = formatScore(rr.final, 4);
+        const intentScore = formatScore(rr.intent, 4);
+        const relevanceScore = formatScore(rr.relevance, 4);
+        const trustScore = formatScore(rr.trust, 4);
+        const hasRerank = (rank !== null && rank > 0)
+          || !!probability
+          || !!finalScore
+          || !!intentScore
+          || !!relevanceScore
+          || !!trustScore;
+        if (hasRerank) {
+          lines.push('    <rerank_hint>');
+          if (rank !== null && rank > 0) lines.push(`      <rank>${escapeXmlEntities(Math.floor(rank))}</rank>`);
+          if (probability) lines.push(`      <probability>${escapeXmlEntities(probability)}</probability>`);
+          if (finalScore) lines.push(`      <final_score>${escapeXmlEntities(finalScore)}</final_score>`);
+          if (intentScore) lines.push(`      <intent_score>${escapeXmlEntities(intentScore)}</intent_score>`);
+          if (relevanceScore) lines.push(`      <relevance_score>${escapeXmlEntities(relevanceScore)}</relevance_score>`);
+          if (trustScore) lines.push(`      <trust_score>${escapeXmlEntities(trustScore)}</trust_score>`);
+          lines.push('    </rerank_hint>');
+        }
       }
       if (req.length) {
         lines.push(`    <required_params>${escapeXmlEntities(req.join(', '))}</required_params>`);

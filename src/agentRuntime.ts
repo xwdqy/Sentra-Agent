@@ -108,7 +108,7 @@ function findFirstCompleteSentraBlock(text: unknown, allowTags?: string[]): { ta
   if (!s) return null;
   const tags = Array.isArray(allowTags) && allowTags.length
     ? allowTags
-    : ['sentra-response', 'sentra-tools'];
+    : ['sentra-message', 'sentra-tools'];
 
   let cursor = 0;
   while (cursor < s.length) {
@@ -361,17 +361,17 @@ class Agent {
             if (!aborted) {
               const allowTags = expectedOutput === 'sentra_tools'
                 ? ['sentra-tools']
-                : (expectedOutput === 'sentra_response'
-                  ? ['sentra-response', 'sentra-tools']
-                  : ['sentra-response', 'sentra-tools']);
+                : (expectedOutput === 'sentra_message'
+                  ? ['sentra-message', 'sentra-tools']
+                  : ['sentra-message', 'sentra-tools']);
               const found = findFirstCompleteSentraBlock(assembledContent, allowTags);
               if (found) {
                 const tag = found.tag;
                 const block = found.block;
-                const allowsTools = expectedOutput === 'sentra_tools' || expectedOutput === 'sentra_tools_or_response';
-                const allowsResponse = expectedOutput === 'sentra_response' || expectedOutput === 'sentra_tools_or_response';
+                const allowsTools = expectedOutput === 'sentra_tools' || expectedOutput === 'sentra_tools_or_message';
+                const allowsMessage = expectedOutput === 'sentra_message' || expectedOutput === 'sentra_tools_or_message';
 
-                if ((tag === 'sentra-tools' && allowsTools) || (tag === 'sentra-response' && allowsResponse)) {
+                if ((tag === 'sentra-tools' && allowsTools) || (tag === 'sentra-message' && allowsMessage)) {
                   completedBlock = block;
                   assembledContent = block;
                   aborted = true;
@@ -382,16 +382,16 @@ class Agent {
             if (expectedOutput && onEarlyTerminate && !aborted) {
               const normalized = assembledContent.toLowerCase();
               const hasTools = normalized.includes('<sentra-tools>');
-              const hasResponse = normalized.includes('<sentra-response>');
+              const hasMessage = normalized.includes('<sentra-message>');
 
-              if (expectedOutput === 'sentra_tools' && hasResponse && !hasTools) {
+              if (expectedOutput === 'sentra_tools' && hasMessage && !hasTools) {
                 aborted = true;
                 try { stream?.destroy?.(); } catch { }
-                onEarlyTerminate({ reason: 'unexpected_sentra_response', partial: assembledContent });
+                onEarlyTerminate({ reason: 'unexpected_sentra_message', partial: assembledContent });
               } else if (
-                expectedOutput === 'sentra_response' &&
+                expectedOutput === 'sentra_message' &&
                 hasTools &&
-                !hasResponse &&
+                !hasMessage &&
                 normalized.includes('</sentra-tools>')
               ) {
                 aborted = true;

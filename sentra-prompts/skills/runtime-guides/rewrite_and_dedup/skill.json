@@ -1,0 +1,41 @@
+{
+  "id": "rewrite_and_dedup",
+  "uuid": "3b211f58-ea30-4628-ae3e-7e0c335ca18b",
+  "title": "Rewrite and De-dup",
+  "summary": "Normalizes repetitive or polluted drafts into concise segment output without losing required evidence.",
+  "selection": "auto",
+  "when": [
+    "full",
+    "response_only",
+    "router"
+  ],
+  "priority": 300,
+  "deps": [
+    "message_segment_contract",
+    "no_tool_min_reply"
+  ],
+  "tags": [
+    "protocol",
+    "rewrite_dedup",
+    "repair",
+    "response"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "rewrite",
+      "dedup",
+      "duplicate",
+      "normalize",
+      "改写",
+      "去重",
+      "重复",
+      "精简",
+      "重写",
+      "润色"
+    ],
+    "regex": [
+      "/(rewrite|dedup|duplicate|normalize|改写|去重|重复|精简|重写|润色)/i"
+    ]
+  }
+}

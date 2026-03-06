@@ -1,0 +1,39 @@
+{
+  "id": "no_tool_min_reply",
+  "uuid": "f0d87b95-813d-4b2e-82a8-bf41b35145da",
+  "title": "No-Tool Minimal Reply",
+  "summary": "Defines concise minimum-reply behavior when tools are unavailable, unnecessary, or waiting.",
+  "selection": "auto",
+  "when": [
+    "full",
+    "response_only",
+    "router"
+  ],
+  "priority": 260,
+  "deps": [
+    "message_segment_contract"
+  ],
+  "tags": [
+    "protocol",
+    "no_tool_min_reply",
+    "response"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "no tool",
+      "fallback",
+      "clarify",
+      "minimal reply",
+      "无工具",
+      "不用工具",
+      "兜底",
+      "澄清",
+      "最小回复",
+      "简短回复"
+    ],
+    "regex": [
+      "/(no\\s*tool|fallback|clarify|minimal\\s*reply|无工具|不用工具|兜底|澄清|最小回复|简短回复)/i"
+    ]
+  }
+}

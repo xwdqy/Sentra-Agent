@@ -14,7 +14,7 @@ function sanitizePresetName(raw: string | null | undefined): string {
 
 function getExamplesKey(presetName: string | null | undefined): string {
   const safeName = sanitizePresetName(presetName);
-  const prefix = 'sentra:preset:teaching:examples:';
+  const prefix = 'sentra_preset_teaching_examples_';
   return `${prefix}${safeName}`;
 }
 

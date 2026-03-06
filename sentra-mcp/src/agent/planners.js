@@ -1,28 +1,21 @@
-import { v4 as uuidv4 } from 'uuid';
+﻿import { v4 as uuidv4 } from 'uuid';
 import { newStepId } from '../utils/stepIds.js';
-import { config, getStageTimeoutMs } from '../config/index.js';
+import { config, getStageModel, getStageProvider, getStageTimeoutMs } from '../config/index.js';
 import logger from '../logger/index.js';
 import { chatCompletion } from '../openai/client.js';
 import { HistoryStore } from '../history/store.js';
 import { ok, fail } from '../utils/result.js';
 import { summarizeToolHistory } from './summarizer.js';
 import { clip } from '../utils/text.js';
-import { timeParser } from '../utils/timing.js';
-// 规划期与工具清单相关的辅助函数
 import { buildPlanningManifest, manifestToBulletedText, buildToolContextSystem } from './plan/manifest.js';
 import { buildDependentContextText } from './plan/history.js';
 import { loadPrompt, renderTemplate, composeSystem } from './prompts/loader.js';
-// 向量记忆：规划/工具检索与写入
-import { upsertPlanMemory, upsertToolMemory, searchPlanMemories } from '../memory/index.js';
-// 消息和事件工具
+import { upsertToolMemory } from '../memory/index.js';
 import { compactMessages, normalizeConversation } from './utils/messages.js';
 import { emitRunEvent, wait, normKey } from './utils/events.js';
 import { RunEvents } from '../bus/runEvents.js';
 import { generatePlanViaFC } from './plan/plan_fc.js';
 import { rerankManifest } from './plan/router.js';
-// 各阶段逻辑
-import { judgeToolNecessity } from './stages/judge.js';
-import { judgeToolNecessityFC } from './stages/judge_fc.js';
 import { getPreThought } from './stages/prethought.js';
 import { generateToolArgs, validateArgs, fixToolArgs } from './stages/arggen.js';
 import { evaluateRun } from './stages/evaluate.js';
@@ -31,257 +24,537 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadToolDef } from './tools/loader.js';
-import { isRunCancelled, clearRunCancelled } from '../bus/runCancel.js';
-import { registerRunStart, markRunFinished, removeRun, buildConcurrencyOverlay } from '../bus/runRegistry.js';
-import { parseFunctionCalls } from '../utils/fc.js';
+import { createWorkspaceSnapshot, snapshotAndDiff } from './workspace/diff_engine.js';
+import { upsertArtifact, getArtifactProjectRoot, getArtifactRootDir } from './workspace/registry.js';
+import { cancelRun as markRunCancelled, isRunCancelled, clearRunCancelled } from '../bus/runCancel.js';
+import { abortRunRequests } from '../bus/runAbort.js';
+import { registerRunStart, markRunFinished, removeRun } from '../bus/runRegistry.js';
+import { parseFunctionCalls, formatSentraResult } from '../utils/fc.js';
+import { getRuntimeSignal } from '../utils/runtime_context.js';
+import {
+  TERMINAL_RUNTIME_AI_NAME,
+  TERMINAL_RUNTIME_ACTION,
+  getTerminalTaskArgSchema,
+  pinTerminalRuntimeInManifest,
+  isTerminalRuntimeStep
+} from '../runtime/terminal/spec.js';
+import {
+  emitCancelledTerminalEvents,
+  buildRuntimeSignalDecisionArtifacts,
+  pollAndHandleRuntimeSignal,
+  resolveRuntimeSignalAction,
+  readLatestRuntimeUserSignal
+} from './controllers/cancellation_controller.js';
+import { waitForAssistantFeedbackBatches } from './controllers/feedback_controller.js';
+import {
+  normalizeEvalAction,
+  runJudgeStage,
+  runPlanStage,
+  runEvaluateStage
+} from './controllers/stage_runner.js';
+import {
+  applyDisplayIndex,
+  sanitizeDependsOnStepIds,
+  buildDependencyChain,
+  formatReason,
+  sanitizeContextForLog,
+  buildExecutionGroupingState,
+  buildGroupTopoOrder,
+  buildDependsNoteForStep,
+  buildDependsOnStepIdsForStep,
+  buildDependedByStepIdsForStep
+} from './controllers/execution_controller.js';
+import {
+  buildPlanSignature,
+  buildResumeSeedFromCheckpoint
+} from './controllers/resume_controller.js';
+import {
+  mapAndFilterPlanSteps,
+  normalizePlanExecutor
+} from './controllers/plan_step_controller.js';
+import {
+  dispatchActionRequest
+} from './controllers/action_dispatch_controller.js';
+import {
+  normalizeActionOutcome
+} from './controllers/action_result_controller.js';
+import {
+  buildActionRequest,
+  createStepStateTracker
+} from './controllers/run_kernel_controller.js';
+import { evaluateStepMiniDecision } from './controllers/step_mini_eval_controller.js';
+import {
+  MINI_EVAL_DECISION,
+  MINI_EVAL_REASON_CODE,
+  NO_TOOL_REASON_CODE,
+  RUNTIME_REASON_CODE,
+  STEP_REASON_CODE,
+  isMiniEvalRetryDecision,
+  isMiniEvalStopDecision,
+  isCooldownResultCode,
+  miniEvalDecisionToReasonCode
+} from './controllers/runtime_step_policy.js';
+import { createGroupEventCoordinator } from './controllers/group_event_controller.js';
+import {
+  createRuntimeContext,
+  emitRunStart,
+  cleanupRuntimeRun,
+  runFeedbackEvaluationRound
+} from './controllers/runtime_orchestrator.js';
+import {
+  normalizePlanStepIds,
+  injectConcurrencyOverlay,
+  buildAdaptiveObjective,
+  buildRuntimeAdaptiveObjective
+} from './controllers/planning_controller.js';
+import {
+  claimRunExecutionEpoch,
+  isRunExecutionEpochActive,
+  releaseRunExecutionEpoch
+} from './controllers/runtime_state_controller.js';
+import {
+  loadRuntimeRunCheckpointSnapshot,
+  persistRuntimeCheckpoint,
+  persistRuntimeRunFinal
+} from './controllers/runtime_persistence_controller.js';
 
 function now() { return Date.now(); }
 
-function isPlanPatchEnabled() {
-  const s1 = String(config.runner?.enablePlanPatch ?? '').trim().toLowerCase();
-  const s2 = String(process.env.ENABLE_PLAN_PATCH ?? '').trim().toLowerCase();
-  return s1 === '1' || s1 === 'true' || s1 === 'yes' || s1 === 'on' || s2 === '1' || s2 === 'true' || s2 === 'yes' || s2 === 'on';
+const TERMINAL_TIMEOUT_RETRY_GUARD = Object.freeze({
+  timeoutMsDefault: 35000,
+  timeoutMsMax: 45000,
+  maxOutputCharsDefault: 12000,
+  maxOutputCharsMax: 20000,
+  tailLinesDefault: 120,
+  tailLinesMax: 200
+});
+const STEP_MINI_RETRY_ATTEMPT_LIMIT = 4;
+const STEP_TIMEOUT_SAME_FINGERPRINT_LIMIT = 2;
+
+function toBoundedInt(value, fallback = 0, min = 0, max = Number.MAX_SAFE_INTEGER) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const clamped = Math.trunc(n);
+  return Math.max(min, Math.min(max, clamped));
 }
 
-function normalizePlanStepIds(plan) {
-  const p = (plan && typeof plan === 'object') ? plan : { steps: [], manifest: [] };
-  const steps = Array.isArray(p.steps) ? p.steps : [];
-  const withIds = steps.map((s) => {
-    const step = (s && typeof s === 'object') ? s : {};
-    const sid = (typeof step.stepId === 'string' && step.stepId.trim()) ? step.stepId.trim() : newStepId();
-    return { ...step, stepId: sid };
-  });
-  const idToIndex = new Map(withIds.map((s, idx) => [s.stepId, idx]));
-  const finalSteps = withIds.map((s, idx0) => {
-    const rest = s;
-    const depsIdsRaw = Array.isArray(rest.dependsOnStepIds) ? rest.dependsOnStepIds : [];
-    const cleanedIds = depsIdsRaw
-      .map((x) => (typeof x === 'string' ? x.trim() : ''))
-      .filter(Boolean)
-      .filter((x) => idToIndex.has(x))
-      .filter((x) => x !== rest.stepId);
-    const uniq = Array.from(new Set(cleanedIds));
-    const displayIndex = Number.isFinite(Number(rest.displayIndex)) ? Number(rest.displayIndex) : (idx0 + 1);
-    return { ...rest, displayIndex, dependsOnStepIds: uniq.length ? uniq : undefined };
-  });
-
-  return { ...p, steps: finalSteps };
+function isTimeoutLikeCode(value = '') {
+  const text = String(value || '').trim().toUpperCase();
+  return text === 'TIMEOUT' || text.includes('TIMEOUT');
 }
 
-function mergeGlobalOverlay(context, overlayText) {
-  if (!overlayText) return context;
-  const ctx0 = (context && typeof context === 'object') ? context : {};
-  const po0 = (ctx0.promptOverlays && typeof ctx0.promptOverlays === 'object') ? ctx0.promptOverlays : {};
-  const existingGlobal = po0.global;
-  const existingSystem = (existingGlobal && typeof existingGlobal === 'object')
-    ? (existingGlobal.system || '')
-    : (existingGlobal ? String(existingGlobal) : '');
-  const mergedSystem = [existingSystem, overlayText].filter(Boolean).join('\n\n');
-  const nextGlobal = (existingGlobal && typeof existingGlobal === 'object')
-    ? { ...existingGlobal, system: mergedSystem }
-    : { system: mergedSystem };
-  return { ...ctx0, promptOverlays: { ...po0, global: nextGlobal } };
+function isTimeoutLikeFailureRecord(lastFailure = null) {
+  const src = (lastFailure && typeof lastFailure === 'object') ? lastFailure : {};
+  if (isTimeoutLikeCode(src.last_code)) return true;
+  const msg = String(src.last_error || '').trim().toLowerCase();
+  return msg.includes('timeout') || msg.includes('timed out');
 }
 
-function injectConcurrencyOverlay({ runId, objective, context }) {
-  const cid = context?.channelId != null ? String(context.channelId) : '';
-  const ik = context?.identityKey != null ? String(context.identityKey) : '';
-  if (!cid && !ik) return context;
-  const overlay = buildConcurrencyOverlay({ runId, channelId: cid, identityKey: ik, objective });
-  return mergeGlobalOverlay(context, overlay);
+function buildTerminalArgsFingerprint(args = {}) {
+  const src = (args && typeof args === 'object') ? args : {};
+  return [
+    String(src.command || '').trim(),
+    String(src.cwd || '').trim(),
+    String(src.terminalType || '').trim().toLowerCase(),
+    String(src.sessionMode || '').trim().toLowerCase(),
+    String(src.timeoutMs ?? ''),
+    String(src.maxOutputChars ?? ''),
+    String(src.tailLines ?? '')
+  ].join('|');
 }
 
-/**
- * 规范化 reason：仅支持数组格式
- * - 数组：过滤并清理每项
- * - 其他：返回空数组（不兼容旧字符串格式）
- */
-function normalizeReason(reason) {
-  if (Array.isArray(reason)) {
-    return reason.filter(r => typeof r === 'string' && r.trim()).map(r => r.trim());
+function applyTerminalTimeoutRetryGuards({ toolArgs = {}, retryState = {}, isSandboxStep = false } = {}) {
+  const srcArgs = (toolArgs && typeof toolArgs === 'object') ? { ...toolArgs } : {};
+  if (!isSandboxStep) return { args: srcArgs, applied: false, reasons: [] };
+  const state = (retryState && typeof retryState === 'object') ? retryState : {};
+  if (!isTimeoutLikeFailureRecord(state.lastFailure)) {
+    return { args: srcArgs, applied: false, reasons: [] };
   }
 
-  return [];
+  let applied = false;
+  const reasons = [];
+
+  const timeoutCurrent = toBoundedInt(srcArgs.timeoutMs, 0, 0, 900000);
+  const timeoutNext = timeoutCurrent > 0
+    ? Math.min(timeoutCurrent, TERMINAL_TIMEOUT_RETRY_GUARD.timeoutMsMax)
+    : TERMINAL_TIMEOUT_RETRY_GUARD.timeoutMsDefault;
+  if (timeoutCurrent !== timeoutNext) {
+    srcArgs.timeoutMs = timeoutNext;
+    applied = true;
+    reasons.push('timeout_ms_bounded_for_retry');
+  }
+
+  const maxOutputCurrent = toBoundedInt(srcArgs.maxOutputChars, 0, 0, 2_000_000);
+  const maxOutputNext = maxOutputCurrent > 0
+    ? Math.min(maxOutputCurrent, TERMINAL_TIMEOUT_RETRY_GUARD.maxOutputCharsMax)
+    : TERMINAL_TIMEOUT_RETRY_GUARD.maxOutputCharsDefault;
+  if (maxOutputCurrent !== maxOutputNext) {
+    srcArgs.maxOutputChars = maxOutputNext;
+    applied = true;
+    reasons.push('max_output_chars_bounded_for_retry');
+  }
+
+  const tailLinesCurrent = toBoundedInt(srcArgs.tailLines, 0, 0, 200000);
+  const tailLinesNext = tailLinesCurrent > 0
+    ? Math.min(tailLinesCurrent, TERMINAL_TIMEOUT_RETRY_GUARD.tailLinesMax)
+    : TERMINAL_TIMEOUT_RETRY_GUARD.tailLinesDefault;
+  if (tailLinesCurrent !== tailLinesNext) {
+    srcArgs.tailLines = tailLinesNext;
+    applied = true;
+    reasons.push('tail_lines_bounded_for_retry');
+  }
+
+  return { args: srcArgs, applied, reasons };
 }
 
-function shouldTriggerPlanPatch({ result, triggerMode } = {}) {
-  const mode = String(triggerMode || '').trim().toLowerCase();
-  if (mode === 'always') return true;
-  if (mode === 'never') return false;
-  if (!result || typeof result !== 'object') return false;
-  if (result.success === false) return true;
-  if (result.success === true) return false;
-  const code = String(result.code || '').toUpperCase();
-  if (code && code !== 'OK' && code !== 'SUCCESS') return true;
-  return false;
+function resolveRuntimeRunId(context = {}) {
+  const ctx = (context && typeof context === 'object') ? context : {};
+  const candidates = [
+    ctx.resumeRunId,
+    ctx.resume_run_id,
+    ctx.runId,
+    ctx.run_id
+  ];
+  for (const candidate of candidates) {
+    const runId = String(candidate || '').trim();
+    if (runId) return runId;
+  }
+  return uuidv4();
 }
 
-function isResultOk(result) {
-  if (!result || typeof result !== 'object') return false;
-  if (result.success === false) return false;
-  if (result.success === true) return true;
-  const code = String(result.code || '').toUpperCase();
-  if (!code) return true;
-  return code === 'OK' || code === 'SUCCESS';
+function isTerminalRuntimeStatus(statusLike) {
+  const s = String(statusLike || '').trim().toLowerCase();
+  return s === 'completed' || s === 'failed' || s === 'cancelled';
 }
 
-function applyDisplayIndex(steps) {
-  for (let i = 0; i < steps.length; i++) {
-    const s = steps[i];
-    if (s && typeof s === 'object') {
-      s.displayIndex = i + 1;
+function resolveResumeCheckpointSignal(context = {}) {
+  const ctx = (context && typeof context === 'object') ? context : {};
+  const runtimeResume = (ctx.runtimeResume && typeof ctx.runtimeResume === 'object' && !Array.isArray(ctx.runtimeResume))
+    ? ctx.runtimeResume
+    : {};
+  const fromCheckpoint = runtimeResume.fromCheckpoint === true
+    || ctx.fromCheckpoint === true
+    || ctx.runtime_resume_from_checkpoint === true;
+  const runId = String(
+    runtimeResume.runId
+    || ctx.resumeRunId
+    || ctx.resume_run_id
+    || ctx.runId
+    || ctx.run_id
+    || ''
+  ).trim();
+  return {
+    fromCheckpoint,
+    runId,
+    runtimeResume
+  };
+}
+
+async function resolveResumePlanFromRuntimeCheckpoint({
+  runId = '',
+  context = {},
+  normalizePlanFn = (x) => x
+} = {}) {
+  const rid = String(runId || '').trim();
+  if (!rid) return { enabled: false, reason: 'resume_missing_run_id' };
+  const signal = resolveResumeCheckpointSignal(context);
+  if (!signal.fromCheckpoint) return { enabled: false, reason: 'resume_not_requested' };
+
+  const checkpoint = await loadRuntimeRunCheckpointSnapshot({ runId: rid });
+  if (!checkpoint || typeof checkpoint !== 'object') {
+    return { enabled: false, reason: 'resume_checkpoint_not_found' };
+  }
+  if (isTerminalRuntimeStatus(checkpoint.status)) {
+    return { enabled: false, reason: 'resume_checkpoint_terminal', checkpoint };
+  }
+
+  const persistedPlanRaw = await HistoryStore.getPlan(rid);
+  if (!persistedPlanRaw || typeof persistedPlanRaw !== 'object') {
+    return { enabled: false, reason: 'resume_plan_not_found', checkpoint };
+  }
+  const normalizedPlan = normalizePlanFn(persistedPlanRaw);
+  if (!normalizedPlan || typeof normalizedPlan !== 'object' || isPlanEmpty(normalizedPlan)) {
+    return { enabled: false, reason: 'resume_plan_empty', checkpoint };
+  }
+
+  const checkpointSignature = String(checkpoint.planSignature || '').trim();
+  const planSignature = buildPlanSignature(normalizedPlan);
+  if (checkpointSignature && checkpointSignature !== planSignature) {
+    return {
+      enabled: false,
+      reason: 'resume_plan_signature_mismatch',
+      checkpoint,
+      checkpointSignature,
+      planSignature
+    };
+  }
+
+  const checkpointTotalSteps = Number(checkpoint.totalSteps || 0);
+  const planTotalSteps = Number(normalizedPlan?.steps?.length || 0);
+  if (checkpointTotalSteps > 0 && checkpointTotalSteps !== planTotalSteps) {
+    return {
+      enabled: false,
+      reason: 'resume_plan_total_steps_mismatch',
+      checkpoint,
+      checkpointTotalSteps,
+      planTotalSteps
+    };
+  }
+
+  const lastCompletedStepIndex = Number.isFinite(Number(checkpoint.lastCompletedStepIndex))
+    ? Number(checkpoint.lastCompletedStepIndex)
+    : -1;
+  const resumeCursorIndex = Math.max(0, lastCompletedStepIndex + 1);
+
+  return {
+    enabled: true,
+    reason: 'resume_checkpoint_plan_loaded',
+    checkpoint,
+    plan: normalizedPlan,
+    planSignature,
+    checkpointSignature,
+    resumeCursorIndex
+  };
+}
+
+function normalizeEventPayload(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) return value.map((item) => normalizeEventPayload(item));
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = normalizeEventPayload(v);
     }
+    return out;
   }
+  return value;
 }
 
-function buildStepIdIndexMap(steps) {
-  return new Map((steps || []).map((s, idx) => [typeof s?.stepId === 'string' ? s.stepId : '', idx]).filter(([k]) => k));
+function escapeXmlText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
-function sanitizeDependsOnStepIds(step, steps) {
-  const m = buildStepIdIndexMap(steps);
-  const ids = Array.isArray(step?.dependsOnStepIds) ? step.dependsOnStepIds : [];
-  const cleaned = ids.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean).filter((x) => m.has(x));
-  const uniq = Array.from(new Set(cleaned));
-  step.dependsOnStepIds = uniq.length ? uniq : undefined;
-}
-
-function computeDependsOnIndicesFromStep({ step, steps, selfIndex }) {
-  const m = buildStepIdIndexMap(steps);
+function normalizeStringList(value, maxItems = 32) {
+  const src = Array.isArray(value) ? value : [];
   const out = [];
-  if (Array.isArray(step?.dependsOnStepIds) && step.dependsOnStepIds.length) {
-    for (const sid of step.dependsOnStepIds) {
-      const idx = m.get(sid);
-      if (Number.isInteger(idx) && idx >= 0 && idx !== selfIndex) out.push(idx);
-    }
-  }
-  return Array.from(new Set(out)).sort((a, b) => a - b);
-}
-
-function canTargetPending(targetIdx, currentIdx) {
-  return Number.isFinite(targetIdx) && targetIdx > currentIdx;
-}
-
-function guardPlanPatchOps(ops) {
-  const out = [];
-  for (const op of (Array.isArray(ops) ? ops : [])) {
-    const kind = String(op?.op || '').trim();
-    if (!kind) continue;
-    if (kind === 'append') {
-      const steps = Array.isArray(op?.steps) ? op.steps : [];
-      if (steps.length === 0) continue;
-      out.push({ op: 'append', steps });
-    } else if (kind === 'replace') {
-      const targetStepId = typeof op?.targetStepId === 'string' ? op.targetStepId.trim() : '';
-      const step = op?.step;
-      if (!targetStepId || !step) continue;
-      out.push({ op: 'replace', targetStepId, step });
-    } else if (kind === 'delete') {
-      const targetStepId = typeof op?.targetStepId === 'string' ? op.targetStepId.trim() : '';
-      if (!targetStepId) continue;
-      out.push({ op: 'delete', targetStepId });
-    }
+  for (const item of src) {
+    const text = String(item ?? '').trim();
+    if (!text) continue;
+    out.push(text);
+    if (out.length >= maxItems) break;
   }
   return out;
 }
 
-function normalizePlanPatchStepInput(raw) {
-  const s = (raw && typeof raw === 'object') ? raw : {};
+function compactSkillDoc(skillDoc = null) {
+  const src = (skillDoc && typeof skillDoc === 'object') ? skillDoc : null;
+  if (!src) return null;
   return {
-    stepId: typeof s.stepId === 'string' && s.stepId.trim() ? s.stepId.trim() : newStepId(),
-    displayIndex: Number.isFinite(Number(s.displayIndex)) ? Number(s.displayIndex) : undefined,
-    aiName: typeof s.aiName === 'string' ? s.aiName : '',
-    reason: normalizeReason(s.reason),
-    draftArgs: (s.draftArgs && typeof s.draftArgs === 'object') ? s.draftArgs : {},
-    dependsOnStepIds: Array.isArray(s.dependsOnStepIds)
-      ? s.dependsOnStepIds.map(x => (typeof x === 'string' ? x.trim() : '')).filter(Boolean)
-      : undefined,
-    nextStep: typeof s.nextStep === 'string' ? s.nextStep : '',
-    skip: s.skip === true,
+    path: String(src.path || '').trim(),
+    whenToUse: normalizeStringList(src.whenToUse, 24),
+    whenNotToUse: normalizeStringList(src.whenNotToUse, 24),
+    successCriteria: normalizeStringList(src.successCriteria, 32)
   };
 }
 
-/**
- * 构建依赖图：找出所有依赖某些步骤的下游步骤
- * @param {Array} steps - 计划步骤数组
- * @param {Array<number>} sourceIndices - 源步骤索引数组
- * @returns {Set<number>} 包含源步骤和所有下游依赖步骤的索引集合
- */
-function buildDependencyChain(steps, sourceIndices) {
-  const result = new Set(sourceIndices);
-  const total = steps.length;
-  const stepIdToIdx = new Map((steps || []).map((s, idx) => [typeof s?.stepId === 'string' ? s.stepId : '', idx]).filter(([k]) => k));
+function collectStepSuccessCriteria(step = {}, manifestItem = null, currentToolFull = null) {
+  const own = normalizeStringList(step?.successCriteria, 32);
+  if (own.length > 0) return own;
+  const fromManifest = normalizeStringList(manifestItem?.skillDoc?.successCriteria, 32);
+  if (fromManifest.length > 0) return fromManifest;
+  return normalizeStringList(currentToolFull?.skillDoc?.successCriteria, 32);
+}
 
-  // 递归查找下游依赖
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (let i = 0; i < total; i++) {
-      if (result.has(i)) continue; // 已在结果集中
+function buildStepToolContextSnapshot({
+  aiName = '',
+  executor = 'mcp',
+  actionRef = '',
+  manifestItem = null,
+  currentToolFull = null,
+  toolMeta = null
+} = {}) {
+  const manifest = (manifestItem && typeof manifestItem === 'object') ? manifestItem : {};
+  const current = (currentToolFull && typeof currentToolFull === 'object') ? currentToolFull : {};
+  const source = Object.keys(current).length > 0 ? current : manifest;
+  const out = {
+    aiName: String(aiName || source.aiName || '').trim(),
+    name: String(source.name || '').trim(),
+    provider: String(source.provider || '').trim(),
+    executor: String(executor || source.executor || '').trim(),
+    actionRef: String(actionRef || source.actionRef || '').trim(),
+    description: String(source.description || '').trim(),
+    inputSchema: (source.inputSchema && typeof source.inputSchema === 'object') ? source.inputSchema : {},
+    meta: (toolMeta && typeof toolMeta === 'object')
+      ? toolMeta
+      : ((source.meta && typeof source.meta === 'object') ? source.meta : {}),
+    skillDoc: compactSkillDoc(source.skillDoc || manifest.skillDoc || null)
+  };
+  return normalizeEventPayload(out);
+}
 
-      const step = steps[i];
-      const depsIds = Array.isArray(step?.dependsOnStepIds) ? step.dependsOnStepIds : [];
-      const depsIdx = depsIds
-        .map((sid) => (typeof sid === 'string' ? stepIdToIdx.get(sid.trim()) : undefined))
-        .filter((x) => Number.isInteger(x));
+function shouldSkipSummaryByEval(evalObj) {
+  return normalizeEvalAction(evalObj) === 'perfect';
+}
 
-      // 如果该步骤依赖任何已在结果集中的步骤，则添加到结果集
-      if (depsIdx.some((d) => result.has(d))) {
-        result.add(i);
-        changed = true;
+function toBooleanFlag(value, fallback = false) {
+  if (value === undefined || value === null) return !!fallback;
+  if (typeof value === 'boolean') return value;
+  const s = String(value).trim().toLowerCase();
+  if (!s) return !!fallback;
+  if (s === '1' || s === 'true' || s === 'yes' || s === 'on') return true;
+  if (s === '0' || s === 'false' || s === 'no' || s === 'off') return false;
+  return !!fallback;
+}
+
+function resolveRuntimeControl(context = {}) {
+  const ctx = (context && typeof context === 'object') ? context : {};
+  const source =
+    (ctx.runtimeControl && typeof ctx.runtimeControl === 'object')
+      ? ctx.runtimeControl
+      : ((ctx.mcpRuntimeControl && typeof ctx.mcpRuntimeControl === 'object') ? ctx.mcpRuntimeControl : {});
+  const singlePass = toBooleanFlag(source.singlePass, false);
+  const skipEvaluation = toBooleanFlag(source.skipEvaluation, false);
+  return {
+    enabled: singlePass || skipEvaluation || toBooleanFlag(source.skipSummary, false),
+    singlePass,
+    skipEvaluation,
+    skipSummary: toBooleanFlag(source.skipSummary, false) || skipEvaluation,
+    disableAdaptive: toBooleanFlag(source.disableAdaptive, false) || singlePass || skipEvaluation,
+    disablePlanRepair: toBooleanFlag(source.disablePlanRepair, false) || singlePass || skipEvaluation,
+    disableArgFixRetry: toBooleanFlag(source.disableArgFixRetry, false) || singlePass,
+    reason: String(source.reason || '').trim()
+  };
+}
+
+function buildSkippedEvalResult(reason = '') {
+  const why = String(reason || '').trim() || 'runtime_control_skip_evaluation';
+  return {
+    success: false,
+    incomplete: true,
+    nextAction: 'replan',
+    completionLevel: 'poor',
+    summary: `Evaluation skipped: ${why}`,
+    skipped: true,
+    reasonCode: why
+  };
+}
+
+function isPlanEmpty(plan) {
+  return !Array.isArray(plan?.steps) || plan.steps.length === 0;
+}
+
+function buildNoToolsResultGroupEvent({
+  reasonCode = NO_TOOL_REASON_CODE.defaultNoInvocation,
+  reason = '',
+  summary = ''
+} = {}) {
+  const stepId = 'no_tool_invocation';
+  const reasonText = String(reason || '').trim() || String(reasonCode || NO_TOOL_REASON_CODE.defaultNoInvocation);
+  const summaryText = String(summary || '').trim();
+  const data = {
+    no_tool_call: true,
+    reason_code: String(reasonCode || NO_TOOL_REASON_CODE.defaultNoInvocation)
+  };
+  if (summaryText) data.summary = summaryText;
+
+  return {
+    type: 'tool_result_group',
+    groupId: 'runtime_no_tools',
+    groupSize: 1,
+    orderStepIds: [stepId],
+    events: [{
+      type: 'tool_result',
+      stepId,
+      plannedStepIndex: 0,
+      stepIndex: 0,
+      aiName: 'runtime__no_tool_call',
+      reason: [reasonText],
+      result: {
+        success: true,
+        code: 'NO_TOOL_CALL',
+        provider: 'runtime',
+        data
       }
+    }],
+    resultStream: true,
+    resultStatus: 'final',
+    groupFlushed: true
+  };
+}
+
+function buildToolGateEvent({
+  judge = null,
+  manifest = []
+} = {}) {
+  const list = Array.isArray(manifest) ? manifest : [];
+  const allToolNames = list
+    .map((m) => String(m?.aiName || '').trim())
+    .filter(Boolean);
+  const gateToolNames = Array.isArray(judge?.toolNames)
+    ? judge.toolNames.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  const selectedSet = new Set(gateToolNames);
+  if (allToolNames.includes(TERMINAL_RUNTIME_AI_NAME)) {
+    selectedSet.add(TERMINAL_RUNTIME_AI_NAME);
+  }
+  const selectedTools = allToolNames.filter((name) => selectedSet.has(name));
+  const skippedTools = allToolNames.filter((name) => !selectedSet.has(name));
+  return {
+    type: 'tool_gate',
+    ok: judge?.ok !== false,
+    need: judge?.need === true,
+    forced: judge?.forced === true,
+    summary: String(judge?.summary || '').trim(),
+    selectedCount: selectedTools.length,
+    totalCount: allToolNames.length,
+    selectedTools,
+    skippedCount: skippedTools.length
+  };
+}
+
+async function buildJudgeManifestWithPrefilter({
+  objective,
+  baseManifest,
+  context = {}
+} = {}) {
+  let manifest = pinTerminalRuntimeInManifest(
+    Array.isArray(baseManifest) ? baseManifest : [],
+    { insertIfMissing: true }
+  );
+  if (!String(objective || '').trim() || config.rerank?.enable === false) {
+    return manifest;
+  }
+  const externalReasons = Array.isArray(context?.externalReasons)
+    ? context.externalReasons
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)
+    : [];
+  try {
+    const ranked = await rerankManifest({
+      manifest,
+      objective,
+      externalReasons
+    });
+    if (Array.isArray(ranked?.manifest) && ranked.manifest.length > 0) {
+      manifest = pinTerminalRuntimeInManifest(ranked.manifest, { insertIfMissing: true });
     }
+  } catch (e) {
+    logger.warn?.('Judge prefilter rerank failed (ignored)', {
+      label: 'RERANK',
+      error: String(e)
+    });
   }
-
-  return result;
+  return manifest;
 }
 
-/**
- * 格式化 reason 数组为字符串（用于显示、日志）
- * - 数组：用 '; ' 连接
- * - 其他：返回空字符串
- */
-function formatReason(reason) {
-  if (Array.isArray(reason) && reason.length > 0) {
-    return reason.join('; ');
-  }
-  return '';
-}
 
-// 判断某个工具在使用 schedule 参数时，是否允许“立即执行 + 延迟发送”模式
-// 规则：
-// - 若在 SCHEDULE_IMMEDIATE_AI_DENYLIST 中，始终视为不允许（仅到点再执行）
-// - 若 allowlist 为空，则默认不启用立即执行（保持兼容）
-// - 若在 SCHEDULE_IMMEDIATE_AI_ALLOWLIST 中且不在 denylist 中，则启用立即执行
-function isImmediateScheduleAllowed(aiName) {
-  if (!aiName) return false;
-  const schedCfg = config.schedule || {};
-  const allow = Array.isArray(schedCfg.immediateAllowlist)
-    ? schedCfg.immediateAllowlist
-    : (schedCfg.immediateAllowlist ? [schedCfg.immediateAllowlist] : []);
-  const deny = Array.isArray(schedCfg.immediateDenylist)
-    ? schedCfg.immediateDenylist
-    : (schedCfg.immediateDenylist ? [schedCfg.immediateDenylist] : []);
 
-  if (deny.includes(aiName)) return false;
-  if (allow.length === 0) return false;
-  return allow.includes(aiName);
-}
-
-// 清理 context 以供日志记录：省略 promptOverlays 等大字段
-function sanitizeContextForLog(context) {
-  if (!context || typeof context !== 'object') return context;
-  const { promptOverlays, overlays, ...rest } = context;
-  const sanitized = { ...rest };
-  if (promptOverlays || overlays) {
-    sanitized.promptOverlays = '<omitted>';
-  }
-  return sanitized;
-}
-
-// 时间意图现在完全交由模型自行理解与决策，不再在 planner 中做额外的 TimeParser 预判断。
-
-// 多计划生成（native tools 模式）——单次生成一个候选
 async function generateSingleNativePlan({ messages, tools, allowedAiNames, temperature, model }) {
   const res = await chatCompletion({
     messages,
@@ -294,22 +567,14 @@ async function generateSingleNativePlan({ messages, tools, allowedAiNames, tempe
   const call = res.choices?.[0]?.message?.tool_calls?.[0];
   let parsed; try { parsed = call?.function?.arguments ? JSON.parse(call.function.arguments) : {}; } catch { parsed = {}; }
   const stepsArr = Array.isArray(parsed?.steps) ? parsed.steps : [];
-  let rawSteps = stepsArr.map((s) => ({
-    stepId: (typeof s?.stepId === 'string' && s.stepId.trim()) ? s.stepId.trim() : newStepId(),
-    aiName: s?.aiName,
-    reason: normalizeReason(s?.reason),
-    nextStep: s?.nextStep || '',
-    draftArgs: s?.draftArgs || {},
-    dependsOnStepIds: Array.isArray(s?.dependsOnStepIds) ? s.dependsOnStepIds : undefined
-  }));
-  // 过滤未知工具
   const validNames = new Set(allowedAiNames || []);
-  const steps = (validNames.size ? rawSteps.filter((s) => s.aiName && validNames.has(s.aiName)) : rawSteps);
-  const removedUnknown = steps.length < rawSteps.length;
+  const steps = mapAndFilterPlanSteps(stepsArr, {
+    allowedMcpAiNamesSet: validNames
+  });
+  const removedUnknown = steps.length < stepsArr.length;
   return { steps, removedUnknown, parsed };
 }
 
-// 候选计划审核与选择（使用 reasoner 模型 + JSON 提示）
 async function selectBestNativePlan({ objective, manifest, candidates, context }) {
   try {
     const pa = await loadPrompt('plan_audit');
@@ -327,12 +592,10 @@ async function selectBestNativePlan({ objective, manifest, candidates, context }
       { role: 'user', content: pa.user_request },
     ]);
 
-    // 审核开关：关闭时直接选择 #0
     if (!config.planner?.auditEnable) {
       return { index: 0, audit: 'audit disabled' };
     }
 
-    // 定义 select_plan 工具（Native tools 模式）
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
     const selectPlanTool = await loadToolDef({
       baseDir: __dirname,
@@ -342,7 +605,7 @@ async function selectBestNativePlan({ objective, manifest, candidates, context }
         type: 'function',
         function: {
           name: 'select_plan',
-          description: '从多份候选计划中选出最佳方案并说明理由',
+          description: 'Select the best plan from candidates and explain why.',
           parameters: { type: 'object', properties: {} }
         }
       },
@@ -373,9 +636,202 @@ async function selectBestNativePlan({ objective, manifest, candidates, context }
     idx = Math.max(0, Math.min(candidates.length - 1, idx));
     return { index: idx, audit: reason };
   } catch (e) {
-    logger.warn?.('Native 多计划审核失败，回退到候选#0', { label: 'PLAN', error: String(e) });
+    logger.warn?.('Native selectBestPlan failed; fallback to candidate 0', { label: 'PLAN', error: String(e) });
     return { index: 0, audit: '' };
   }
+}
+
+function buildAdaptiveEvalContextForPlan(previousEval) {
+  const ev = (previousEval && typeof previousEval === 'object') ? previousEval : null;
+  if (!ev) return null;
+  const missingGoals = Array.isArray(ev.missingGoals)
+    ? ev.missingGoals.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  const failedSteps = Array.isArray(ev.failedSteps)
+    ? ev.failedSteps
+      .map((x) => {
+        const item = (x && typeof x === 'object') ? x : {};
+        const stepId = String(item.stepId || '').trim();
+        const aiName = String(item.aiName || '').trim();
+        const reason = String(item.reason || '').trim();
+        if (!stepId && !aiName && !reason) return null;
+        const displayIndexRaw = Number(item.displayIndex);
+        return {
+          ...(stepId ? { stepId } : {}),
+          ...(aiName ? { aiName } : {}),
+          ...(Number.isFinite(displayIndexRaw) ? { displayIndex: Math.floor(displayIndexRaw) } : {}),
+          ...(reason ? { reason } : {}),
+        };
+      })
+      .filter(Boolean)
+    : [];
+  return {
+    success: ev.success === true,
+    incomplete: ev.incomplete === true,
+    nextAction: String(ev.nextAction || '').trim().toLowerCase() || undefined,
+    completionLevel: String(ev.completionLevel || '').trim().toLowerCase() || undefined,
+    summary: String(ev.summary || '').trim(),
+    missingGoals,
+    failedSteps,
+  };
+}
+
+function buildResultForAdaptiveHistory(item = {}) {
+  const result = (item?.result && typeof item.result === 'object') ? item.result : {};
+  const actionResult = (item?.actionResult && typeof item.actionResult === 'object') ? item.actionResult : {};
+  const evidence = Array.isArray(actionResult?.evidence) && actionResult.evidence.length
+    ? actionResult.evidence
+    : (Array.isArray(result?.evidence) ? result.evidence : []);
+  const out = {
+    success: result.success === true,
+    code: String(result.code || ''),
+    provider: String(result.provider || actionResult?.output?.provider || '')
+  };
+  if (evidence.length > 0) {
+    out.data = { evidence: evidence.slice(0, 6) };
+  } else if (typeof result?.message === 'string' && result.message.trim()) {
+    out.data = { message: result.message.trim().slice(0, 360) };
+  }
+  return out;
+}
+
+async function buildAdaptivePlanningMessages({ runId, context = {} }) {
+  const roundRaw = Number(context?.adaptiveRound || 0);
+  const adaptiveRound = Number.isFinite(roundRaw) ? Math.max(0, Math.floor(roundRaw)) : 0;
+  const previousEvalCtx = buildAdaptiveEvalContextForPlan(context?.previousEval);
+  if (adaptiveRound <= 0 && !previousEvalCtx) return [];
+
+  const rid = String(runId || context?.runId || '').trim();
+  let toolResults = [];
+  let checkpointDiffIndex = {};
+  if (rid) {
+    try {
+      const hist = await HistoryStore.list(rid, 0, -1);
+      toolResults = (Array.isArray(hist) ? hist : []).filter((h) => h && h.type === 'tool_result');
+    } catch (e) {
+      logger.warn?.('Adaptive plan context failed to load tool_result history', {
+        label: 'PLAN',
+        runId: rid || 'unknown',
+        error: String(e),
+      });
+    }
+    try {
+      const checkpoint = await loadRuntimeRunCheckpointSnapshot({ runId: rid });
+      const fromCheckpoint = checkpoint?.lastWorkspaceDiffByStepKey;
+      checkpointDiffIndex = (fromCheckpoint && typeof fromCheckpoint === 'object' && !Array.isArray(fromCheckpoint))
+        ? fromCheckpoint
+        : {};
+    } catch (e) {
+      logger.warn?.('Adaptive plan context failed to load checkpoint diff index', {
+        label: 'PLAN',
+        runId: rid || 'unknown',
+        error: String(e),
+      });
+    }
+  }
+
+  const evalPayload = previousEvalCtx || {
+    success: undefined,
+    incomplete: undefined,
+    nextAction: String(context?.adaptiveAction || '').trim().toLowerCase() || undefined,
+    completionLevel: undefined,
+    summary: '',
+    missingGoals: [],
+    failedSteps: [],
+  };
+
+  const messages = [];
+  for (const h of toolResults) {
+    const item = (h && typeof h === 'object') ? h : {};
+    const xml = formatSentraResult({
+      stepIndex: Number(item.plannedStepIndex ?? item.stepIndex ?? 0),
+      stepId: item?.stepId,
+      aiName: item.aiName,
+      reason: item.reason,
+      args: item.args || {},
+      result: buildResultForAdaptiveHistory(item),
+    });
+    if (!String(xml || '').trim()) continue;
+    messages.push({ role: 'user', content: xml });
+    messages.push({
+      role: 'assistant',
+      content:
+        `<sentra-message><chat_type>system_task</chat_type><message><segment index="1"><type>text</type><data><text>Recorded tool result for replanning context. step_id=${escapeXmlText(item?.stepId || '')}; tool=${escapeXmlText(item?.aiName || '')}.</text></data></segment></message></sentra-message>`
+    });
+  }
+
+  const missingGoals = Array.isArray(evalPayload.missingGoals) ? evalPayload.missingGoals : [];
+  const failedSteps = Array.isArray(evalPayload.failedSteps) ? evalPayload.failedSteps : [];
+  const missingXml = missingGoals
+    .map((g, idx) => `    <goal index="${idx + 1}">${escapeXmlText(g)}</goal>`)
+    .join('\n');
+  const failedXml = failedSteps
+    .map((s, idx) => [
+      `    <step index="${idx + 1}">`,
+      `      <step_id>${escapeXmlText(s?.stepId || '')}</step_id>`,
+      `      <ai_name>${escapeXmlText(s?.aiName || '')}</ai_name>`,
+      `      <display_index>${escapeXmlText(s?.displayIndex ?? '')}</display_index>`,
+      `      <reason>${escapeXmlText(s?.reason || '')}</reason>`,
+      '    </step>'
+    ].join('\n'))
+    .join('\n');
+
+  const evalXml = [
+    '<sentra-adaptive-eval>',
+    `  <run_id>${escapeXmlText(rid || 'unknown')}</run_id>`,
+    `  <adaptive_round>${adaptiveRound}</adaptive_round>`,
+    `  <success>${escapeXmlText(evalPayload.success ?? '')}</success>`,
+    `  <incomplete>${escapeXmlText(evalPayload.incomplete ?? '')}</incomplete>`,
+    `  <next_action>${escapeXmlText(evalPayload.nextAction || '')}</next_action>`,
+    `  <completion_level>${escapeXmlText(evalPayload.completionLevel || '')}</completion_level>`,
+    `  <summary>${escapeXmlText(evalPayload.summary || '')}</summary>`,
+    '  <missing_goals>',
+    missingXml,
+    '  </missing_goals>',
+    '  <failed_steps>',
+    failedXml,
+    '  </failed_steps>',
+    '</sentra-adaptive-eval>',
+    '<root>Replan from these result-history messages. Reuse already successful outputs. Fix failed steps by reason. Only add missing goals; do not repeat completed deliverables.</root>'
+  ].join('\n');
+
+  messages.push({ role: 'user', content: evalXml });
+  const checkpointDiffRows = Object.entries(checkpointDiffIndex || {})
+    .filter(([k, v]) => {
+      if (!k) return false;
+      return !!v && typeof v === 'object';
+    })
+    .slice(-48);
+  if (checkpointDiffRows.length > 0) {
+    const lines = [];
+    lines.push('<sentra-workspace-diff-index>');
+    lines.push(`  <run_id>${escapeXmlText(rid || 'unknown')}</run_id>`);
+    lines.push('  <steps>');
+    for (const [stepKey, value] of checkpointDiffRows) {
+      const item = (value && typeof value === 'object') ? value : {};
+      const summary = (item.summary && typeof item.summary === 'object') ? item.summary : {};
+      const totalDelta = Number(summary.totalDelta || 0);
+      const effect = String(item.effect || (totalDelta > 0 ? 'changed' : 'no_effect'));
+      const stepId = String(item.stepId || '');
+      const aiName = String(item.aiName || '');
+      const comparedAt = Number(item.comparedAt || 0);
+      const paths = Array.isArray(item.paths) ? item.paths.slice(0, 6) : [];
+      lines.push(`    <step key="${escapeXmlText(stepKey)}" step_id="${escapeXmlText(stepId)}" ai_name="${escapeXmlText(aiName)}" effect="${escapeXmlText(effect)}" total_delta="${escapeXmlText(totalDelta)}" compared_at="${escapeXmlText(comparedAt)}">`);
+      if (paths.length > 0) {
+        lines.push('      <paths>');
+        for (const p of paths) {
+          lines.push(`        <path>${escapeXmlText(String(p || ''))}</path>`);
+        }
+        lines.push('      </paths>');
+      }
+      lines.push('    </step>');
+    }
+    lines.push('  </steps>');
+    lines.push('</sentra-workspace-diff-index>');
+    lines.push('<root>Use this checkpoint diff index to avoid replaying unchanged write steps during replan/resume.</root>');
+    messages.push({ role: 'user', content: lines.join('\n') });
+  }
+  return compactMessages(messages);
 }
 
 export async function generatePlan(objective, mcpcore, context = {}, conversation) {
@@ -385,55 +841,73 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
   if (strategy === 'fc') {
     return generatePlanViaFC(objective, mcpcore, context, conversation);
   }
-  let manifest = buildPlanningManifest(mcpcore);
+  let manifest = pinTerminalRuntimeInManifest(buildPlanningManifest(mcpcore), { insertIfMissing: true });
+  let rerankScoreByAiName = {};
+  const externalReasons = Array.isArray(context?.externalReasons)
+    ? context.externalReasons
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)
+    : [];
 
-  // 先进行一次“预思考”，可配置关闭该步骤
   const usePT = !!config.flags?.planUsePreThought;
   const preThought = usePT ? (await getPreThought(objective, manifest, conversation)) : '';
 
-  // 重排序：仅使用 objective
   try {
     if (objective && (config.rerank?.enable !== false)) {
       const ranked = await rerankManifest({
         manifest,
         objective,
-        candidateK: config.rerank?.candidateK,
-        topN: config.rerank?.topN
+        externalReasons
       });
       if (Array.isArray(ranked?.manifest) && ranked.manifest.length) {
-        manifest = ranked.manifest;
+        manifest = pinTerminalRuntimeInManifest(ranked.manifest, { insertIfMissing: true });
+        if (Array.isArray(ranked?.details) && ranked.details.length) {
+          rerankScoreByAiName = Object.fromEntries(
+            ranked.details
+              .filter((d) => d && typeof d.aiName === 'string' && d.aiName.trim())
+              .map((d) => [String(d.aiName).trim(), {
+                final: Number(d.final || 0),
+                intent: Number(d.intent || 0),
+                trust: Number(d.trust || 0),
+                relevance: Number(d.relevance || 0),
+                probability: Number(d.probability || 0),
+                keywordHitRatio: Number(d.keywordHitRatio || 0),
+                regexHitRatio: Number(d.regexHitRatio || 0),
+                rank: Number(d.rank || 0)
+              }])
+          );
+        }
         if (config.flags.enableVerboseSteps) {
           const tops = manifest.slice(0, Math.min(5, manifest.length)).map(x => x.aiName);
-          logger.info('规划前重排序Top工具', { label: 'RERANK', top: tops });
+          logger.info('Plan rerank top tools', { label: 'RERANK', top: tops });
         }
       }
     }
   } catch (e) {
-    logger.warn?.('规划前重排序失败（忽略并继续）', { label: 'RERANK', error: String(e) });
+    logger.warn?.('Plan rerank failed (ignored)', { label: 'RERANK', error: String(e) });
   }
 
-  // 枚举合法 aiName，限制模型只能选择清单内工具（此时 manifest 已是 Top-N）
-  // 如果上游传入了 judgeToolNames，则优先使用它做白名单过滤，减少规划期“污染/跑偏”。
   const allowedAiNamesAll = (manifest || []).map((m) => m.aiName).filter(Boolean);
   const judgeToolNames = (context?.judge && Array.isArray(context.judge.toolNames))
     ? context.judge.toolNames
     : (Array.isArray(context?.judgeToolNames) ? context.judgeToolNames : []);
 
   const judgeToolSet = new Set((judgeToolNames || []).filter(Boolean));
+  const reservedAiNames = new Set([TERMINAL_RUNTIME_AI_NAME]);
   const allowedByJudge = (judgeToolSet.size > 0)
-    ? allowedAiNamesAll.filter((n) => judgeToolSet.has(n))
+    ? allowedAiNamesAll.filter((n) => judgeToolSet.has(n) || reservedAiNames.has(n))
     : [];
   const allowedAiNames = (judgeToolSet.size > 0 && allowedByJudge.length > 0)
     ? allowedByJudge
     : allowedAiNamesAll;
 
   if (judgeToolSet.size > 0) {
-    // 同步缩减 manifest，保证后续 allowedAiNames 与 manifest 一致
-    const filtered = (manifest || []).filter((m) => m && m.aiName && judgeToolSet.has(m.aiName));
+    const filtered = (manifest || []).filter((m) => m && m.aiName && (judgeToolSet.has(m.aiName) || reservedAiNames.has(m.aiName)));
     if (filtered.length > 0) {
-      manifest = filtered;
+      manifest = pinTerminalRuntimeInManifest(filtered, { insertIfMissing: true });
     }
   }
+  manifest = pinTerminalRuntimeInManifest(manifest, { insertIfMissing: true });
   const validNames = new Set(allowedAiNames || []);
 
   // force LLM to emit a plan via function call (schema/tool loaded from JSON via loader)
@@ -450,7 +924,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
       type: 'function',
       function: {
         name: 'emit_plan',
-        description: '产出工具执行顺序的 JSON 计划。每一步仅包含一个工具(aiName)与draftArgs(仅需包含必填字段)。',
+        description: 'Emit a JSON plan with ordered tool steps. Each step contains one aiName and minimal draftArgs.',
         parameters: { type: 'object', properties: {} }
       }
     },
@@ -462,8 +936,15 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
           type: 'array',
           items: {
             type: 'object',
-            properties: { aiName: { type: 'string' } },
-            required: ['aiName']
+            properties: {
+              aiName: { type: 'string' },
+              executor: { type: 'string', enum: ['mcp', 'sandbox'] },
+              actionRef: { type: 'string' }
+            },
+            anyOf: [
+              { required: ['aiName'] },
+              { required: ['executor', 'actionRef'] }
+            ]
           }
         }
       },
@@ -471,7 +952,6 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
     },
   });
   const tools = [emitPlanTool];
-  // 加载 emit_plan 提示模板，构造消息
   const ep = await loadPrompt('emit_plan');
   const overlays = (context?.promptOverlays || context?.overlays || {});
   const overlayGlobal = overlays.global?.system || overlays.global || '';
@@ -480,20 +960,8 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
     composeSystem(ep.system, [overlayGlobal, overlayPlan].filter(Boolean).join('\n\n')),
     ep.concurrency_hint || ''
   ].filter(Boolean).join('\n\n');
-  // 检索历史规划记忆（相似目标的成功计划），作为参考上下文
-  let planMemoryMsgs = [];
-  if (config.memory?.enable) {
-    const mems = await searchPlanMemories({ objective });
-    if (Array.isArray(mems) && mems.length) {
-      const lines = mems.map((m, idx) => `#${idx + 1} (score=${m.score.toFixed(2)}):\n${m.text}`).join('\n\n');
-      planMemoryMsgs.push({ role: 'assistant', content: `历史规划参考:\n${lines}` });
-      if (config.flags.enableVerboseSteps) {
-        logger.info('检索到历史规划参考', { label: 'MEM', hits: mems.length, topScore: Number(mems[0]?.score?.toFixed?.(2) || 0), minScore: config.memory.minScore });
-      }
-    }
-  }
   const conv = normalizeConversation(conversation);
-  // 生成 base messages（供单/多候选共用）
+  const adaptivePlanningMsgs = await buildAdaptivePlanningMessages({ runId: context?.runId, context });
   const baseMessages = compactMessages([
     { role: 'system', content: sys },
     ...conv,
@@ -502,7 +970,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
       { role: 'assistant', content: renderTemplate(ep.assistant_thought, { preThought: preThought || '' }) },
     ] : []),
     { role: 'assistant', content: renderTemplate(ep.assistant_manifest, { manifestBulleted: manifestToBulletedText(manifest) }) },
-    ...planMemoryMsgs,
+    ...adaptivePlanningMsgs,
     { role: 'user', content: ep.user_request }
   ]);
 
@@ -511,7 +979,6 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
   const uniquePlanModels = Array.from(new Set(planModels)).slice(0, 5);
   const planModel = String(config.plan?.model || config.llm?.model || 'grok-4.1');
 
-  // allowedAiNames 已在上文声明，直接复用
   const enableMulti = !!config.planner?.multiEnable && Number(config.planner?.multiCandidates || 0) > 1;
   let steps = [];
   if (enableMulti) {
@@ -548,7 +1015,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
         removedUnknown = !!best.removedUnknown;
         parsed = best.parsed;
         if (config.flags.enableVerboseSteps) {
-          logger.info('Native 多模型规划：选择候选', { label: 'PLAN', index: idx, model: best.model, audit: clip(String(pick.audit || ''), 360) });
+          logger.info('Native multi-model plan selected candidate', { label: 'PLAN', index: idx, model: best.model, audit: clip(String(pick.audit || ''), 360) });
         }
         try {
           if (context?.runId) {
@@ -574,7 +1041,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
 
       const tasks = [];
       for (let i = 0; i < K; i++) {
-        const diversifyHint = `多方案生成：这是变体 #${i + 1}。请提供与其它变体差异明显且可执行的计划，步骤不超过 ${Math.max(1, Number(config.planner?.maxSteps || 8))} 步。`;
+        const diversifyHint = `Diversified plan candidate #${i + 1}. Provide an executable plan that is meaningfully different from other candidates, with no more than ${Math.max(1, Number(config.planner?.maxSteps || 8))} steps.`;
         const msgs = compactMessages([...baseMessages, { role: 'user', content: diversifyHint }]);
         const t0 = now();
         const p = generateSingleNativePlan({ messages: msgs, tools, allowedAiNames, temperature: Math.max(0.1, (config.llm.temperature ?? 0.2) - 0.1 + Math.min(0.3, 0.03 * i)), model: planModel })
@@ -601,7 +1068,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
           const mean = done.reduce((s, x) => s + Number(x.ms || 0), 0) / Math.max(1, done.length);
           const waitMs = Math.max(minWait, Math.min(maxWait, mean * factor * extra));
           if (config.flags.enableVerboseSteps) {
-            logger.info('Native 多计划：达到50%完成阈值，进入动态等待', { label: 'PLAN', K, half, meanMs: Math.round(mean), waitMs: Math.round(waitMs) });
+            logger.info('Native multi-plan reached 50% completion; entering dynamic wait', { label: 'PLAN', K, half, meanMs: Math.round(mean), waitMs: Math.round(waitMs) });
           }
           deadline = now() + waitMs;
         }
@@ -611,10 +1078,9 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
         .map((d) => ({ steps: Array.isArray(d.res.steps) ? d.res.steps : [], removedUnknown: !!d.res.removedUnknown, parsed: d.res.parsed }))
         .filter((c) => c.steps.length > 0);
       if (config.flags.enableVerboseSteps) {
-        logger.info('Native 多计划：生成候选数量', { label: 'PLAN', count: candidates.length });
+        logger.info('Native multi-plan candidate count', { label: 'PLAN', count: candidates.length });
       }
       if (candidates.length === 0) {
-        // 回退到单次生成
         const one = await generateSingleNativePlan({ messages: baseMessages, tools, allowedAiNames, temperature: Math.max(0.1, (config.llm.temperature ?? 0.2) - 0.1), model: planModel });
         steps = one.steps || [];
         removedUnknown = !!one.removedUnknown;
@@ -630,7 +1096,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
         removedUnknown = !!candidates[idx].removedUnknown;
         parsed = candidates[idx].parsed;
         if (config.flags.enableVerboseSteps) {
-          logger.info('Native 多计划：选择候选', { label: 'PLAN', index: idx, audit: clip(String(pick.audit || ''), 360) });
+          logger.info('Native multi-plan selected candidate', { label: 'PLAN', index: idx, audit: clip(String(pick.audit || ''), 360) });
         }
         try {
           if (context?.runId) {
@@ -640,12 +1106,11 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
       }
     }
   } else {
-    // 原有单计划路径
     const isValid = (x) => Array.isArray(x?.steps) && x.steps.length > 0;
     const temperature = Math.max(0.1, (config.llm.temperature ?? 0.2) - 0.1);
     const t0 = now();
     if (config.flags.enableVerboseSteps) {
-      logger.info('Native 规划：LLM plan begin', { label: 'PLAN', mode: 'race2', model: planModel });
+      logger.info('Native plan begin', { label: 'PLAN', mode: 'race2', model: planModel });
     }
     const tasks = [0, 1].map((i) => {
       const ti = now();
@@ -666,7 +1131,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
 
     const one = pick?.ok ? (pick?.res || {}) : {};
     if (config.flags.enableVerboseSteps) {
-      logger.info('Native 规划：LLM plan end', {
+      logger.info('Native plan end', {
         label: 'PLAN',
         mode: 'race2',
         model: planModel,
@@ -688,11 +1153,10 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
         steps = alt.steps;
       }
     } catch (e) {
-      logger.warn?.('FC 规划回退失败（忽略）', { label: 'PLAN', error: String(e) });
+      logger.warn?.('FC plan fallback failed', { label: 'PLAN', error: String(e) });
     }
   }
 
-  // 若剔除未知工具后为空或发生剔除，触发一次严格重规划（仅允许 allowedAiNames）
   if (steps.length === 0 || removedUnknown) {
     try {
       if (config.flags.enableVerboseSteps) {
@@ -700,7 +1164,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
           ? parsed.steps
           : [];
         const dropped = allSteps.filter((s) => !validNames.has(s?.aiName)).map((s) => s?.aiName);
-        logger.warn?.('触发严格重规划：上次计划包含未知工具或为空', { label: 'PLAN', dropped, allowedAiNames });
+        logger.warn?.('Trigger strict replan: previous plan had unknown tools or empty steps', { label: 'PLAN', dropped, allowedAiNames });
       }
       const replanMessages2 = compactMessages([
         { role: 'system', content: sys },
@@ -709,7 +1173,8 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
           { role: 'assistant', content: renderTemplate(ep.assistant_thought, { preThought: preThought || '' }) },
         ] : []),
         { role: 'assistant', content: renderTemplate(ep.assistant_manifest, { manifestBulleted: manifestToBulletedText(manifest) }) },
-        { role: 'assistant', content: '严格约束：只能从以下 aiName 中选择，并且每步仅包含一个工具。若无合适工具可输出空计划。可选 aiName 列表:\n' + (allowedAiNames.join(', ')) },
+        ...adaptivePlanningMsgs,
+        { role: 'assistant', content: 'The previous plan used unknown or invalid aiName values. Rebuild the plan and choose aiName strictly from this allowed list:\n' + (allowedAiNames.join(', ')) },
         { role: 'user', content: ep.user_request }
       ]);
       const re2 = await chatCompletion({
@@ -723,25 +1188,14 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
       const rcall2 = re2.choices?.[0]?.message?.tool_calls?.[0];
       let reparsed2; try { reparsed2 = rcall2?.function?.arguments ? JSON.parse(rcall2.function.arguments) : {}; } catch { reparsed2 = {}; }
       const stepsArr2 = Array.isArray(reparsed2?.steps) ? reparsed2.steps : [];
-      let rsteps2 = stepsArr2.map((s) => ({
-        stepId: (typeof s?.stepId === 'string' && s.stepId.trim()) ? s.stepId.trim() : newStepId(),
-        aiName: s?.aiName,
-        reason: normalizeReason(s?.reason),
-        nextStep: s?.nextStep || '',
-        draftArgs: s?.draftArgs || {},
-        dependsOnStepIds: Array.isArray(s?.dependsOnStepIds) ? s.dependsOnStepIds : undefined
-      }));
-      const rfiltered2 = rsteps2.filter((s) => s.aiName && validNames.has(s.aiName));
-      steps = rfiltered2;
+      steps = mapAndFilterPlanSteps(stepsArr2, {
+        allowedMcpAiNamesSet: validNames
+      });
     } catch (e) {
-      logger.warn?.('严格重规划异常（忽略）', { label: 'PLAN', error: String(e) });
+      logger.warn?.('Strict replan failed (ignored)', { label: 'PLAN', error: String(e) });
     }
   }
 
-  // 依赖校验（stepId-only）：
-  // - dependsOnStepIds 只能引用“前序步骤”的 stepId（保证无环）
-  // - 禁止自依赖
-  // - 依赖 stepId 必须存在
   const validateDependsOnStepIds = (arr) => {
     const stepIdToIndex = new Map((arr || []).map((s, idx) => [typeof s?.stepId === 'string' ? s.stepId.trim() : '', idx]).filter(([k]) => k));
     let invalid = false;
@@ -767,8 +1221,7 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
 
   let vres = validateDependsOnStepIds(steps);
   if (!vres.ok) {
-    logger.warn?.('规划依赖校验未通过（dependsOnStepIds），尝试一次重规划', { label: 'PLAN', invalidRefs: vres.invalidRefs });
-    // 一次性重规划：追加严格依赖约束
+    logger.warn?.('Plan dependsOnStepIds validation failed; attempting strict replan', { label: 'PLAN', invalidRefs: vres.invalidRefs });
     const replanMessages = compactMessages([
       { role: 'system', content: sys },
       { role: 'user', content: renderTemplate(ep.user_goal, { objective }) },
@@ -776,7 +1229,17 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
         { role: 'assistant', content: renderTemplate(ep.assistant_thought, { preThought: preThought || '' }) },
       ] : []),
       { role: 'assistant', content: renderTemplate(ep.assistant_manifest, { manifestBulleted: manifestToBulletedText(manifest) }) },
-      { role: 'assistant', content: '上一个计划的 dependsOnStepIds 存在无效引用/自依赖/引用非前序步骤的问题。请重新生成一个满足以下严格约束的计划：\n1) 每一步的 dependsOnStepIds 只能引用前序步骤（在 steps 数组中排在当前步之前）的 stepId；\n2) 禁止自依赖；\n3) 若不需要依赖请省略 dependsOnStepIds 字段；\n4) 每一步必须提供唯一的 stepId；\n5) 仅输出必需字段并符合 emit_plan 的 JSON 结构。' },
+      ...adaptivePlanningMsgs,
+      {
+        role: 'assistant',
+        content:
+          'The previous plan has invalid dependsOnStepIds references. Regenerate the plan with strict constraints: ' +
+          '1) each dependsOnStepIds entry must reference only earlier steps by stepId; ' +
+          '2) no self-dependency; ' +
+          '3) omit dependsOnStepIds when not needed; ' +
+          '4) every step must include a unique stepId; ' +
+          '5) output only required fields and match the emit_plan JSON schema.'
+      },
       { role: 'user', content: ep.user_request }
     ]);
     const re = await chatCompletion({
@@ -790,83 +1253,432 @@ export async function generatePlan(objective, mcpcore, context = {}, conversatio
     const rcall = re.choices?.[0]?.message?.tool_calls?.[0];
     let reparsed; try { reparsed = rcall?.function?.arguments ? JSON.parse(rcall.function.arguments) : {}; } catch { reparsed = {}; }
     const stepsArr = Array.isArray(reparsed?.steps) ? reparsed.steps : [];
-    let rsteps = stepsArr.map((s) => ({
-      stepId: (typeof s?.stepId === 'string' && s.stepId.trim()) ? s.stepId.trim() : newStepId(),
-      aiName: s?.aiName,
-      reason: normalizeReason(s?.reason),
-      nextStep: s?.nextStep || '',
-      draftArgs: s?.draftArgs || {},
-      dependsOnStepIds: Array.isArray(s?.dependsOnStepIds) ? s.dependsOnStepIds : undefined
-    }));
-    // 过滤未知工具
-    const rfiltered = rsteps.filter((s) => s.aiName && validNames.has(s.aiName));
-    rsteps = rfiltered;
+    let rsteps = mapAndFilterPlanSteps(stepsArr, {
+      allowedMcpAiNamesSet: validNames
+    });
     const v2 = validateDependsOnStepIds(rsteps);
     if (v2.ok) {
       steps = rsteps;
-      logger.info('重规划成功，依赖校验通过', { label: 'PLAN', steps: steps.length });
+      logger.info('Strict replan succeeded and dependency validation passed', { label: 'PLAN', steps: steps.length });
     } else {
-      logger.warn?.('重规划仍未通过依赖校验，将执行兜底修正', { label: 'PLAN' });
-      // 兜底修正：移除全部 dependsOnStepIds，避免运行期死锁
+      logger.warn?.('Strict replan still invalid; clearing dependsOnStepIds as fallback', { label: 'PLAN' });
       steps = (steps || []).map((s) => ({ ...s, dependsOnStepIds: undefined }));
     }
   }
 
   if (config.flags.enableVerboseSteps) {
-    logger.info(`规划生成: 共 ${steps.length} 步`, { label: 'PLAN', stepsPreview: clip(steps) });
+    logger.info(`Plan generated: ${steps.length} steps`, { label: 'PLAN', stepsPreview: clip(steps) });
   }
 
-  // 记忆：保存本次规划（目标与步骤概览），供后续相似任务参考
-  if (config.memory?.enable) {
-    try { await upsertPlanMemory({ runId: context?.runId || 'unknown', objective, plan: { steps } }); } catch { }
-  }
-
-  return { manifest, steps };
+  return { manifest, steps, rerankScoreByAiName };
 }
 
 export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
+  const runIdText = String(runId || '').trim();
+  const executeEpoch = claimRunExecutionEpoch(runIdText);
+  let executionClosed = false;
+  const hardStopActionSet = new Set(['cancel', 'replan']);
+  const isExecutionActive = () => !executionClosed && isRunExecutionEpochActive(runIdText, executeEpoch);
+  const isHardStopAction = (action) => hardStopActionSet.has(String(action || '').trim().toLowerCase());
+  const isHardStopRequestedByDirective = () => isHardStopAction(runtimeDirective?.action);
+
   // We'll build a per-step tool schema to reduce ambiguity
   const recentResults = Array.isArray(opts.seedRecent) ? [...opts.seedRecent] : [];
   const context = opts.context || {};
-  const startIndex = Math.max(0, Number(opts.startIndex) || 0);
-  // 中文：重试模式 - 仅执行指定的失败步骤
+  const runtimeControl = resolveRuntimeControl(context);
+  const requestedStartIndex = Math.max(0, Number(opts.startIndex) || 0);
   const retrySteps = Array.isArray(opts.retrySteps) ? new Set(opts.retrySteps.map(Number)) : null;
-  const enablePlanPatchHook = isPlanPatchEnabled() && !retrySteps;
-  const triggerMode = String(config.runner?.planPatchTriggerMode || process.env.PLAN_PATCH_TRIGGER_MODE || 'on_error');
-  const maxPatches = 12;
-  const maxPlanPatchCalls = 40;
-  let appliedPatches = 0;
-  let planPatchCalls = 0;
+  const planSignature = buildPlanSignature(plan);
+  const resumeSeed = await buildResumeSeedFromCheckpoint({
+    runId,
+    plan,
+    startIndex: requestedStartIndex,
+    retrySteps
+  });
+  const resumeApplied = !!(resumeSeed && resumeSeed.enabled === true);
+  const startIndex = requestedStartIndex;
+  const plannedTotalSteps = Math.max(0, Number(plan?.steps?.length || 0));
+  let schedulerStartIndex = startIndex;
+  if (resumeApplied) {
+    const seedCursor = Number(resumeSeed?.resumeCursorIndex);
+    if (Number.isInteger(seedCursor) && seedCursor >= startIndex && seedCursor < plannedTotalSteps) {
+      schedulerStartIndex = seedCursor;
+    }
+  }
+  const stepRetryState = new Map(); // stepIndex -> { attempts, sameRetries, regenRetries, forceRegenerate, lastFailure }
   let stopRequested = false;
-  let pauseForPlanPatch = false;
-  let pendingPlanPatch = null;
-  const retryBudgetByStepId = new Map();
-  const initialPlanSnapshot = enablePlanPatchHook
-    ? JSON.parse(JSON.stringify(plan && typeof plan === 'object' ? plan : { manifest: [], steps: [] }))
-    : null;
-  const used = [];
-  let succeeded = 0;
+  let hardStopRequested = false;
+  const used = resumeApplied && Array.isArray(resumeSeed.usedEntries)
+    ? [...resumeSeed.usedEntries]
+    : [];
+  let succeeded = resumeApplied
+    ? Math.max(0, Number(resumeSeed.succeeded || 0))
+    : 0;
   const conv = normalizeConversation(opts.conversation);
+  let runtimeSignalCursorTs = Math.max(
+    Number(opts.runtimeSignalCursorTs || 0),
+    resumeApplied ? Number(resumeSeed.runtimeSignalCursorTs || 0) : 0
+  );
+  let runtimeSignalGeneration = Math.max(
+    Number(opts.runtimeSignalGeneration || 0),
+    resumeApplied ? Number(resumeSeed.runtimeSignalGeneration || 0) : 0
+  );
+  let runtimeSignalSeq = Math.max(
+    Number(opts.runtimeSignalSeq || 0),
+    resumeApplied ? Number(resumeSeed.runtimeSignalSeq || 0) : 0
+  );
+  let runtimeDirective = null;
+  let runtimeSignalPollChain = Promise.resolve();
+  const canEmitLiveEvents = () => isExecutionActive() && !isRunCancelled(runId) && !hardStopRequested && !isHardStopRequestedByDirective();
+  const canFlushBufferedEvents = () => isExecutionActive();
+  const updateRuntimeCheckpoint = async (patch = {}, event = null) => {
+    await persistRuntimeCheckpoint({
+      runId,
+      context,
+      patch: {
+        status: isRunCancelled(runId) ? 'cancelled' : 'running',
+        stage: 'execute_plan',
+        totalSteps: Number(plan?.steps?.length || 0),
+        attempted: Number(used.length || 0),
+        succeeded: Number(succeeded || 0),
+        runtimeSignalCursorTs: Number(runtimeSignalCursorTs || 0),
+        runtimeSignalGeneration: Number(runtimeSignalGeneration || 0),
+        runtimeSignalSeq: Number(runtimeSignalSeq || 0),
+        ...patch
+      },
+      event
+    });
+  };
+  const checkpointStepRuntimeIndex = new Map();
+  const MAX_CHECKPOINT_STEP_RUNTIME_INDEX = 512;
+  const upsertCheckpointStepRuntime = (payload = {}) => {
+    const src = (payload && typeof payload === 'object') ? payload : {};
+    const stepIndexRaw = Number(src.stepIndex);
+    const stepIndex = Number.isFinite(stepIndexRaw) ? Math.max(-1, Math.floor(stepIndexRaw)) : -1;
+    const stepId = String(src.stepId || '').trim();
+    const aiName = String(src.aiName || '').trim();
+    const key = stepIndex >= 0
+      ? String(stepIndex)
+      : (stepId ? `id:${stepId}` : (aiName ? `ai:${aiName}` : ''));
+    if (!key) return;
+    const prev = checkpointStepRuntimeIndex.get(key) || {};
+    const merged = {
+      ...prev,
+      stepIndex,
+      stepId: stepId || String(prev.stepId || ''),
+      aiName: aiName || String(prev.aiName || ''),
+      executor: String(src.executor || prev.executor || '').trim(),
+      state: String(src.state || prev.state || '').trim(),
+      reasonCode: String(src.reasonCode || prev.reasonCode || '').trim(),
+      resultCode: String(src.resultCode || prev.resultCode || '').trim(),
+      attemptNo: Number.isFinite(Number(src.attemptNo))
+        ? Math.max(0, Math.floor(Number(src.attemptNo)))
+        : Math.max(0, Number(prev.attemptNo || 0)),
+      executionIndex: Number.isFinite(Number(src.executionIndex))
+        ? Math.floor(Number(src.executionIndex))
+        : Number.isFinite(Number(prev.executionIndex)) ? Math.floor(Number(prev.executionIndex)) : -1,
+      success: (typeof src.success === 'boolean') ? src.success : (typeof prev.success === 'boolean' ? prev.success : false),
+      elapsedMs: Number.isFinite(Number(src.elapsedMs))
+        ? Math.max(0, Math.floor(Number(src.elapsedMs)))
+        : Math.max(0, Number(prev.elapsedMs || 0)),
+      availableAt: Number.isFinite(Number(src.availableAt))
+        ? Math.max(0, Math.floor(Number(src.availableAt)))
+        : Math.max(0, Number(prev.availableAt || 0)),
+      message: String(src.message || prev.message || '').trim(),
+      updatedAt: now()
+    };
+    checkpointStepRuntimeIndex.set(key, merged);
+    while (checkpointStepRuntimeIndex.size > MAX_CHECKPOINT_STEP_RUNTIME_INDEX) {
+      const first = checkpointStepRuntimeIndex.keys().next();
+      if (first?.done) break;
+      checkpointStepRuntimeIndex.delete(first.value);
+    }
+  };
+  const serializeCheckpointStepRuntimeIndex = () => {
+    const out = {};
+    for (const [k, v] of checkpointStepRuntimeIndex.entries()) {
+      out[k] = v;
+    }
+    return out;
+  };
+  if (resumeApplied && resumeSeed?.stepRuntimeIndex && typeof resumeSeed.stepRuntimeIndex === 'object') {
+    for (const [k, v] of Object.entries(resumeSeed.stepRuntimeIndex)) {
+      if (!v || typeof v !== 'object') continue;
+      checkpointStepRuntimeIndex.set(String(k), {
+        ...(v || {}),
+        updatedAt: Number.isFinite(Number(v.updatedAt)) ? Number(v.updatedAt) : now()
+      });
+      if (checkpointStepRuntimeIndex.size >= MAX_CHECKPOINT_STEP_RUNTIME_INDEX) break;
+    }
+  }
+  const stepStateTracker = createStepStateTracker();
+  const emitStepState = async ({
+    stepIndex = -1,
+    step = {},
+    aiName = '',
+    executor = '',
+    actionRef = '',
+    state = '',
+    reasonCode = '',
+    reason = '',
+    attemptNo = 0,
+    resultCode = ''
+  } = {}) => {
+    const ev = stepStateTracker.transition({
+      runId,
+      stepId: step?.stepId || '',
+      stepIndex,
+      aiName,
+      executor,
+      actionRef,
+      nextState: state,
+      reasonCode,
+      reason,
+      attemptNo,
+      resultCode
+    });
+    if (!ev) return null;
+    if (canEmitLiveEvents()) emitRunEvent(runId, ev);
+    await HistoryStore.append(runId, ev);
+    upsertCheckpointStepRuntime({
+      stepIndex: Number.isFinite(Number(ev.stepIndex)) ? Number(ev.stepIndex) : -1,
+      stepId: String(ev.stepId || ''),
+      aiName: String(ev.aiName || ''),
+      executor: String(ev.executor || ''),
+      state: String(ev.to || ''),
+      reasonCode: String(ev.reasonCode || ''),
+      resultCode: String(ev.resultCode || ''),
+      attemptNo: Number.isFinite(Number(ev.attemptNo)) ? Number(ev.attemptNo) : 0
+    });
+    await updateRuntimeCheckpoint({
+      lastStepState: String(ev.to || ''),
+      lastStepReasonCode: String(ev.reasonCode || ''),
+      lastStepResultCode: String(ev.resultCode || ''),
+      lastCompletedStepId: String(ev.stepId || ''),
+      lastCompletedStepIndex: Number.isFinite(Number(ev.stepIndex)) ? Number(ev.stepIndex) : -1,
+      stepRuntimeIndex: serializeCheckpointStepRuntimeIndex()
+    }, {
+      type: 'runtime_step_state',
+      stepIndex: Number.isFinite(Number(ev.stepIndex)) ? Number(ev.stepIndex) : -1,
+      stepId: String(ev.stepId || ''),
+      aiName: String(ev.aiName || ''),
+      from: String(ev.from || ''),
+      to: String(ev.to || ''),
+      reasonCode: String(ev.reasonCode || ''),
+      resultCode: String(ev.resultCode || '')
+    });
+    return ev;
+  };
+  const emitActionRequestEvent = async ({
+    stepIndex = -1,
+    executionIndex = -1,
+    attemptNo = 0,
+    step = {},
+    aiName = '',
+    executor = '',
+    actionRef = '',
+    args = {},
+    reason = '',
+    nextStep = '',
+    dependsOnStepIds = [],
+    dependedByStepIds = [],
+    toolContext = null
+  } = {}) => {
+    const ev = buildActionRequest({
+      runId,
+      stepId: step?.stepId || '',
+      stepIndex,
+      executionIndex,
+      attemptNo,
+      aiName,
+      executor,
+      actionRef,
+      args,
+      objective,
+      reason,
+      nextStep,
+      dependsOnStepIds,
+      dependedByStepIds,
+      toolContext
+    });
+    if (canEmitLiveEvents()) emitRunEvent(runId, ev);
+    await HistoryStore.append(runId, ev);
+    await updateRuntimeCheckpoint({
+      lastActionRef: String(actionRef || ''),
+      lastStepId: String(step?.stepId || ''),
+      lastStepIndex: Number.isFinite(Number(stepIndex)) ? Number(stepIndex) : -1
+    }, {
+      type: 'runtime_action_request',
+      stepIndex: Number.isFinite(Number(stepIndex)) ? Number(stepIndex) : -1,
+      stepId: String(step?.stepId || ''),
+      aiName: String(aiName || ''),
+      actionRef: String(actionRef || ''),
+      executor: String(executor || '')
+    });
+    return ev;
+  };
+  try {
+  if (runtimeControl.enabled) {
+    const runtimeControlEvent = {
+      type: 'runtime_control',
+      phase: 'execute_plan',
+      reason: String(runtimeControl.reason || ''),
+      singlePass: runtimeControl.singlePass === true,
+      skipEvaluation: runtimeControl.skipEvaluation === true,
+      skipSummary: runtimeControl.skipSummary === true,
+      disableAdaptive: runtimeControl.disableAdaptive === true,
+      disablePlanRepair: runtimeControl.disablePlanRepair === true,
+      disableArgFixRetry: runtimeControl.disableArgFixRetry === true
+    };
+    if (canEmitLiveEvents()) emitRunEvent(runId, runtimeControlEvent);
+    try { await HistoryStore.append(runId, runtimeControlEvent); } catch { }
+  }
+  await updateRuntimeCheckpoint({
+    stage: 'execute_plan_start',
+    status: 'running',
+    startedAt: now(),
+    retryMode: retrySteps ? '1' : '0',
+    startIndex: Number(startIndex || 0),
+    schedulerStartIndex: Number(schedulerStartIndex || 0),
+    planSignature: String(planSignature || ''),
+    resumeApplied: resumeApplied ? '1' : '0',
+    resumedStepCount: resumeApplied && Array.isArray(resumeSeed.finishedIndices) ? resumeSeed.finishedIndices.length : 0,
+    resumedUnfinishedStepCount: resumeApplied && Array.isArray(resumeSeed.unfinishedIndices) ? resumeSeed.unfinishedIndices.length : 0,
+    resumeCursorIndex: resumeApplied ? Number(resumeSeed.resumeCursorIndex || -1) : -1,
+    stepRuntimeIndex: serializeCheckpointStepRuntimeIndex()
+  }, {
+    type: 'runtime_checkpoint',
+    phase: 'execute_plan_start',
+    retryMode: retrySteps ? true : false,
+    startIndex: Number(startIndex || 0),
+    schedulerStartIndex: Number(schedulerStartIndex || 0),
+    planSignature: String(planSignature || ''),
+    resumeApplied: resumeApplied === true,
+    resumedStepCount: resumeApplied && Array.isArray(resumeSeed.finishedIndices) ? resumeSeed.finishedIndices.length : 0,
+    resumedUnfinishedStepCount: resumeApplied && Array.isArray(resumeSeed.unfinishedIndices) ? resumeSeed.unfinishedIndices.length : 0,
+    resumeCursorIndex: resumeApplied ? Number(resumeSeed.resumeCursorIndex || -1) : -1
+  });
+  if (resumeApplied) {
+    const resumedStepIds = (Array.isArray(resumeSeed.finishedIndices) ? resumeSeed.finishedIndices : [])
+      .map((idx) => String(plan?.steps?.[idx]?.stepId || ''))
+      .filter(Boolean);
+    const resumeEvent = {
+      type: 'resume_applied',
+      runId,
+      planSignature: String(planSignature || ''),
+      resumedStepCount: Number(resumeSeed.finishedIndices?.length || 0),
+      resumedStepIndices: Array.isArray(resumeSeed.finishedIndices) ? resumeSeed.finishedIndices : [],
+      resumedUnfinishedStepCount: Number(resumeSeed.unfinishedIndices?.length || 0),
+      resumedUnfinishedStepIndices: Array.isArray(resumeSeed.unfinishedIndices) ? resumeSeed.unfinishedIndices : [],
+      resumeCursorIndex: Number(resumeSeed.resumeCursorIndex || -1),
+      resumedStepIds,
+      attempted: Number(resumeSeed.attempted || 0),
+      succeeded: Number(resumeSeed.succeeded || 0),
+      nextExecutionIndex: Number(resumeSeed.nextExecutionIndex || 0),
+      checkpointStatus: String(resumeSeed.checkpointStatus || ''),
+      checkpointStage: String(resumeSeed.checkpointStage || '')
+    };
+    if (canEmitLiveEvents()) emitRunEvent(runId, resumeEvent);
+    await HistoryStore.append(runId, resumeEvent);
+  }
 
-  // 重试模式下，跟踪已执行步骤的成功/失败状态，用于智能跳过依赖失败的步骤
   const stepStatus = new Map(); // stepIndex -> { success: boolean, reason: string }
+  const rerankScoreByAiName = (plan?.rerankScoreByAiName && typeof plan.rerankScoreByAiName === 'object')
+    ? plan.rerankScoreByAiName
+    : {};
 
   let total = plan.steps.length;
   const maxConc = Math.max(1, Number(config.planner?.maxConcurrency ?? 3));
-  const finished = new Set();
+  const resumeFinished = new Set(
+    resumeApplied && Array.isArray(resumeSeed.finishedIndices)
+      ? resumeSeed.finishedIndices.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < total)
+      : []
+  );
+  const resumeUnfinished = new Set(
+    resumeApplied && Array.isArray(resumeSeed.unfinishedIndices)
+      ? resumeSeed.unfinishedIndices.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < total)
+      : []
+  );
+  const preFinalized = new Set(
+    resumeApplied && Array.isArray(resumeSeed.preFinalizedIndices)
+      ? resumeSeed.preFinalizedIndices.filter((idx) => Number.isInteger(idx) && idx >= 0 && idx < total)
+      : []
+  );
+  const finished = new Set(resumeFinished);
   const started = new Set();
   const delayUntil = new Map(); // stepIndex -> epochMs when it becomes schedulable
+  if (resumeApplied && resumeSeed?.retryAvailableByStep && typeof resumeSeed.retryAvailableByStep === 'object') {
+    for (const [idxText, tsRaw] of Object.entries(resumeSeed.retryAvailableByStep)) {
+      const idx = Number(idxText);
+      const dueTs = Number(tsRaw);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= total) continue;
+      if (!(dueTs > 0)) continue;
+      delayUntil.set(idx, Math.floor(dueTs));
+    }
+  }
+  if (resumeApplied && resumeSeed?.stepStateByStepIndex && typeof resumeSeed.stepStateByStepIndex === 'object') {
+    for (const [idxText, stateRaw] of Object.entries(resumeSeed.stepStateByStepIndex)) {
+      const idx = Number(idxText);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= total) continue;
+      if (resumeFinished.has(idx)) continue;
+      const stateObj = (stateRaw && typeof stateRaw === 'object') ? stateRaw : {};
+      const attemptNo = Math.max(0, Number(stateObj.attemptNo || 0));
+      const lastCode = String(stateObj.resultCode || '').trim();
+      const lastReasonCode = String(stateObj.reasonCode || '').trim();
+      const lastState = String(stateObj.state || '').trim();
+      stepRetryState.set(idx, {
+        attempts: attemptNo,
+        sameRetries: 0,
+        regenRetries: 0,
+        forceRegenerate: false,
+        lastFailure: {
+          attempt_no: attemptNo,
+          last_args: {},
+          last_error: `${lastReasonCode || lastState || 'resume_pending'}${lastCode ? `:${lastCode}` : ''}`,
+          last_code: lastCode,
+          evidence: []
+        }
+      });
+      resumeUnfinished.add(idx);
+    }
+  }
   const runningByTool = new Map(); // aiName -> count
   const runningByProvider = new Map(); // providerKey -> count
+  const firstPendingFromResume = (() => {
+    if (!resumeApplied) return -1;
+    const requested = Math.max(0, Number(requestedStartIndex || 0));
+    const pending = Array.from(resumeUnfinished).filter((idx) => idx >= requested).sort((a, b) => a - b);
+    if (pending.length > 0) return pending[0];
+    const cursor = Number(resumeSeed?.resumeCursorIndex);
+    if (Number.isInteger(cursor) && cursor >= requested && cursor < total) return cursor;
+    return -1;
+  })();
+  schedulerStartIndex = firstPendingFromResume >= 0
+    ? firstPendingFromResume
+    : startIndex;
 
-  // 中文：全局执行计数器，记录实际执行顺序（按完成时间）
-  let nextExecutionIndex = 0;
+  let nextExecutionIndex = resumeApplied
+    ? Math.max(0, Number(resumeSeed.nextExecutionIndex || 0))
+    : 0;
 
-  // 工具元信息（provider 等）及并发上限
   const toolList = mcpcore.getAvailableTools();
-  const toolMeta = new Map(toolList.map((t) => [t.aiName, { provider: t.provider || 'local' }]));
-  // 中文：详细工具表（含 meta），用于在事件中继承插件 meta
+  const toolMeta = new Map(toolList.map((t) => [t.aiName, { provider: t.provider || 'local', executor: 'mcp' }]));
+  for (const item of (Array.isArray(plan?.manifest) ? plan.manifest : [])) {
+    if (!item || !item.aiName) continue;
+    if (!toolMeta.has(item.aiName)) {
+      toolMeta.set(item.aiName, {
+        provider: item.provider || 'runtime',
+        executor: normalizePlanExecutor(item.executor || (item.actionRef ? 'sandbox' : 'mcp'), 'mcp')
+      });
+    }
+  }
   const toolMetaMap = new Map((mcpcore.getAvailableToolsDetailed?.() || []).map((t) => [t.aiName, t.meta || {}]));
+  for (const item of (Array.isArray(plan?.manifest) ? plan.manifest : [])) {
+    if (!item || !item.aiName) continue;
+    if (!toolMetaMap.has(item.aiName)) {
+      toolMetaMap.set(item.aiName, item.meta || {});
+    }
+  }
   const toolConcDefault = Math.max(1, Number(config.planner?.toolConcurrencyDefault || 1));
   const provConcDefault = Math.max(1, Number(config.planner?.providerConcurrencyDefault || 4));
   const toolOverride = config.planner?.toolConcurrency || {};
@@ -880,62 +1692,362 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   let groups = [];
   let groupPending = new Map();
   let nextGroupToFlush = 0;
-  const groupBuffers = new Map();
-  const groupArgsBuffers = new Map();
+  const groupEventCoordinator = createGroupEventCoordinator({
+    runId,
+    emitRunEvent,
+    canEmitLiveEvents,
+    canFlushBufferedEvents,
+    getGroupOf: () => groupOf,
+    getGroups: () => groups,
+    getGroupPending: () => groupPending,
+    getNextGroupToFlush: () => nextGroupToFlush,
+    setNextGroupToFlush: (v) => { nextGroupToFlush = Number(v) || 0; },
+    getTopoOrderForGroup: (gid) => buildGroupTopoOrder({ gid, groups, depsArr, revDepsArr }),
+    getStepIdForIndex: (idx) => {
+      const sid = plan?.steps?.[idx]?.stepId;
+      return (typeof sid === 'string' && sid.trim()) ? sid.trim() : ('step_' + idx);
+    }
+  });
+  const artifactProjectRoot = getArtifactProjectRoot();
+  const artifactSandboxRoot = getArtifactRootDir();
+  const maxDiffArtifactsPerStep = Math.max(1, Number(config.runner?.artifactMaxDeltaFilesPerStep ?? 64));
+  const maxDiffLogPaths = Math.max(1, Number(config.runner?.artifactDiffLogPaths ?? 12));
+  let workspaceSnapshot = null;
+  let workspaceDiffCaptureCount = 0;
+  let workspaceDiffChangedCount = 0;
+  let workspaceArtifactsUpserted = 0;
+  let workspaceDiffCaptureChain = Promise.resolve(null);
+  const workspaceDiffIndexByStepKey = new Map();
+  const WORKSPACE_DIFF_INDEX_MAX_STEPS = 128;
+  const buildWorkspaceDiffStepKey = ({ stepId = '', stepIndex = -1, aiName = '' } = {}) => {
+    const sid = String(stepId || '').trim();
+    if (sid) return `id:${sid}`;
+    const idx = Number.isFinite(Number(stepIndex)) ? Math.floor(Number(stepIndex)) : -1;
+    return `idx:${idx}:${String(aiName || '').trim()}`;
+  };
+  const upsertWorkspaceDiffCheckpointIndex = ({ stepIndex = -1, stepId = '', aiName = '', workspaceDiff = null } = {}) => {
+    if (!workspaceDiff || typeof workspaceDiff !== 'object') return null;
+    const summary = (workspaceDiff.summary && typeof workspaceDiff.summary === 'object')
+      ? workspaceDiff.summary
+      : { added: 0, changed: 0, removed: 0, unchanged: 0, totalDelta: 0 };
+    const stepKey = buildWorkspaceDiffStepKey({ stepId, stepIndex, aiName });
+    const entry = {
+      stepIndex: Number.isFinite(Number(stepIndex)) ? Math.floor(Number(stepIndex)) : -1,
+      stepId: String(stepId || '').trim(),
+      aiName: String(aiName || '').trim(),
+      comparedAt: Number(workspaceDiff.comparedAt || Date.now()),
+      effect: Number(summary.totalDelta || 0) > 0 ? 'changed' : 'no_effect',
+      summary: {
+        added: Number(summary.added || 0),
+        changed: Number(summary.changed || 0),
+        removed: Number(summary.removed || 0),
+        totalDelta: Number(summary.totalDelta || 0)
+      },
+      paths: Array.isArray(workspaceDiff.paths) ? workspaceDiff.paths.slice(0, maxDiffLogPaths) : []
+    };
+    workspaceDiffIndexByStepKey.set(stepKey, entry);
+    while (workspaceDiffIndexByStepKey.size > WORKSPACE_DIFF_INDEX_MAX_STEPS) {
+      const first = workspaceDiffIndexByStepKey.keys().next();
+      if (!first?.done) workspaceDiffIndexByStepKey.delete(first.value);
+      else break;
+    }
+    return {
+      stepKey,
+      entry,
+      byStepKey: Object.fromEntries(workspaceDiffIndexByStepKey)
+    };
+  };
+  const resolveDiffAbsPath = (rawPath, baseRoot) => {
+    const normalized = String(rawPath || '').trim();
+    if (!normalized) return '';
+    const root = String(baseRoot || artifactSandboxRoot || artifactProjectRoot);
+    const absPath = path.isAbsolute(normalized)
+      ? path.resolve(normalized)
+      : path.resolve(root, normalized.replace(/^[/\\]+/, ''));
+    return absPath;
+  };
 
-  const forceFlushAllBuffersAsSingleEvents = () => {
-    for (const [, buf] of groupArgsBuffers.entries()) {
-      for (const [, ev] of buf.entries()) {
-        emitRunEvent(runId, ev);
+  const buildDiffPathSample = (diffObj, limit = maxDiffLogPaths) => {
+    const out = [];
+    const baseRoot = String(diffObj?.rootDir || artifactSandboxRoot || artifactProjectRoot);
+    const toPathForEvidence = (rawPath) => {
+      const text = String(rawPath || '').trim();
+      if (!text) return '';
+      const asPosix = text.replace(/\\/g, '/');
+      if (!path.isAbsolute(text)) return asPosix.replace(/^\/+/, '');
+      const rel = path.relative(baseRoot, text).replace(/\\/g, '/');
+      if (!rel || rel.startsWith('..')) return asPosix;
+      return rel.replace(/^\/+/, '');
+    };
+    const pushItem = (kind, rawPath) => {
+      if (!rawPath || out.length >= limit) return;
+      const resolved = resolveDiffAbsPath(rawPath, baseRoot);
+      const evidencePath = toPathForEvidence(resolved || rawPath);
+      if (!evidencePath) return;
+      out.push(`${kind}:${evidencePath}`);
+    };
+    for (const it of (diffObj?.added || [])) pushItem('A', it?.relPath);
+    for (const it of (diffObj?.changed || [])) pushItem('M', it?.relPath);
+    for (const it of (diffObj?.removed || [])) pushItem('D', it?.relPath);
+    return out;
+  };
+
+  const captureWorkspaceDiffArtifactsInner = async ({ stepIndex, stepId, aiName, usedEntry = null, error = '' } = {}) => {
+    const sid = (typeof stepId === 'string' && stepId.trim()) ? stepId.trim() : `step_${Number(stepIndex)}`;
+    let diff;
+    try {
+      const snap = await snapshotAndDiff({
+        rootDir: artifactSandboxRoot,
+        previousSnapshot: workspaceSnapshot
+      });
+      workspaceSnapshot = snap.nextSnapshot;
+      diff = snap.diff;
+    } catch (e) {
+      logger.warn?.('workspace diff capture failed', {
+        label: 'DIFF',
+        runId,
+        stepIndex,
+        aiName,
+        error: String(e)
+      });
+      return {
+        stepIndex,
+        stepId: sid,
+        aiName: String(aiName || ''),
+        summary: { added: 0, changed: 0, removed: 0, unchanged: 0, totalDelta: 0 },
+        paths: [],
+        comparedAt: Date.now(),
+        rootDir: String(artifactSandboxRoot),
+        captureError: String(e)
+      };
+    }
+
+    const summary = diff?.summary || { added: 0, changed: 0, removed: 0, unchanged: 0, totalDelta: 0 };
+    const deltaPaths = buildDiffPathSample(diff, maxDiffLogPaths);
+    const totalDelta = Number(summary.totalDelta || 0);
+    workspaceDiffCaptureCount += 1;
+    if (totalDelta > 0) workspaceDiffChangedCount += 1;
+    if (!(totalDelta > 0)) {
+      return {
+        stepIndex,
+        stepId: sid,
+        aiName: String(aiName || ''),
+        summary,
+        paths: deltaPaths,
+        comparedAt: Number(diff?.comparedAt || Date.now()),
+        rootDir: String(diff?.rootDir || artifactSandboxRoot)
+      };
+    }
+
+    logger.info('workspace diff', {
+      label: 'DIFF',
+      runId,
+      stepIndex,
+      stepId: sid,
+      aiName,
+      added: summary.added,
+      changed: summary.changed,
+      removed: summary.removed,
+      totalDelta: summary.totalDelta,
+      paths: deltaPaths
+    });
+
+    const diffEvent = {
+      type: 'workspace_diff',
+      stepIndex,
+      stepId: sid,
+      aiName: String(aiName || ''),
+      summary,
+      paths: deltaPaths,
+      comparedAt: Number(diff?.comparedAt || Date.now()),
+      rootDir: String(diff?.rootDir || artifactSandboxRoot)
+    };
+    if (canEmitLiveEvents()) {
+      emitRunEvent(runId, diffEvent);
+    }
+    try {
+      await HistoryStore.append(runId, diffEvent);
+    } catch (e) {
+      logger.warn?.('workspace diff history append failed', {
+        label: 'DIFF',
+        runId,
+        stepIndex,
+        aiName,
+        error: String(e)
+      });
+    }
+
+    try {
+      await upsertArtifact({
+        runId,
+        stepId: sid,
+        type: 'workspace_diff',
+        role: 'diff_summary',
+        source: 'workspace_diff',
+        dependsOn: [sid],
+        summary: `workspace delta: +${Number(summary.added || 0)} ~${Number(summary.changed || 0)} -${Number(summary.removed || 0)}`,
+        json: {
+          stepIndex,
+          stepId: sid,
+          aiName: String(aiName || ''),
+          summary,
+          paths: deltaPaths,
+          comparedAt: Number(diff?.comparedAt || Date.now()),
+          usedEntry: usedEntry || null,
+          error: String(error || '')
+        }
+      });
+      workspaceArtifactsUpserted += 1;
+    } catch (e) {
+      logger.warn?.('workspace diff summary artifact upsert failed', {
+        label: 'DIFF',
+        runId,
+        stepIndex,
+        aiName,
+        error: String(e)
+      });
+    }
+
+    const diffRoot = String(diff?.rootDir || artifactSandboxRoot || artifactProjectRoot);
+    const deltaItems = [
+      ...(diff?.added || []).map((x) => ({ kind: 'added', path: resolveDiffAbsPath(x?.relPath, diffRoot), prev: null, next: x?.next || null })),
+      ...(diff?.changed || []).map((x) => ({ kind: 'changed', path: resolveDiffAbsPath(x?.relPath, diffRoot), prev: x?.prev || null, next: x?.next || null })),
+      ...(diff?.removed || []).map((x) => ({ kind: 'removed', path: resolveDiffAbsPath(x?.relPath, diffRoot), prev: x?.prev || null, next: null })),
+    ];
+    const bounded = deltaItems.slice(0, maxDiffArtifactsPerStep);
+    for (const item of bounded) {
+      if (!item?.path) continue;
+      try {
+        await upsertArtifact({
+          runId,
+          stepId: sid,
+          type: 'workspace_file',
+          role: `diff_${item.kind}`,
+          source: 'workspace_diff',
+          workspacePath: item.path,
+          dependsOn: [sid],
+          summary: `${item.kind}: ${item.path}`,
+          metadata: {
+            kind: item.kind,
+            path: item.path,
+            prevHash: String(item?.prev?.hash || ''),
+            nextHash: String(item?.next?.hash || ''),
+            prevSize: Number.isFinite(Number(item?.prev?.size)) ? Number(item.prev.size) : null,
+            nextSize: Number.isFinite(Number(item?.next?.size)) ? Number(item.next.size) : null,
+            comparedAt: Number(diff?.comparedAt || Date.now())
+          }
+        });
+        workspaceArtifactsUpserted += 1;
+      } catch (e) {
+        logger.warn?.('workspace file artifact upsert failed', {
+          label: 'DIFF',
+          runId,
+          stepIndex,
+          stepId: sid,
+          aiName,
+          path: item.path,
+          kind: item.kind,
+          error: String(e)
+        });
       }
     }
-    for (const [, buf] of groupBuffers.entries()) {
-      for (const [, ev] of buf.entries()) {
-        emitRunEvent(runId, ev);
+    return {
+      stepIndex,
+      stepId: sid,
+      aiName: String(aiName || ''),
+      summary,
+      paths: deltaPaths,
+      comparedAt: Number(diff?.comparedAt || Date.now()),
+      rootDir: String(diff?.rootDir || artifactSandboxRoot)
+    };
+  };
+
+  const captureWorkspaceDiffArtifacts = async (params = {}) => {
+    const executeCapture = async () => captureWorkspaceDiffArtifactsInner(params);
+    workspaceDiffCaptureChain = workspaceDiffCaptureChain.then(executeCapture, executeCapture);
+    return workspaceDiffCaptureChain;
+  };
+
+  const pollRuntimeSignal = async ({ phase = 'loop', stepIndex = -1 } = {}) => {
+    runtimeSignalPollChain = runtimeSignalPollChain.then(async () => {
+      if (!isExecutionActive()) return;
+      if (runtimeDirective || isRunCancelled(runId)) return;
+      const prevCursorTs = Number(runtimeSignalCursorTs || 0);
+      const prevGeneration = Number(runtimeSignalGeneration || 0);
+      const prevSignalSeq = Number(runtimeSignalSeq || 0);
+      const handled = await pollAndHandleRuntimeSignal({
+        runId,
+        objective,
+        plan,
+        context,
+        phase,
+        stepIndex,
+        runtimeSignalCursorTs,
+        runtimeSignalGeneration,
+        runtimeSignalSeq,
+        readLatestRuntimeUserSignal,
+        resolveRuntimeSignalAction,
+        buildRuntimeSignalDecisionArtifacts,
+        emitRunEvent,
+        appendHistory: (rid, ev) => HistoryStore.append(rid, ev),
+        isExecutionActive,
+        markRunCancelled,
+        isHardStopAction,
+        abortRunRequests
+      });
+      runtimeSignalCursorTs = handled.runtimeSignalCursorTs;
+      runtimeSignalGeneration = Number(handled.runtimeSignalGeneration || runtimeSignalGeneration || 0);
+      runtimeSignalSeq = Number(handled.runtimeSignalSeq || runtimeSignalSeq || 0);
+      if (handled.runtimeDirective) {
+        runtimeDirective = handled.runtimeDirective;
       }
-    }
-    groupArgsBuffers.clear();
-    groupBuffers.clear();
+      if (handled.hardStopRequested) {
+        hardStopRequested = true;
+      }
+      if (handled.stopRequested) {
+        stopRequested = true;
+      }
+      const signalProgressed =
+        Number(runtimeSignalCursorTs || 0) !== prevCursorTs
+        || Number(runtimeSignalGeneration || 0) !== prevGeneration
+        || Number(runtimeSignalSeq || 0) !== prevSignalSeq;
+      if (signalProgressed || handled.runtimeDirective || handled.hardStopRequested || handled.stopRequested) {
+        await updateRuntimeCheckpoint({
+          stage: 'runtime_signal',
+          runtimeSignalCursorTs: Number(runtimeSignalCursorTs || 0),
+          runtimeSignalGeneration: Number(runtimeSignalGeneration || 0),
+          runtimeSignalSeq: Number(runtimeSignalSeq || 0),
+          lastSignalAction: String(handled.runtimeDirective?.action || ''),
+          lastSignalReason: String(handled.runtimeDirective?.reason || ''),
+          lastSignalMessage: String(handled.runtimeDirective?.message || ''),
+        }, {
+          type: 'runtime_signal_checkpoint',
+          phase,
+          stepIndex,
+          action: String(handled.runtimeDirective?.action || ''),
+          stopRequested: handled.stopRequested === true,
+          hardStopRequested: handled.hardStopRequested === true,
+        });
+      }
+    }).catch((e) => {
+      if (config.flags.enableVerboseSteps) {
+        logger.warn?.('runtime signal polling failed', { label: 'RUN', runId, error: String(e) });
+      }
+    });
+    await runtimeSignalPollChain;
+    return runtimeDirective;
   };
 
   const rebuildGroupingState = () => {
-    total = plan.steps.length;
-    depsArr = plan.steps.map((s, idx) => computeDependsOnIndicesFromStep({ step: s, steps: plan.steps, selfIndex: idx }));
-    revDepsArr = Array.from({ length: total }, () => []);
-    for (let i = 0; i < total; i++) {
-      for (const d of depsArr[i]) revDepsArr[d].push(i);
-    }
-    const undirected = Array.from({ length: total }, () => new Set());
-    for (let i = 0; i < total; i++) {
-      for (const d of depsArr[i]) { undirected[i].add(d); undirected[d].add(i); }
-    }
-    groupOf = new Array(total).fill(null);
-    groups = [];
-    for (let i = 0; i < total; i++) {
-      if (groupOf[i] !== null) continue;
-      const gid = groups.length;
-      const nodes = [];
-      const q = [i];
-      groupOf[i] = gid;
-      while (q.length) {
-        const u = q.shift();
-        nodes.push(u);
-        for (const v of undirected[u]) {
-          if (groupOf[v] === null) {
-            groupOf[v] = gid;
-            q.push(v);
-          }
-        }
-      }
-      groups.push({ id: gid, nodes, flushed: false });
-    }
-    groupPending = new Map(groups.map((g) => {
-      const remaining = (g.nodes || []).filter((idx) => !finished.has(idx)).length;
-      return [g.id, remaining];
-    }));
-    nextGroupToFlush = 0;
-    groupArgsBuffers.clear();
-    groupBuffers.clear();
+    const grouping = buildExecutionGroupingState({ steps: plan.steps, finished });
+    total = grouping.total;
+    depsArr = grouping.depsArr;
+    revDepsArr = grouping.revDepsArr;
+    groupOf = grouping.groupOf;
+    groups = grouping.groups;
+    groupPending = grouping.groupPending;
+    nextGroupToFlush = grouping.nextGroupToFlush;
+    groupEventCoordinator.resetOnGroupingRebuild();
     for (const s of (plan.steps || [])) {
       sanitizeDependsOnStepIds(s, plan.steps);
     }
@@ -943,388 +2055,58 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   };
 
   rebuildGroupingState();
-
-  const buildPlanPatchContext = async (atIndex) => {
-    const steps = Array.isArray(plan?.steps) ? plan.steps : [];
-    const currentStep = steps[Number(atIndex)] || {};
-    const dependsOnStepIds = Array.isArray(currentStep?.dependsOnStepIds) ? currentStep.dependsOnStepIds : [];
-    const planStepIdToIdx = buildStepIdIndexMap(steps);
-
-    const dependencyChain = new Set();
-    const addDependencies = (stepIdx) => {
-      if (dependencyChain.has(stepIdx)) return;
-      dependencyChain.add(stepIdx);
-      const step = steps[stepIdx] || {};
-      const deps = Array.isArray(step?.dependsOnStepIds) ? step.dependsOnStepIds : [];
-      for (const sid of deps) {
-        const k = typeof sid === 'string' ? sid.trim() : '';
-        const idx = planStepIdToIdx.get(k);
-        if (Number.isFinite(idx) && idx >= 0 && idx < Number(atIndex)) {
-          addDependencies(idx);
-        }
+  try {
+    workspaceSnapshot = await createWorkspaceSnapshot({ rootDir: artifactSandboxRoot });
+    logger.info('workspace baseline snapshot ready', {
+      label: 'DIFF',
+      runId,
+      rootDir: workspaceSnapshot?.rootDir || artifactSandboxRoot,
+      fileCount: Number(workspaceSnapshot?.fileCount || 0)
+    });
+    if (canEmitLiveEvents()) {
+      const baselineEvent = {
+        type: 'workspace_baseline',
+        rootDir: workspaceSnapshot?.rootDir || artifactSandboxRoot,
+        fileCount: Number(workspaceSnapshot?.fileCount || 0),
+        createdAt: Number(workspaceSnapshot?.createdAt || Date.now())
+      };
+      emitRunEvent(runId, baselineEvent);
+      try {
+        await HistoryStore.append(runId, baselineEvent);
+      } catch (e) {
+        logger.warn?.('workspace baseline history append failed', { label: 'DIFF', runId, error: String(e) });
       }
-    };
-
-    for (const sid of dependsOnStepIds) {
-      const k = typeof sid === 'string' ? sid.trim() : '';
-      const idx = planStepIdToIdx.get(k);
-      if (Number.isFinite(idx) && idx >= 0 && idx < Number(atIndex)) {
-        addDependencies(idx);
-      }
-    }
-
-    const allowed = new Set();
-    for (let i = 0; i < Number(atIndex); i++) {
-      if (dependencyChain.size > 0) {
-        if (dependencyChain.has(i)) allowed.add(i);
-      } else {
-        allowed.add(i);
+    } else {
+      try {
+        await HistoryStore.append(runId, {
+          type: 'workspace_baseline',
+          rootDir: workspaceSnapshot?.rootDir || artifactSandboxRoot,
+          fileCount: Number(workspaceSnapshot?.fileCount || 0),
+          createdAt: Number(workspaceSnapshot?.createdAt || Date.now())
+        });
+      } catch (e) {
+        logger.warn?.('workspace baseline history append failed', { label: 'DIFF', runId, error: String(e) });
       }
     }
+  } catch (e) {
+    logger.warn?.('workspace baseline snapshot failed', { label: 'DIFF', runId, error: String(e) });
+  }
 
-    const keepTypes = new Set(['tool_result', 'arggen_error', 'tool_error', 'retry_begin', 'retry_done', 'plan_patch']);
-    const hist = await HistoryStore.list(runId, 0, -1);
-    const filtered = (Array.isArray(hist) ? hist : []).filter((h) => keepTypes.has(String(h?.type || '')));
-
-    const lastToolByIndex = new Map();
-    for (const h of filtered) {
-      if (h.type !== 'tool_result') continue;
-      const idx = Number(h.plannedStepIndex);
-      if (!Number.isFinite(idx)) continue;
-      if (!allowed.has(idx)) continue;
-      lastToolByIndex.set(idx, h);
-    }
-
-    const toolCtx = Array.from(lastToolByIndex.keys())
-      .sort((a, b) => a - b)
-      .map((idx) => lastToolByIndex.get(idx))
-      .filter(Boolean);
-
-    const metaCtx = filtered.filter((h) => h.type !== 'tool_result');
-    const historyContext = [...metaCtx, ...toolCtx];
-    return { toolCtx, historyContext };
-  };
-
-  const maybeProcessPendingPlanPatch = async () => {
-    if (!enablePlanPatchHook) return;
-    if (!pauseForPlanPatch) return;
-    if (!pendingPlanPatch) return;
-    if (planPatchCalls >= maxPlanPatchCalls) { pauseForPlanPatch = false; pendingPlanPatch = null; return; }
-    if (appliedPatches >= maxPatches) { pauseForPlanPatch = false; pendingPlanPatch = null; return; }
-
-    const { atIndex, atStepId, aiName, lastResult, trigger } = pendingPlanPatch;
-    pauseForPlanPatch = false;
-    pendingPlanPatch = null;
-
-    let patch;
-    let toolCtx = [];
-    let historyContext = [];
-    try {
-      const built = await buildPlanPatchContext(atIndex);
-      toolCtx = built.toolCtx;
-      historyContext = built.historyContext;
-    } catch { }
-
-    try {
-      const { maybePlanPatch } = await import('./stages/plan_patch.js');
-      planPatchCalls += 1;
-      patch = await maybePlanPatch({
-        runId,
-        objective,
-        plan,
-        currentIndex: atIndex,
-        lastResult,
-        mcpcore,
-        conversation: conv,
-        context,
-        initialPlan: initialPlanSnapshot,
-        recentContext: toolCtx,
-        historyContext,
-        trigger,
-      });
-    } catch (e) {
-      logger.warn?.('PlanPatch invocation failed (ignored)', { label: 'PLAN_PATCH', runId, error: String(e) });
-      return;
-    }
-
-    const action = String(patch?.action || 'continue');
-    const isComplete = patch?.isComplete === true;
-    if (action === 'stop' || isComplete) {
-      stopRequested = true;
-      const patchEvent = { type: 'plan_patch', action: 'stop', reason: String(patch?.reason || ''), atIndex, atStepId, isComplete };
-      emitRunEvent(runId, patchEvent);
-      await HistoryStore.append(runId, patchEvent);
-      return;
-    }
-    if (action !== 'patch') return;
-
-    const ops = guardPlanPatchOps(patch?.operations);
-    if (!ops.length) return;
-
-    forceFlushAllBuffersAsSingleEvents();
-
-    const steps = Array.isArray(plan?.steps) ? plan.steps : [];
-    const stepIdToIdx = buildStepIdIndexMap(steps);
-    const currentBudget = retryBudgetByStepId.has(atStepId) ? retryBudgetByStepId.get(atStepId) : 1;
-    let consumedRetryBudget = false;
-
-    for (const op of ops) {
-      if (op.op === 'append') {
-        const rawNewSteps = (op.steps || []);
-        const newSteps = [];
-        let retryAppendedForThisFailure = false;
-        for (const x of rawNewSteps) {
-          const rawAiName = String(x?.aiName || '');
-          const isSameToolAsFail = rawAiName === String(aiName);
-          const rawDepends = Array.isArray(x?.dependsOnStepIds)
-            ? x.dependsOnStepIds.map((d) => (typeof d === 'string' ? d.trim() : '')).filter(Boolean)
-            : [];
-          const retryDepends = isSameToolAsFail
-            ? Array.from(new Set([atStepId, ...rawDepends]))
-            : rawDepends;
-          const isRetry = isSameToolAsFail && retryDepends.includes(atStepId);
-          if (isRetry && currentBudget <= 0) continue;
-          if (isRetry && retryAppendedForThisFailure) continue;
-          const s0 = normalizePlanPatchStepInput(x);
-          if (isRetry) {
-            s0.dependsOnStepIds = retryDepends;
-            retryAppendedForThisFailure = true;
-            consumedRetryBudget = true;
-          }
-          s0.stepId = newStepId();
-          newSteps.push(s0);
-        }
-        for (const ns of newSteps) {
-          steps.push(ns);
-        }
-      } else if (op.op === 'replace') {
-        const targetIdx = stepIdToIdx.get(op.targetStepId);
-        if (!canTargetPending(targetIdx, atIndex)) continue;
-        if (started.has(targetIdx) || finished.has(targetIdx)) continue;
-        const current = steps[targetIdx];
-        if (!current || current.skip === true) continue;
-        const next = normalizePlanPatchStepInput(op.step);
-        current.aiName = next.aiName;
-        current.reason = next.reason;
-        current.draftArgs = next.draftArgs;
-        current.dependsOnStepIds = next.dependsOnStepIds;
-        current.nextStep = next.nextStep;
-        current.skip = false;
-      } else if (op.op === 'delete') {
-        const targetIdx = stepIdToIdx.get(op.targetStepId);
-        if (!canTargetPending(targetIdx, atIndex)) continue;
-        if (started.has(targetIdx) || finished.has(targetIdx)) continue;
-        const current = steps[targetIdx];
-        if (!current) continue;
-        current.skip = true;
-      }
-    }
-
-    if (consumedRetryBudget && currentBudget > 0) {
-      retryBudgetByStepId.set(atStepId, currentBudget - 1);
-    }
-    appliedPatches += 1;
-
-    plan.steps = steps;
-    total = steps.length;
-    await HistoryStore.setPlan(runId, plan);
-    const patchEvent = { type: 'plan_patch', action: 'patch', reason: String(patch?.reason || ''), operations: ops, atIndex, atStepId };
-    emitRunEvent(runId, patchEvent);
-    await HistoryStore.append(runId, patchEvent);
-
-    rebuildGroupingState();
-  };
-
-  const topoOrderForGroup = (gid) => {
-    const nodes = groups[gid]?.nodes || [];
-    const inSet = new Set(nodes);
-    const indeg = new Map();
-    for (const u of nodes) indeg.set(u, 0);
-    for (const u of nodes) {
-      for (const d of depsArr[u]) if (inSet.has(d)) indeg.set(u, indeg.get(u) + 1);
-    }
-    const q = nodes.filter((u) => indeg.get(u) === 0).sort((a, b) => a - b);
-    const out = [];
-    while (q.length) {
-      const u = q.shift();
-      out.push(u);
-      for (const v of revDepsArr[u]) {
-        if (inSet.has(v)) {
-          indeg.set(v, indeg.get(v) - 1);
-          if (indeg.get(v) === 0) { q.push(v); q.sort((a, b) => a - b); }
-        }
-      }
-    }
-    if (out.length !== nodes.length) {
-      const seen = new Set(out);
-      const remain = nodes.filter((x) => !seen.has(x)).sort((a, b) => a - b);
-      return out.concat(remain);
-    }
-    return out;
-  };
   const buildDependsNote = (i) => {
-    const depOnIdx = depsArr[i] || [];
-    const depByIdx = revDepsArr[i] || [];
-    const depOn = depOnIdx
-      .map((idx) => ({ idx, stepId: plan.steps[idx]?.stepId, displayIndex: plan.steps[idx]?.displayIndex }))
-      .filter((x) => typeof x.stepId === 'string' && x.stepId);
-    const depBy = depByIdx
-      .map((idx) => ({ idx, stepId: plan.steps[idx]?.stepId, displayIndex: plan.steps[idx]?.displayIndex }))
-      .filter((x) => typeof x.stepId === 'string' && x.stepId);
-    if (depOn.length === 0 && depBy.length === 0) return '无依赖关系';
-    const parts = [];
-    if (depOn.length) parts.push(`依赖步骤: ${depOn.map((x) => `${x.stepId}(#${Number(x.displayIndex || (x.idx + 1))})`).join(', ')}`);
-    if (depBy.length) parts.push(`被步骤依赖: ${depBy.map((x) => `${x.stepId}(#${Number(x.displayIndex || (x.idx + 1))})`).join(', ')}`);
-    return parts.join('；');
+    return buildDependsNoteForStep({ stepIndex: i, steps: plan.steps, depsArr, revDepsArr });
   };
 
   const buildDependsOnStepIds = (i) => {
-    const ids = Array.isArray(plan.steps?.[i]?.dependsOnStepIds) ? plan.steps[i].dependsOnStepIds : [];
-    return ids.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean);
+    return buildDependsOnStepIdsForStep({ stepIndex: i, steps: plan.steps });
   };
 
   const buildDependedByStepIds = (i) => {
-    const idxs = revDepsArr[i] || [];
-    return idxs.map((j) => plan.steps?.[j]?.stepId).filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim());
+    return buildDependedByStepIdsForStep({ stepIndex: i, steps: plan.steps, revDepsArr });
   };
-
-  // 结果流完成态：确保“最后一次 tool_result / tool_result_group”携带 resultStatus='final'
-  // 约束：只对最后一个结果事件标记 final，避免多个事件同时被认为是最终完成。
-  let finalResultEmitted = false;
-
-  // 孤立步骤结果缓冲：由调度器在确认是否为最后一步时决定 progress/final
-  const isolatedResultBuffers = new Map(); // plannedStepIndex -> ev
-  const flushIsolatedResultIfAny = (plannedStepIndex, finalHint) => {
-    try {
-      const ev = isolatedResultBuffers.get(plannedStepIndex);
-      if (!ev) return;
-      const shouldFinal = !!finalHint && !finalResultEmitted;
-      emitRunEvent(runId, {
-        ...ev,
-        resultStream: true,
-        resultStatus: shouldFinal ? 'final' : 'progress'
-      });
-      if (shouldFinal) finalResultEmitted = true;
-      isolatedResultBuffers.delete(plannedStepIndex);
-    } catch { }
-  };
-
-  const emitToolResultGrouped = (ev, plannedStepIndex) => {
-    if (isRunCancelled(runId)) return;
-    const gid = groupOf[plannedStepIndex];
-    if (gid === null || gid === undefined) {
-      // 孤立步骤：先缓冲，由调度器在确认是否“最后一步”时决定 progress/final
-      isolatedResultBuffers.set(plannedStepIndex, ev);
-      return;
-    }
-    if (!groupBuffers.has(gid)) groupBuffers.set(gid, new Map());
-    // 若同一步骤多次重试，仅保留最新一次结果
-    groupBuffers.get(gid).set(plannedStepIndex, ev);
-  };
-  const emitArgsGrouped = (argsEv, plannedStepIndex) => {
-    if (isRunCancelled(runId)) return;
-    const gid = groupOf[plannedStepIndex];
-    if (gid === null || gid === undefined) {
-      // 孤立步骤：args 事件即时发送
-      emitRunEvent(runId, argsEv);
-      return;
-    }
-    if (!groupArgsBuffers.has(gid)) groupArgsBuffers.set(gid, new Map());
-    groupArgsBuffers.get(gid).set(plannedStepIndex, argsEv);
-  };
-  const flushGroupIfReady = (gid, { finalHint, force } = {}) => {
-    if (gid === null || gid === undefined) return;
-    const g = groups.find((x) => x.id === gid);
-    if (!g || g.flushed) return false;
-    const left = groupPending.get(gid) || 0;
-    if (!force && left > 0) return false;
-    const order = topoOrderForGroup(gid);
-    const orderStepIds = order.map((idx) => {
-      const sid = plan?.steps?.[idx]?.stepId;
-      return (typeof sid === 'string' && sid.trim()) ? sid.trim() : `step_${idx}`;
-    });
-    const buf = groupBuffers.get(gid) || new Map();
-    const bufArgs = groupArgsBuffers.get(gid) || new Map();
-
-    // 先合并并发送 args_group（若存在）
-    const argsItems = [];
-    for (const idx of order) {
-      const a = bufArgs.get(idx);
-      if (a) argsItems.push(a);
-    }
-    if (!isRunCancelled(runId) && argsItems.length > 0) {
-      const argsGroupEvent = {
-        type: 'args_group',
-        groupId: gid,
-        groupSize: (g.nodes?.length || 0),
-        orderStepIds,
-        items: argsItems,
-      };
-      emitRunEvent(runId, argsGroupEvent);
-    }
-
-    // 再按拓扑顺序一次性发送 tool_result_group
-    const resultEvents = [];
-    for (const idx of order) {
-      const ev = buf.get(idx);
-      if (ev) resultEvents.push(ev);
-    }
-    if (!isRunCancelled(runId) && resultEvents.length > 0) {
-      const shouldFinal = !!finalHint && !finalResultEmitted;
-      const resultGroupEvent = {
-        type: 'tool_result_group',
-        groupId: gid,
-        groupSize: (g.nodes?.length || 0),
-        orderStepIds,
-        events: resultEvents,
-        resultStream: true,
-        resultStatus: shouldFinal ? 'final' : 'progress',
-        groupFlushed: true,
-      };
-      emitRunEvent(runId, resultGroupEvent);
-      if (shouldFinal) finalResultEmitted = true;
-    }
-
-    groupBuffers.delete(gid);
-    groupArgsBuffers.delete(gid);
-    g.flushed = true;
-    return true;
-  };
-
-  const flushReadyGroupsInOrder = ({ force = false, finalGroupId = null } = {}) => {
-    while (nextGroupToFlush < groups.length) {
-      const g = groups[nextGroupToFlush];
-      if (!g) break;
-      const gid = g.id;
-      const left = groupPending.get(gid) || 0;
-      if (!force && left > 0) break;
-      const shouldMarkFinal = finalGroupId !== null && finalGroupId !== undefined && gid === finalGroupId;
-      const flushed = flushGroupIfReady(gid, { finalHint: shouldMarkFinal, force: true });
-      if (!flushed) break;
-      nextGroupToFlush += 1;
-    }
-  };
-
-  const flushAllOnCancel = () => {
-    try {
-      for (const [idx, ev] of isolatedResultBuffers.entries()) {
-        try {
-          emitRunEvent(runId, { ...ev, resultStream: true, resultStatus: 'progress' });
-        } catch { }
-      }
-      isolatedResultBuffers.clear();
-    } catch { }
-    try {
-      flushReadyGroupsInOrder({ force: true, finalGroupId: null });
-    } catch { }
-  };
-  // 中文：标记已完成的步骤
   if (retrySteps) {
-    // 重试模式：标记所有非重试步骤为已完成
     for (let i = 0; i < total; i++) {
       if (!retrySteps.has(i)) {
         finished.add(i);
-        // 减少组内待完成计数
         const gid = groupOf[i];
         if (gid !== null && gid !== undefined && groupPending.has(gid)) {
           groupPending.set(gid, Math.max(0, (groupPending.get(gid) || 0) - 1));
@@ -1332,7 +2114,6 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       }
     }
   } else {
-    // 正常模式：认为 startIndex 之前的步骤已完成
     for (let i = 0; i < Math.min(startIndex, total); i++) finished.add(i);
     for (let i = 0; i < Math.min(startIndex, total); i++) {
       const gid = groupOf[i];
@@ -1342,15 +2123,107 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     }
   }
 
-  // 单步执行器：保持原有逻辑
   const executeSingleStep = async (i) => {
+    if (!isExecutionActive()) return { stale: true };
     const step = plan.steps[i];
     const aiName = step.aiName;
+    const manifestItem = plan.manifest?.find((m) => m.aiName === aiName);
+    const stepExecutor = normalizePlanExecutor(
+      step?.executor || manifestItem?.executor || (step?.actionRef ? 'sandbox' : 'mcp'),
+      'mcp'
+    );
+    const stepActionRef = String(step?.actionRef || manifestItem?.actionRef || '').trim().toLowerCase();
+    const isSandboxStep = stepExecutor === 'sandbox';
     const draftArgs = step.draftArgs || {};
     const stepId = step?.stepId;
     const stepStart = now();
+    const retryState = stepRetryState.get(i) || {
+      attempts: 0,
+      sameRetries: 0,
+      regenRetries: 0,
+      forceRegenerate: false,
+      lastFailure: null
+    };
+    const forceRegenerateArgs = retryState.forceRegenerate === true;
+    const attemptNo = Math.max(1, Number(retryState.attempts || 0) + 1);
+    const stepToolMetaSeed = (toolMetaMap.get(aiName) && typeof toolMetaMap.get(aiName) === 'object')
+      ? toolMetaMap.get(aiName)
+      : (manifestItem?.meta || {});
+    const stepToolContextBase = buildStepToolContextSnapshot({
+      aiName,
+      executor: stepExecutor,
+      actionRef: stepActionRef,
+      manifestItem,
+      currentToolFull: null,
+      toolMeta: stepToolMetaSeed
+    });
+    const buildStepUsedEntry = ({
+      executionIndex = -1,
+      elapsedMs = 0,
+      success = false,
+      code = ''
+    } = {}) => ({
+      aiName: String(aiName || ''),
+      executor: String(stepExecutor || ''),
+      stepId: String(stepId || ''),
+      stepIndex: Number(i),
+      executionIndex: Number.isFinite(Number(executionIndex)) ? Math.floor(Number(executionIndex)) : -1,
+      attemptNo: Number(attemptNo || 0),
+      elapsedMs: Number.isFinite(Number(elapsedMs)) ? Math.max(0, Math.floor(Number(elapsedMs))) : 0,
+      success: success === true,
+      code: String(code || '')
+    });
+    const syncCheckpointStepRuntime = ({
+      executionIndex = -1,
+      elapsedMs = 0,
+      success = false,
+      code = '',
+      state = '',
+      reasonCode = '',
+      message = '',
+      availableAt = 0
+    } = {}) => {
+      upsertCheckpointStepRuntime({
+        stepIndex: Number(i),
+        stepId: String(stepId || ''),
+        aiName: String(aiName || ''),
+        executor: String(stepExecutor || ''),
+        state: String(state || '').trim(),
+        reasonCode: String(reasonCode || '').trim(),
+        resultCode: String(code || '').trim(),
+        attemptNo: Number(attemptNo || 0),
+        executionIndex: Number.isFinite(Number(executionIndex)) ? Math.floor(Number(executionIndex)) : -1,
+        success: success === true,
+        elapsedMs: Number.isFinite(Number(elapsedMs)) ? Math.max(0, Math.floor(Number(elapsedMs))) : 0,
+        availableAt: Number.isFinite(Number(availableAt)) ? Math.max(0, Math.floor(Number(availableAt))) : 0,
+        message: String(message || '').trim()
+      });
+    };
+    await emitStepState({
+      stepIndex: i,
+      step,
+      aiName,
+      executor: stepExecutor,
+      actionRef: stepActionRef,
+      state: 'planned',
+      reasonCode: STEP_REASON_CODE.stepReady,
+      reason: 'step queued for execution',
+      attemptNo
+    });
+    await emitStepState({
+      stepIndex: i,
+      step,
+      aiName,
+      executor: stepExecutor,
+      actionRef: stepActionRef,
+      state: 'running',
+      reasonCode: STEP_REASON_CODE.stepDispatchStart,
+      reason: 'dispatching action request',
+      attemptNo
+    });
+    await pollRuntimeSignal({ phase: 'step_start', stepIndex: i });
+    if (!isExecutionActive()) return { stale: true };
 
-    // 若运行已被上游标记为取消，则跳过实际工具调用，避免继续浪费资源
     if (isRunCancelled(runId)) {
       const elapsed = now() - stepStart;
       const depOnStepIds = buildDependsOnStepIds(i);
@@ -1360,7 +2233,7 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         success: false,
         code: 'RUN_CANCELLED',
         data: null,
-        message: '运行已被取消，跳过此步骤'
+        message: 'Run cancelled due to runtime signal or upstream request.'
       };
       const ev = {
         type: 'tool_result',
@@ -1368,30 +2241,113 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         stepId,
         executionIndex: nextExecutionIndex++,
         aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef || undefined,
         reason: formatReason(step.reason),
         nextStep: step.nextStep || '',
-        args: draftArgs,
-        result: res,
+        result: normalizeEventPayload(res),
         elapsedMs: elapsed,
         dependsOnStepIds: depOnStepIds,
         dependedByStepIds: depByStepIds,
         dependsNote: buildDependsNote(i),
         groupId: (gid ?? null),
         groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
+        toolContext: stepToolContextBase,
         toolMeta: {},
       };
-      emitToolResultGrouped(ev, i);
-      await HistoryStore.append(runId, ev);
+      groupEventCoordinator.emitToolResultGrouped(ev, i);
+      if (canEmitLiveEvents()) await HistoryStore.append(runId, ev);
+      syncCheckpointStepRuntime({
+        executionIndex: ev.executionIndex,
+        elapsedMs: elapsed,
+        success: false,
+        code: String(res.code || 'RUN_CANCELLED'),
+        state: 'failed',
+        reasonCode: STEP_REASON_CODE.runCancelled,
+        message: String(res.message || '')
+      });
       if (config.flags.enableVerboseSteps) {
-        logger.info?.('步骤在运行取消后被跳过', { label: 'STEP', stepIndex: i, aiName });
+        logger.info?.('Step skipped after run cancellation', { label: 'STEP', stepIndex: i, aiName });
       }
       if (retrySteps) {
         stepStatus.set(i, { success: false, reason: res.message });
       }
-      return { usedEntry: { aiName, elapsedMs: elapsed, success: false, code: res.code }, succeeded: 0 };
+      await emitStepState({
+        stepIndex: i,
+        step,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef,
+        state: 'failed',
+        reasonCode: STEP_REASON_CODE.runCancelled,
+        reason: String(res.message || 'run cancelled'),
+        attemptNo,
+        resultCode: String(res.code || 'RUN_CANCELLED')
+      });
+      return { usedEntry: buildStepUsedEntry({ executionIndex: ev.executionIndex, elapsedMs: elapsed, success: false, code: res.code }), succeeded: 0 };
     }
 
-    // 重试模式下，检查依赖步骤是否失败
+
+    if (runtimeDirective && (runtimeDirective.action === 'replan' || runtimeDirective.action === 'supplement')) {
+      const elapsed = now() - stepStart;
+      const depOnStepIds = buildDependsOnStepIds(i);
+      const depByStepIds = buildDependedByStepIds(i);
+      const gid = groupOf[i];
+      const res = {
+        success: false,
+        code: 'RUN_REDIRECTED',
+        data: null,
+        message: `Run redirected by runtime signal (${runtimeDirective.action})`
+      };
+      const ev = {
+        type: 'tool_result',
+        plannedStepIndex: i,
+        stepId,
+        executionIndex: nextExecutionIndex++,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef || undefined,
+        reason: formatReason(step.reason),
+        nextStep: step.nextStep || '',
+        result: normalizeEventPayload(res),
+        elapsedMs: elapsed,
+        dependsOnStepIds: depOnStepIds,
+        dependedByStepIds: depByStepIds,
+        dependsNote: buildDependsNote(i),
+        groupId: (gid ?? null),
+        groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
+        toolContext: stepToolContextBase,
+        toolMeta: {},
+      };
+      groupEventCoordinator.emitToolResultGrouped(ev, i);
+      if (canEmitLiveEvents()) await HistoryStore.append(runId, ev);
+      syncCheckpointStepRuntime({
+        executionIndex: ev.executionIndex,
+        elapsedMs: elapsed,
+        success: false,
+        code: String(res.code || 'RUN_REDIRECTED'),
+        state: 'replanned',
+        reasonCode: STEP_REASON_CODE.runtimeRedirected,
+        message: String(res.message || '')
+      });
+      if (retrySteps) {
+        stepStatus.set(i, { success: false, reason: res.message });
+      }
+      await emitStepState({
+        stepIndex: i,
+        step,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef,
+        state: 'replanned',
+        reasonCode: STEP_REASON_CODE.runtimeRedirected,
+        reason: String(res.message || ''),
+        attemptNo,
+        resultCode: String(res.code || 'RUN_REDIRECTED')
+      });
+      return { usedEntry: buildStepUsedEntry({ executionIndex: ev.executionIndex, elapsedMs: elapsed, success: false, code: res.code }), succeeded: 0 };
+    }
+
     if (retrySteps) {
       const deps = depsArr[i] || [];
       const failedDeps = deps.filter((d) => {
@@ -1400,17 +2356,16 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       });
 
       if (failedDeps.length > 0) {
-        // 依赖步骤失败，跳过此步骤以避免浪费
         const elapsed = now() - stepStart;
         const failedDepReasons = failedDeps.map(d => {
           const st = stepStatus.get(d);
-          return `步骤${d}(${plan.steps[d]?.aiName}): ${st?.reason || '失败'}`;
+          return `Step ${d} (${plan.steps[d]?.aiName}): ${st?.reason || 'failed'}`;
         }).join('; ');
         const res = {
           success: false,
           code: 'SKIP_UPSTREAM_FAILED',
           data: null,
-          message: `跳过：上游依赖步骤失败 - ${failedDepReasons}`
+          message: `Skipped due to failed upstream dependencies: ${failedDepReasons}`
         };
 
         stepStatus.set(i, { success: false, reason: res.message });
@@ -1424,81 +2379,233 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
           stepId,
           executionIndex: nextExecutionIndex++,
           aiName,
+          executor: stepExecutor,
+          actionRef: stepActionRef || undefined,
           reason: formatReason(step.reason),
           nextStep: step.nextStep || '',
-          args: draftArgs,
-          result: res,
+          result: normalizeEventPayload(res),
           elapsedMs: elapsed,
           dependsOnStepIds: depOnStepIds,
           dependedByStepIds: depByStepIds,
           dependsNote: buildDependsNote(i),
           groupId: (gid ?? null),
           groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
-          toolMeta: {},
+          toolContext: stepToolContextBase,
+        toolMeta: {},
         };
-        emitToolResultGrouped(ev, i);
-        await HistoryStore.append(runId, ev);
+        groupEventCoordinator.emitToolResultGrouped(ev, i);
+        if (canEmitLiveEvents()) await HistoryStore.append(runId, ev);
+        syncCheckpointStepRuntime({
+          executionIndex: ev.executionIndex,
+          elapsedMs: elapsed,
+          success: false,
+          code: String(res.code || 'SKIP_UPSTREAM_FAILED'),
+          state: 'failed',
+          reasonCode: STEP_REASON_CODE.upstreamFailed,
+          message: String(res.message || '')
+        });
 
         if (config.flags.enableVerboseSteps) {
-          logger.info(`跳过步骤（上游失败）`, {
+          logger.info('Skipped step due to failed upstream dependency', {
             label: 'STEP',
             stepIndex: i,
             aiName,
             failedDeps: failedDepReasons
           });
         }
+        await emitStepState({
+          stepIndex: i,
+          step,
+          aiName,
+          executor: stepExecutor,
+          actionRef: stepActionRef,
+          state: 'failed',
+          reasonCode: STEP_REASON_CODE.upstreamFailed,
+          reason: String(res.message || ''),
+          attemptNo,
+          resultCode: String(res.code || 'SKIP_UPSTREAM_FAILED')
+        });
 
-        return { usedEntry: { aiName, elapsedMs: elapsed, success: false, code: res.code }, succeeded: 0 };
+        return { usedEntry: buildStepUsedEntry({ executionIndex: ev.executionIndex, elapsedMs: elapsed, success: false, code: res.code }), succeeded: 0 };
       }
     }
 
-    const manifestItem = plan.manifest?.find((m) => m.aiName === aiName);
-    if (!manifestItem) {
+    if (!manifestItem && !isSandboxStep) {
       const elapsed = now() - stepStart;
       const res = { success: false, code: 'NOT_FOUND', data: null, message: `Unknown aiName: ${aiName}` };
-      // 中文：未知工具也参与“组”缓冲；事件携带依赖说明与组信息
       const depOnStepIds = buildDependsOnStepIds(i);
       const depByStepIds = buildDependedByStepIds(i);
       const gid = groupOf[i];
       const ev = {
         type: 'tool_result',
-        plannedStepIndex: i,  // 计划阶段的步骤索引
+        plannedStepIndex: i,  // Original index inside the planner's step list.
         stepId,
-        executionIndex: nextExecutionIndex++,  // 实际执行顺序（按完成时间）
+        executionIndex: nextExecutionIndex++,  // Global execution order index across emitted tool results.
         aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef || undefined,
         reason: formatReason(step.reason),
         nextStep: step.nextStep || '',
-        args: step.draftArgs || {},
-        result: res,
+        result: normalizeEventPayload(res),
         elapsedMs: elapsed,
         dependsOnStepIds: depOnStepIds,
         dependedByStepIds: depByStepIds,
         dependsNote: buildDependsNote(i),
         groupId: (gid ?? null),
         groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
+        toolContext: stepToolContextBase,
         toolMeta: {},
       };
-      if (!isRunCancelled(runId)) {
-        emitToolResultGrouped(ev, i);
+      if (canEmitLiveEvents()) {
+        groupEventCoordinator.emitToolResultGrouped(ev, i);
         await HistoryStore.append(runId, ev);
       }
-      if (config.flags.enableVerboseSteps) logger.warn?.('跳过未知工具步骤', { label: 'STEP', aiName });
-      return { usedEntry: { aiName, elapsedMs: elapsed, success: res.success, code: res.code }, succeeded: 0 };
+      syncCheckpointStepRuntime({
+        executionIndex: ev.executionIndex,
+        elapsedMs: elapsed,
+        success: false,
+        code: String(res.code || 'NOT_FOUND'),
+        state: 'failed',
+        reasonCode: STEP_REASON_CODE.toolNotFound,
+        message: String(res.message || '')
+      });
+      if (config.flags.enableVerboseSteps) logger.warn?.('Unknown tool step skipped', { label: 'STEP', aiName });
+      await emitStepState({
+        stepIndex: i,
+        step,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef,
+        state: 'failed',
+        reasonCode: STEP_REASON_CODE.toolNotFound,
+        reason: String(res.message || ''),
+        attemptNo,
+        resultCode: String(res.code || 'NOT_FOUND')
+      });
+      return { usedEntry: buildStepUsedEntry({ executionIndex: ev.executionIndex, elapsedMs: elapsed, success: res.success === true, code: res.code }), succeeded: 0 };
     }
 
+    if (isSandboxStep && !isTerminalRuntimeStep({ ...step, aiName, actionRef: stepActionRef })) {
+      const elapsed = now() - stepStart;
+      const res = {
+        success: false,
+        code: 'UNSUPPORTED_SANDBOX_ACTION',
+        data: null,
+        message: `Unsupported sandbox action for step: ${stepActionRef || aiName || 'unknown'}`
+      };
+      const depOnStepIds = buildDependsOnStepIds(i);
+      const depByStepIds = buildDependedByStepIds(i);
+      const gid = groupOf[i];
+      const ev = {
+        type: 'tool_result',
+        plannedStepIndex: i,
+        stepId,
+        executionIndex: nextExecutionIndex++,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef || undefined,
+        reason: formatReason(step.reason),
+        nextStep: step.nextStep || '',
+        result: normalizeEventPayload(res),
+        elapsedMs: elapsed,
+        dependsOnStepIds: depOnStepIds,
+        dependedByStepIds: depByStepIds,
+        dependsNote: buildDependsNote(i),
+        groupId: (gid ?? null),
+        groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
+        toolContext: stepToolContextBase,
+        toolMeta: {},
+      };
+      if (canEmitLiveEvents()) {
+        groupEventCoordinator.emitToolResultGrouped(ev, i);
+        await HistoryStore.append(runId, ev);
+      }
+      syncCheckpointStepRuntime({
+        executionIndex: ev.executionIndex,
+        elapsedMs: elapsed,
+        success: false,
+        code: String(res.code || 'UNSUPPORTED_SANDBOX_ACTION'),
+        state: 'failed',
+        reasonCode: STEP_REASON_CODE.unsupportedSandboxAction,
+        message: String(res.message || '')
+      });
+      await emitStepState({
+        stepIndex: i,
+        step,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef,
+        state: 'failed',
+        reasonCode: STEP_REASON_CODE.unsupportedSandboxAction,
+        reason: String(res.message || ''),
+        attemptNo,
+        resultCode: String(res.code || 'UNSUPPORTED_SANDBOX_ACTION')
+      });
+      return { usedEntry: buildStepUsedEntry({ executionIndex: ev.executionIndex, elapsedMs: elapsed, success: false, code: res.code }), succeeded: 0 };
+    }
+
+    const rerankProfileRaw = (aiName && Object.prototype.hasOwnProperty.call(rerankScoreByAiName, aiName))
+      ? rerankScoreByAiName[aiName]
+      : null;
+    const rerankProfile = (rerankProfileRaw && typeof rerankProfileRaw === 'object')
+      ? {
+        final: Number(rerankProfileRaw.final || 0),
+        intent: Number(rerankProfileRaw.intent || 0),
+        trust: Number(rerankProfileRaw.trust || 0),
+        relevance: Number(rerankProfileRaw.relevance || 0),
+        probability: Number(rerankProfileRaw.probability || 0),
+        keywordHitRatio: Number(rerankProfileRaw.keywordHitRatio || 0),
+        regexHitRatio: Number(rerankProfileRaw.regexHitRatio || 0),
+        rank: Number(rerankProfileRaw.rank || 0)
+      }
+      : null;
     if (config.flags.enableVerboseSteps) {
-      logger.info(`执行第${i + 1}/${plan.steps.length}步`, { label: 'STEP', aiName, reason: formatReason(step.reason), nextStep: step.nextStep || '', draftArgs: clip(draftArgs) });
+      logger.info(`Executing step ${i + 1}/${plan.steps.length}`, {
+        label: 'STEP',
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef || undefined,
+        reason: formatReason(step.reason),
+        nextStep: step.nextStep || '',
+        draftArgs: clip(draftArgs),
+        rerankFinal: rerankProfile ? Number(rerankProfile.final.toFixed(2)) : undefined,
+        rerankIntent: rerankProfile ? Number(rerankProfile.intent.toFixed(2)) : undefined,
+        rerankTrust: rerankProfile ? Number(rerankProfile.trust.toFixed(2)) : undefined,
+        rerankRelevance: rerankProfile ? Number(rerankProfile.relevance.toFixed(2)) : undefined,
+        rerankProbability: rerankProfile ? Number(rerankProfile.probability.toFixed(4)) : undefined,
+        rerankKeywordHitRatio: rerankProfile ? Number(rerankProfile.keywordHitRatio.toFixed(3)) : undefined,
+        rerankRegexHitRatio: rerankProfile ? Number(rerankProfile.regexHitRatio.toFixed(3)) : undefined
+      });
     }
 
-    // 获取工具完整定义
-    let currentToolFull = mcpcore.getAvailableTools().find((t) => t.aiName === aiName) || {
-      description: manifestItem?.description || '',
-      inputSchema: manifestItem?.inputSchema || { type: 'object', properties: {} }
-    };
+    let currentToolFull;
+    if (isSandboxStep) {
+      currentToolFull = {
+        aiName: aiName || TERMINAL_RUNTIME_AI_NAME,
+        description: manifestItem?.description || 'Runtime sandbox terminal command execution.',
+        inputSchema: manifestItem?.inputSchema || getTerminalTaskArgSchema(),
+        provider: 'runtime',
+        executor: 'sandbox',
+        actionRef: stepActionRef || TERMINAL_RUNTIME_ACTION
+      };
+    } else {
+      currentToolFull = mcpcore.getAvailableTools().find((t) => t.aiName === aiName) || {
+        description: manifestItem?.description || '',
+        inputSchema: manifestItem?.inputSchema || { type: 'object', properties: {} }
+      };
+    }
     const schema = currentToolFull.inputSchema || manifestItem?.inputSchema || { type: 'object', properties: {} };
+    const stepToolContext = buildStepToolContextSnapshot({
+      aiName,
+      executor: stepExecutor,
+      actionRef: stepActionRef,
+      manifestItem,
+      currentToolFull,
+      toolMeta: (toolMetaMap.get(aiName) && typeof toolMetaMap.get(aiName) === 'object')
+        ? toolMetaMap.get(aiName)
+        : (manifestItem?.meta || currentToolFull?.meta || {})
+    });
 
-    // 生成参数（包含复用逻辑）
-    // 重试模式下禁用参数复用，强制重新生成，避免复用之前失败的参数
     const isRetryMode = retrySteps !== null;
     let toolArgs = draftArgs;
     let reused = false;
@@ -1513,24 +2620,61 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         conv,
         totalSteps: plan.steps.length,
         context,
-        disableReuse: isRetryMode  // 重试时禁用复用
+        disableReuse: isRetryMode || forceRegenerateArgs,
+        retryContext: retryState.lastFailure || null,
       });
       toolArgs = argsResult.toolArgs;
       reused = argsResult.reused;
     } catch (e) {
-      emitRunEvent(runId, { type: 'arggen_error', stepIndex: i, stepId, aiName, error: String(e) });
-      await HistoryStore.append(runId, { type: 'arggen_error', stepIndex: i, stepId, aiName, error: String(e) });
-      logger.warn?.('参数生成失败，使用草案参数', { label: 'ARGGEN', aiName, error: String(e) });
+      if (canEmitLiveEvents()) {
+        emitRunEvent(runId, { type: 'arggen_error', stepIndex: i, stepId, aiName, error: String(e) });
+        await HistoryStore.append(runId, { type: 'arggen_error', stepIndex: i, stepId, aiName, error: String(e) });
+      }
+      logger.warn?.('Arg generation failed; fallback to draft args', { label: 'ARGGEN', aiName, error: String(e) });
+    }
+    retryState.forceRegenerate = false;
+
+    const timeoutGuard = applyTerminalTimeoutRetryGuards({
+      toolArgs,
+      retryState,
+      isSandboxStep
+    });
+    toolArgs = timeoutGuard.args;
+    if (timeoutGuard.applied) {
+      const ev = {
+        type: 'arg_retry_guard_applied',
+        stepIndex: i,
+        plannedStepIndex: i,
+        stepId,
+        aiName,
+        reasons: timeoutGuard.reasons,
+        args: toolArgs
+      };
+      if (canEmitLiveEvents()) {
+        emitRunEvent(runId, ev);
+        await HistoryStore.append(runId, ev);
+      }
+      if (config.flags.enableVerboseSteps) {
+        logger.info('Applied timeout retry arg guard for terminal step', {
+          label: 'ARGGEN',
+          stepIndex: i,
+          stepId,
+          aiName,
+          reasons: timeoutGuard.reasons
+        });
+      }
     }
 
-    // 参数校验
-    const validateResult = await validateArgs({ schema, toolArgs, aiName });
+    let validateResult = await validateArgs({ schema, toolArgs, aiName });
     let ajvValid = validateResult.valid;
     let ajvErrors = validateResult.errors;
     toolArgs = validateResult.args;
 
-    // 参数纠错（如果校验失败）
-    if (!ajvValid) {
+    const maxArgFixRetries = runtimeControl.disableArgFixRetry ? 0 : 3;
+    let argFixAttempt = 0;
+    while (!ajvValid && argFixAttempt < maxArgFixRetries) {
+      argFixAttempt += 1;
+      const failedArgs = toolArgs;
       toolArgs = await fixToolArgs({
         runId,
         stepIndex: i,
@@ -1539,33 +2683,33 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         currentToolFull,
         schema,
         ajvErrors,
-        toolArgs,
-        draftArgs,
+        toolArgs: failedArgs,
+        draftArgs: failedArgs,
         totalSteps: plan.steps.length,
         context
       });
+      validateResult = await validateArgs({ schema, toolArgs, aiName });
+      ajvValid = validateResult.valid;
+      ajvErrors = validateResult.errors;
+      toolArgs = validateResult.args;
+    }
+    const argValidationFailed = !ajvValid;
+    if (argValidationFailed && canEmitLiveEvents()) {
+      const argFailEv = {
+        type: 'arg_validation_failed',
+        stepIndex: i,
+        plannedStepIndex: i,
+        stepId,
+        aiName,
+        attempts: argFixAttempt,
+        maxAttempts: maxArgFixRetries,
+        errors: ajvErrors,
+        args: toolArgs,
+      };
+      emitRunEvent(runId, argFailEv);
+      await HistoryStore.append(runId, argFailEv);
     }
 
-    if (config.flags.enableVerboseSteps) logger.info(`参数确定`, { label: 'ARGS', aiName, toolArgsPreview: clip(toolArgs) });
-
-    let scheduleArgValue = null;
-    const schemaHasSchedule = !!(currentToolFull?.inputSchema?.properties?.schedule);
-    const scheduleArgPresent = !!(
-      schemaHasSchedule &&
-      toolArgs &&
-      Object.prototype.hasOwnProperty.call(toolArgs, 'schedule') &&
-      toolArgs.schedule
-    );
-    if (scheduleArgPresent) {
-      scheduleArgValue = toolArgs.schedule;
-      try {
-        const cloned = { ...toolArgs };
-        delete cloned.schedule;
-        toolArgs = cloned;
-      } catch { }
-    }
-
-    // 将最终用于调用的参数写入历史，并通过事件总线实时分发
     try {
       const depOnStepIds = buildDependsOnStepIds(i);
       const depByStepIds = buildDependedByStepIds(i);
@@ -1576,6 +2720,10 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         plannedStepIndex: i,
         stepId,
         aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef || undefined,
+        reason: formatReason(step.reason),
+        nextStep: step.nextStep || '',
         args: toolArgs,
         reused,
         dependsOnStepIds: depOnStepIds,
@@ -1583,242 +2731,620 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         dependsNote: buildDependsNote(i),
         groupId: (gidA ?? null),
         groupSize: (gidA != null && groups[gidA]?.nodes?.length) ? groups[gidA].nodes.length : 1,
+        toolContext: stepToolContext,
+        toolMeta: (stepToolContext?.meta && typeof stepToolContext.meta === 'object') ? stepToolContext.meta : {},
       };
-      if (!isRunCancelled(runId)) {
-        emitArgsGrouped(argsEv, i);
+      if (canEmitLiveEvents()) {
+        groupEventCoordinator.emitArgsGrouped(argsEv, i);
         await HistoryStore.append(runId, argsEv);
       }
     } catch { }
-
-    // === schedule 延迟反馈机制：仅当插件 schema 中定义了 schedule 参数时启用 ===
-    let delayMs = 0;
-    let scheduleDetected = false;
-    let scheduleText = '';
-    let scheduleParsed = null;
-    let scheduleMode = 'none'; // 'immediate_exec' | 'delayed_exec' | 'none'
-
-    if (scheduleArgPresent && scheduleArgValue) {
-      scheduleDetected = true;
-      try {
-        // 统一提取文本与语言
-        const rawSchedule = scheduleArgValue;
-        scheduleText = typeof rawSchedule === 'string'
-          ? rawSchedule
-          : (rawSchedule.when || rawSchedule.text || '');
-        const lang = typeof rawSchedule === 'object' ? rawSchedule.language : undefined;
-
-        // 1) 优先使用 ArgGen/Plan 阶段已经解析好的 targetISO（若存在）
-        let targetISO = (typeof rawSchedule === 'object' && rawSchedule.targetISO)
-          ? String(rawSchedule.targetISO)
-          : '';
-        let timezone = (typeof rawSchedule === 'object' && rawSchedule.timezone)
-          ? String(rawSchedule.timezone)
-          : undefined;
-        let targetMs = NaN;
-
-        if (targetISO) {
-          const ts = Date.parse(targetISO);
-          if (Number.isFinite(ts) && ts > 0) {
-            targetMs = ts;
-            // 构造一个最小的 scheduleParsed 结构，便于后续统一使用 parsedISO/timezone
-            scheduleParsed = {
-              parsedISO: targetISO,
-              timezone,
-              parsedDateTime: null,
-            };
-          }
-        }
-
-        // 2) 若缺少有效 targetISO，则回退到基于文本的时间解析
-        if (!Number.isFinite(targetMs) || targetMs <= 0) {
-          const parsed = timeParser.parseTimeExpression(scheduleText, {
-            language: lang || (scheduleText.match(/[\u4e00-\u9fa5]/) ? 'zh' : 'en'),
-          });
-          if (parsed.success && parsed.parsedDateTime) {
-            scheduleParsed = parsed;
-            const tm = parsed.parsedDateTime.toMillis
-              ? parsed.parsedDateTime.toMillis()
-              : Date.parse(parsed.parsedDateTime);
-            if (Number.isFinite(tm) && tm > 0) {
-              targetMs = tm;
-            }
-          }
-        }
-
-        if (Number.isFinite(targetMs) && targetMs > 0) {
-          const nowMs = Date.now();
-          delayMs = Math.max(0, targetMs - nowMs);
-          if (delayMs > 0) {
-            const immediateAllowed = isImmediateScheduleAllowed(aiName);
-            scheduleMode = immediateAllowed ? 'immediate_exec' : 'delayed_exec';
-            logger.info?.('Schedule 延迟反馈启用', {
-              label: 'SCHEDULE',
-              aiName,
-              scheduleText,
-              delayMs,
-              targetISO: scheduleParsed?.parsedISO || targetISO || null,
-              scheduleMode,
-            });
-          }
-        }
-      } catch (e) {
-        logger.warn?.('Schedule 解析失败，忽略延迟反馈', { label: 'SCHEDULE', aiName, error: String(e) });
-      }
-    }
+    await emitActionRequestEvent({
+      stepIndex: i,
+      executionIndex: nextExecutionIndex,
+      attemptNo,
+      step,
+      aiName,
+      executor: stepExecutor,
+      actionRef: stepActionRef || (isSandboxStep ? TERMINAL_RUNTIME_ACTION : aiName),
+      args: toolArgs,
+      reason: formatReason(step.reason),
+      nextStep: step.nextStep || '',
+      dependsOnStepIds: buildDependsOnStepIds(i),
+      dependedByStepIds: buildDependedByStepIds(i),
+      toolContext: stepToolContext
+    });
 
     let res;
     let elapsed;
-    if (scheduleDetected && delayMs > 0) {
-      const scheduleEvent = {
-        type: 'tool_choice',
-        stepIndex: i,
-        aiName,
-        reason: formatReason(step.reason),
-        status: 'scheduled',
-        // message 留空，由上层主逻辑通过 schedule_progress 结果和上下文自行生成自然语言回复
-        message: undefined,
-        delayMs,
-        // 透传用于延迟队列执行或延迟发送的参数，供上层记录和后续 worker 使用
-        args: toolArgs,
-        schedule: {
-          text: scheduleText,
-          targetISO: scheduleParsed?.parsedISO,
-          timezone: scheduleParsed?.timezone,
-          mode: scheduleMode !== 'none' ? scheduleMode : undefined,
+    if (argValidationFailed) {
+      res = {
+        success: false,
+        code: 'ARG_VALIDATION_FAILED',
+        provider: 'system',
+        data: {
+          errors: ajvErrors || [],
+          args: toolArgs,
+          attempts: argFixAttempt,
+          maxAttempts: maxArgFixRetries,
         },
-        scheduleMode: scheduleMode !== 'none' ? scheduleMode : undefined,
       };
-      try {
-        emitRunEvent(runId, scheduleEvent);
-        await HistoryStore.append(runId, scheduleEvent);
-        logger.info?.('Schedule 延迟反馈: 已记录调度事件', {
-          label: 'SCHEDULE',
-          aiName,
-          delayMs,
-          targetISO: scheduleParsed?.parsedISO,
-          scheduleMode,
-        });
-      } catch { }
-
-      if (scheduleMode === 'delayed_exec') {
-        // 仅对不允许立即执行的工具采用“到点再执行”的旧语义：返回占位结果，实际执行交给延迟队列
-        res = {
-          success: true,
-          code: 'SCHEDULED',
-          data: {
-            scheduled: true,
-            delayMs,
-            schedule: {
-              text: scheduleText,
-              targetISO: scheduleParsed?.parsedISO,
-              timezone: scheduleParsed?.timezone,
-            },
-          },
-        };
-        elapsed = now() - stepStart;
-      }
+      elapsed = now() - stepStart;
     }
 
     if (!res) {
-      // 无 schedule、delayMs 为 0，或启用了“立即执行 + 延迟发送”模式：正常执行工具
-      res = await mcpcore.callByAIName(aiName, toolArgs, { runId, stepIndex: i });
+      await pollRuntimeSignal({ phase: 'before_tool_call', stepIndex: i });
+      if (!isExecutionActive()) return { stale: true };
+      if (hardStopRequested || isHardStopRequestedByDirective()) return { stale: true };
+      if (isRunCancelled(runId)) {
+        const elapsedCancelled = now() - stepStart;
+        syncCheckpointStepRuntime({
+          executionIndex: -1,
+          elapsedMs: elapsedCancelled,
+          success: false,
+          code: 'RUN_CANCELLED',
+          state: 'failed',
+          reasonCode: STEP_REASON_CODE.runCancelled,
+          message: 'run cancelled before action dispatch'
+        });
+        return { usedEntry: buildStepUsedEntry({ executionIndex: -1, elapsedMs: elapsedCancelled, success: false, code: 'RUN_CANCELLED' }), succeeded: 0 };
+      }
+      if (runtimeDirective && (runtimeDirective.action === 'replan' || runtimeDirective.action === 'supplement')) {
+        const elapsedRedirected = now() - stepStart;
+        syncCheckpointStepRuntime({
+          executionIndex: -1,
+          elapsedMs: elapsedRedirected,
+          success: false,
+          code: 'RUN_REDIRECTED',
+          state: 'replanned',
+          reasonCode: STEP_REASON_CODE.runtimeRedirected,
+          message: `run redirected before action dispatch (${runtimeDirective.action})`
+        });
+        return { usedEntry: buildStepUsedEntry({ executionIndex: -1, elapsedMs: elapsedRedirected, success: false, code: 'RUN_REDIRECTED' }), succeeded: 0 };
+      }
+      // runtime signal not redirecting this step; continue unified action dispatch
+      const runtimeSignal = getRuntimeSignal();
+      const actionRequest = {
+        runId,
+        stepId,
+        stepIndex: i,
+        plannedStepIndex: i,
+        executionIndex: nextExecutionIndex,
+        attemptNo,
+        action: {
+          aiName,
+          executor: stepExecutor,
+          actionRef: stepActionRef || (isSandboxStep ? TERMINAL_RUNTIME_ACTION : aiName)
+        },
+        input: {
+          args: toolArgs
+        }
+      };
+      res = await dispatchActionRequest({
+        mcpcore,
+        request: actionRequest,
+        context: { runId, stepIndex: i },
+        executionOptions: isSandboxStep ? { signal: runtimeSignal } : {}
+      });
       elapsed = now() - stepStart;
+      if (!isExecutionActive() || hardStopRequested || isHardStopRequestedByDirective() || isRunCancelled(runId)) {
+        return { stale: true };
+      }
+    }
+    if (!isExecutionActive() || hardStopRequested || isHardStopRequestedByDirective()) {
+      return { stale: true };
     }
     // update rolling context and Redis history
-    recentResults.push({ aiName, args: toolArgs, result: res, data: res.data });
+    let actionResult = (res && typeof res === 'object' && res.actionResult && typeof res.actionResult === 'object')
+      ? normalizeEventPayload(res.actionResult)
+      : null;
+    const resultPayload = (res && typeof res === 'object')
+      ? (() => {
+        const { actionResult: _actionResult, request: _request, ...rest } = res;
+        return rest;
+      })()
+      : res;
+    const normalizedResRaw = normalizeEventPayload(resultPayload);
+    const normalizedRes = (normalizedResRaw && typeof normalizedResRaw === 'object')
+      ? normalizedResRaw
+      : { success: false, code: 'INVALID_RESULT', data: normalizedResRaw };
+    if (!actionResult || typeof actionResult !== 'object') {
+      actionResult = {
+        ok: normalizedRes?.success === true,
+        code: String(normalizedRes?.code || ''),
+        errorClass: '',
+        retryable: false,
+        action: {
+          executor: String(stepExecutor || ''),
+          actionRef: String(stepActionRef || (isSandboxStep ? TERMINAL_RUNTIME_ACTION : aiName)),
+          aiName: String(aiName || ''),
+          stepId: String(stepId || '')
+        },
+        status: {
+          success: normalizedRes?.success === true,
+          code: String(normalizedRes?.code || ''),
+          message: String(normalizedRes?.message || normalizedRes?.error || '')
+        },
+        input: { args: toolArgs },
+        output: {
+          provider: String(normalizedRes?.provider || ''),
+          data: normalizedRes?.data ?? null
+        },
+        evidence: [],
+        artifacts: Array.isArray(normalizedRes?.artifacts) ? normalizedRes.artifacts : [],
+        metrics: {
+          elapsedMs: Number.isFinite(Number(elapsed)) ? Number(elapsed) : 0
+        }
+      };
+    }
+    const protocolOutcome = normalizeActionOutcome({
+      result: normalizedRes,
+      actionResult
+    });
+    normalizedRes.success = protocolOutcome.success === true;
+    normalizedRes.code = String(protocolOutcome.code || normalizedRes.code || '');
+    if (!String(normalizedRes?.message || '').trim() && protocolOutcome.message) {
+      normalizedRes.message = String(protocolOutcome.message || '');
+    }
+    if (!Array.isArray(normalizedRes.evidence) && Array.isArray(protocolOutcome.evidence) && protocolOutcome.evidence.length > 0) {
+      normalizedRes.evidence = protocolOutcome.evidence;
+    }
+    if (!Array.isArray(normalizedRes.artifacts) && Array.isArray(protocolOutcome.artifacts) && protocolOutcome.artifacts.length > 0) {
+      normalizedRes.artifacts = protocolOutcome.artifacts;
+    }
+    actionResult.ok = protocolOutcome.success === true;
+    actionResult.code = String(protocolOutcome.code || actionResult.code || '');
+    actionResult.errorClass = String(protocolOutcome.errorClass || actionResult.errorClass || '');
+    actionResult.retryable = protocolOutcome.retryable === true;
+    if (!Array.isArray(actionResult.evidence) && Array.isArray(protocolOutcome.evidence) && protocolOutcome.evidence.length > 0) {
+      actionResult.evidence = protocolOutcome.evidence;
+    }
+    if (!Array.isArray(actionResult.artifacts) && Array.isArray(protocolOutcome.artifacts) && protocolOutcome.artifacts.length > 0) {
+      actionResult.artifacts = protocolOutcome.artifacts;
+    }
+    let workspaceDiffTotalDelta = null;
+    const workspaceDiff = await captureWorkspaceDiffArtifacts({
+      stepIndex: i,
+      stepId,
+      aiName,
+      usedEntry: {
+        aiName,
+        executor: stepExecutor,
+        elapsedMs: Number.isFinite(Number(elapsed)) ? Number(elapsed) : 0,
+        success: normalizedRes?.success === true,
+        code: String(normalizedRes?.code || '')
+      },
+      error: normalizedRes?.success === true
+        ? ''
+        : String(normalizedRes?.message || normalizedRes?.error || normalizedRes?.code || '')
+    });
+    if (workspaceDiff && typeof workspaceDiff === 'object') {
+      const diffSummary = (workspaceDiff.summary && typeof workspaceDiff.summary === 'object')
+        ? workspaceDiff.summary
+        : { added: 0, changed: 0, removed: 0, unchanged: 0, totalDelta: 0 };
+      workspaceDiffTotalDelta = Number.isFinite(Number(diffSummary.totalDelta))
+        ? Math.max(0, Math.floor(Number(diffSummary.totalDelta)))
+        : 0;
+      const diffPaths = Array.isArray(workspaceDiff.paths) ? workspaceDiff.paths : [];
+      const diffEvidence = {
+        kind: 'workspace_diff',
+        effect: Number(diffSummary.totalDelta || 0) > 0 ? 'changed' : 'no_effect',
+        added: Number(diffSummary.added || 0),
+        changed: Number(diffSummary.changed || 0),
+        removed: Number(diffSummary.removed || 0),
+        totalDelta: Number(diffSummary.totalDelta || 0),
+        paths: diffPaths.slice(0, maxDiffLogPaths),
+        comparedAt: Number(workspaceDiff.comparedAt || Date.now())
+      };
+      const actionEvidence = Array.isArray(actionResult?.evidence) ? actionResult.evidence : [];
+      actionResult.evidence = [diffEvidence, ...actionEvidence].slice(0, 12);
+      const payloadData = (normalizedRes?.data && typeof normalizedRes.data === 'object') ? normalizedRes.data : {};
+      normalizedRes.data = {
+        ...payloadData,
+        workspaceDiff: {
+          summary: diffSummary,
+          paths: diffPaths.slice(0, maxDiffLogPaths),
+          comparedAt: Number(workspaceDiff.comparedAt || Date.now())
+        }
+      };
+      const checkpointDiff = upsertWorkspaceDiffCheckpointIndex({
+        stepIndex: i,
+        stepId,
+        aiName,
+        workspaceDiff
+      });
+      if (checkpointDiff) {
+        context.lastWorkspaceDiffStepKey = checkpointDiff.stepKey;
+        context.lastWorkspaceDiffByStepKey = checkpointDiff.byStepKey;
+        await updateRuntimeCheckpoint({
+          lastWorkspaceDiffStepKey: checkpointDiff.stepKey,
+          lastWorkspaceDiff: checkpointDiff.entry,
+          lastWorkspaceDiffByStepKey: checkpointDiff.byStepKey
+        }, {
+          type: 'runtime_workspace_diff',
+          stepIndex: Number(i),
+          stepId: String(stepId || ''),
+          aiName: String(aiName || ''),
+          stepKey: checkpointDiff.stepKey,
+          effect: String(checkpointDiff.entry.effect || ''),
+          summary: checkpointDiff.entry.summary
+        });
+      }
+    }
+    if (!Array.isArray(normalizedRes.evidence) && Array.isArray(actionResult?.evidence) && actionResult.evidence.length > 0) {
+      normalizedRes.evidence = actionResult.evidence;
+    }
+    recentResults.push({ aiName, executor: stepExecutor, actionRef: stepActionRef || undefined, args: toolArgs, result: normalizedRes, data: normalizedRes?.data, actionResult });
     const limit = Math.max(1, Number(config.flags?.recentContextLimit ?? 5));
     if (recentResults.length > limit) recentResults.shift();
 
-    // 中文：结果事件携带依赖信息与插件 meta；组内缓冲，组完成后按拓扑序统一发送
+    const stepSuccessCriteria = collectStepSuccessCriteria(step, manifestItem, currentToolFull);
+    const hasStepSuccessCriteria = stepSuccessCriteria.length > 0;
+    const forceMiniEvalOnSuccessWithCriteria =
+      normalizedRes?.success === true &&
+      hasStepSuccessCriteria;
+    const successWithNoWorkspaceChange =
+      forceMiniEvalOnSuccessWithCriteria &&
+      workspaceDiffTotalDelta === 0;
+    if (forceMiniEvalOnSuccessWithCriteria && config.flags.enableVerboseSteps) {
+      logger.info('Force mini eval on successful step due to explicit success criteria', {
+        label: 'MINI_EVAL',
+        stepIndex: i,
+        stepId,
+        aiName,
+        successCriteriaCount: stepSuccessCriteria.length,
+        workspaceDiffTotalDelta: workspaceDiffTotalDelta,
+        noWorkspaceChange: successWithNoWorkspaceChange === true
+      });
+    }
+    const miniEval = await evaluateStepMiniDecision({
+      runId,
+      stepIndex: i,
+      objective,
+      step,
+      manifestItem,
+      currentToolFull,
+      result: normalizedRes,
+      actionResult,
+      retryState,
+      argValidationFailed,
+      context
+    });
+    const miniEvalProvider = getStageProvider('mini_eval');
+    const miniEvalRuntime = {
+      stage: 'mini_eval',
+      model: String(getStageModel('mini_eval') || ''),
+      baseURL: String(miniEvalProvider?.baseURL || ''),
+      timeoutMs: Number(getStageTimeoutMs('mini_eval') || 0),
+      skipped: false,
+      forcedByCriteriaOnSuccess: forceMiniEvalOnSuccessWithCriteria === true,
+      successNoWorkspaceChange: successWithNoWorkspaceChange === true,
+    };
+    const miniEvalAdvisoryOnly =
+      normalizedRes?.success === true &&
+      miniEval?.pass !== true;
+    let effectiveMiniEval = miniEvalAdvisoryOnly
+      ? {
+        ...(miniEval && typeof miniEval === 'object' ? miniEval : {}),
+        decision: MINI_EVAL_DECISION.pass,
+        pass: true,
+        policy: {
+          ...(miniEval?.policy && typeof miniEval.policy === 'object' ? miniEval.policy : {}),
+          source: 'mini_eval_advisory_on_success',
+          advisory: true
+        }
+      }
+      : miniEval;
+    if (miniEval?.pass !== true && normalizedRes?.success === true) {
+      const prevData = (normalizedRes.data && typeof normalizedRes.data === 'object') ? normalizedRes.data : {};
+      normalizedRes.data = {
+        ...prevData,
+        stepMiniEval: {
+          decision: miniEval.decision,
+          effectiveDecision: effectiveMiniEval?.decision || miniEval.decision,
+          advisory: miniEvalAdvisoryOnly,
+          failureClass: miniEval.failureClass,
+          reason: miniEval.reason,
+          criteria: miniEval.criteria,
+          policy: miniEval?.policy || null
+        }
+      };
+      if (!miniEvalAdvisoryOnly) {
+        normalizedRes.success = false;
+        normalizedRes.code = 'STEP_MINI_EVAL_FAILED';
+        normalizedRes.message = miniEval.reason || 'Step failed mini evaluation criteria.';
+      }
+    }
+    const miniEvalEvent = {
+      type: 'step_mini_eval',
+      stepIndex: i,
+      plannedStepIndex: i,
+      stepId,
+      aiName,
+      attemptNo,
+      decision: String(miniEval?.decision || MINI_EVAL_DECISION.replan),
+      effectiveDecision: String(effectiveMiniEval?.decision || miniEval?.decision || MINI_EVAL_DECISION.replan),
+      pass: miniEval?.pass === true,
+      effectivePass: effectiveMiniEval?.pass === true,
+      advisory: miniEvalAdvisoryOnly === true,
+      failureClass: String(miniEval?.failureClass || ''),
+      reason: String(miniEval?.reason || ''),
+      criteria: miniEval?.criteria || null,
+      policy: effectiveMiniEval?.policy || miniEval?.policy || null,
+      runtime: miniEvalRuntime,
+      resultCode: String(normalizedRes?.code || ''),
+      resultSuccess: normalizedRes?.success === true,
+    };
+    if (canEmitLiveEvents()) {
+      emitRunEvent(runId, miniEvalEvent);
+      await HistoryStore.append(runId, miniEvalEvent);
+    }
+
+    if (isMiniEvalRetryDecision(effectiveMiniEval?.decision)) {
+      const resultCode = String(normalizedRes?.code || '');
+      const lastFailurePrev = (retryState?.lastFailure && typeof retryState.lastFailure === 'object')
+        ? retryState.lastFailure
+        : {};
+      const currentArgFingerprint = isSandboxStep ? buildTerminalArgsFingerprint(toolArgs) : '';
+      const prevArgFingerprint = String(lastFailurePrev?.argFingerprint || '').trim();
+      const prevTimeoutLoopCount = Math.max(0, toBoundedInt(lastFailurePrev?.timeoutLoopCount, 0, 0, 99));
+      const isCurrentTimeout = isTimeoutLikeCode(resultCode);
+      const repeatedTimeoutWithSameArgs = isSandboxStep
+        && isCurrentTimeout
+        && !!currentArgFingerprint
+        && currentArgFingerprint === prevArgFingerprint
+        && isTimeoutLikeCode(lastFailurePrev?.last_code);
+      const timeoutLoopCount = isCurrentTimeout
+        ? (repeatedTimeoutWithSameArgs ? prevTimeoutLoopCount + 1 : 1)
+        : 0;
+
+      const initialDecision = String(effectiveMiniEval?.decision || '');
+      let retryDecision = initialDecision;
+      let retryReason = String(effectiveMiniEval?.reason || miniEval?.reason || '');
+      if (
+        retryDecision === MINI_EVAL_DECISION.retrySame
+        && timeoutLoopCount >= STEP_TIMEOUT_SAME_FINGERPRINT_LIMIT
+      ) {
+        retryDecision = MINI_EVAL_DECISION.retryRegen;
+        retryReason = [retryReason, 'runtime_guard: repeated TIMEOUT on same terminal args; force retry_regen']
+          .filter(Boolean)
+          .join('; ');
+      }
+      if (attemptNo >= STEP_MINI_RETRY_ATTEMPT_LIMIT && isMiniEvalRetryDecision(retryDecision)) {
+        retryDecision = MINI_EVAL_DECISION.replan;
+        retryReason = [retryReason, `runtime_guard: retry attempt limit reached (${STEP_MINI_RETRY_ATTEMPT_LIMIT})`]
+          .filter(Boolean)
+          .join('; ');
+      }
+      if (retryDecision !== initialDecision) {
+        effectiveMiniEval = {
+          ...(effectiveMiniEval && typeof effectiveMiniEval === 'object' ? effectiveMiniEval : {}),
+          decision: retryDecision,
+          pass: retryDecision === MINI_EVAL_DECISION.pass,
+          reason: retryReason,
+          policy: {
+            ...(effectiveMiniEval?.policy && typeof effectiveMiniEval.policy === 'object' ? effectiveMiniEval.policy : {}),
+            source: 'runtime_retry_guard'
+          }
+        };
+        if (canEmitLiveEvents()) {
+          const guardEv = {
+            type: 'step_retry_guard_adjusted',
+            stepIndex: i,
+            plannedStepIndex: i,
+            stepId,
+            aiName,
+            fromDecision: initialDecision,
+            toDecision: retryDecision,
+            reason: retryReason,
+            resultCode
+          };
+          emitRunEvent(runId, guardEv);
+          await HistoryStore.append(runId, guardEv);
+        }
+      }
+    }
+
+    if (isMiniEvalRetryDecision(effectiveMiniEval?.decision)) {
+      const nextState = {
+        attempts: attemptNo,
+        sameRetries: Number(retryState.sameRetries || 0),
+        regenRetries: Number(retryState.regenRetries || 0),
+        forceRegenerate: false,
+        lastFailure: {
+          attempt_no: attemptNo,
+          last_args: toolArgs,
+          last_error: String(normalizedRes?.message || normalizedRes?.error || normalizedRes?.code || ''),
+          last_code: String(normalizedRes?.code || ''),
+          argFingerprint: isSandboxStep ? buildTerminalArgsFingerprint(toolArgs) : '',
+          timeoutLoopCount: isTimeoutLikeCode(normalizedRes?.code) ? (
+            (
+              isSandboxStep
+              && isTimeoutLikeCode(retryState?.lastFailure?.last_code)
+              && String(retryState?.lastFailure?.argFingerprint || '').trim() === buildTerminalArgsFingerprint(toolArgs)
+            )
+              ? Math.max(0, toBoundedInt(retryState?.lastFailure?.timeoutLoopCount, 0, 0, 99)) + 1
+              : 1
+          ) : 0,
+          evidence: Array.isArray(actionResult?.evidence) ? actionResult.evidence.slice(0, 8) : [],
+        }
+      };
+      if (effectiveMiniEval.decision === MINI_EVAL_DECISION.retrySame) {
+        nextState.sameRetries += 1;
+      } else {
+        nextState.regenRetries += 1;
+        nextState.forceRegenerate = true;
+      }
+      stepRetryState.set(i, nextState);
+      if (config.flags.enableVerboseSteps) {
+        logger.info('Step mini eval requested retry', {
+          label: 'STEP',
+          stepIndex: i,
+          stepId,
+          aiName,
+          decision: effectiveMiniEval.decision,
+          sameRetries: nextState.sameRetries,
+          regenRetries: nextState.regenRetries,
+          resultCode: String(normalizedRes?.code || '')
+        });
+      }
+      await emitStepState({
+        stepIndex: i,
+        step,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef,
+        state: 'retrying',
+        reasonCode: miniEvalDecisionToReasonCode(effectiveMiniEval.decision, MINI_EVAL_REASON_CODE.retrySame),
+        reason: String(effectiveMiniEval.reason || miniEval?.reason || ''),
+        attemptNo,
+        resultCode: String(normalizedRes?.code || '')
+      });
+      return await executeSingleStep(i);
+    }
+
+    stepRetryState.delete(i);
+    if (isMiniEvalStopDecision(effectiveMiniEval?.decision)) {
+      stopRequested = true;
+    }
+    if (effectiveMiniEval?.decision === MINI_EVAL_DECISION.replan) {
+      await emitStepState({
+        stepIndex: i,
+        step,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef,
+        state: 'replanned',
+        reasonCode: miniEvalDecisionToReasonCode(effectiveMiniEval.decision, MINI_EVAL_REASON_CODE.replan),
+        reason: String(effectiveMiniEval.reason || miniEval?.reason || ''),
+        attemptNo,
+        resultCode: String(normalizedRes?.code || '')
+      });
+    } else if (effectiveMiniEval?.decision === MINI_EVAL_DECISION.failFast) {
+      await emitStepState({
+        stepIndex: i,
+        step,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef,
+        state: 'failed',
+        reasonCode: miniEvalDecisionToReasonCode(effectiveMiniEval.decision, MINI_EVAL_REASON_CODE.failFast),
+        reason: String(effectiveMiniEval.reason || miniEval?.reason || ''),
+        attemptNo,
+        resultCode: String(normalizedRes?.code || '')
+      });
+    }
+
     const depOnStepIds = buildDependsOnStepIds(i);
     const depByStepIds = buildDependedByStepIds(i);
     const gid = groupOf[i];
-    const toolMetaInherited = (toolMetaMap.get(aiName) || manifestItem?.meta || currentToolFull?.meta || {});
+    const toolMetaInherited = {
+      ...(toolMetaMap.get(aiName) || manifestItem?.meta || currentToolFull?.meta || {}),
+      executor: stepExecutor,
+      ...(stepActionRef ? { actionRef: stepActionRef } : {})
+    };
     const ev = {
       type: 'tool_result',
-      plannedStepIndex: i,  // 计划阶段的步骤索引
+      plannedStepIndex: i,  // Original index inside the planner's step list.
       stepId,
-      executionIndex: nextExecutionIndex++,  // 实际执行顺序（按完成时间）
+      executionIndex: nextExecutionIndex++,  // Global execution order index across emitted tool results.
       aiName,
+      executor: stepExecutor,
+      actionRef: stepActionRef || undefined,
       reason: formatReason(step.reason),
       nextStep: step.nextStep || '',
-      args: toolArgs,
-      result: res,
+      result: normalizedRes,
+      actionResult,
       elapsedMs: elapsed,
       dependsOnStepIds: depOnStepIds,
       dependedByStepIds: depByStepIds,
       dependsNote: buildDependsNote(i),
       groupId: (gid ?? null),
       groupSize: (gid != null && groups[gid]?.nodes?.length) ? groups[gid].nodes.length : 1,
+      toolContext: stepToolContext,
       toolMeta: toolMetaInherited,
     };
-    if (!(scheduleDetected && delayMs > 0 && scheduleMode === 'delayed_exec' && res?.success && res?.code === 'SCHEDULED')) {
-      ev.completion = {
-        state: 'completed',
-        mustAnswerFromResult: true,
-        instruction: 'Tool execution has finished for this step. Answer the user based on the tool result and extracted files/resources.'
-      };
-    }
-    if (scheduleDetected && delayMs > 0 && scheduleMode === 'delayed_exec') {
-      ev.schedule = {
-        text: scheduleText,
-        targetISO: scheduleParsed?.parsedISO,
-        timezone: scheduleParsed?.timezone,
-        delayMs,
-        mode: scheduleMode,
-      };
-      ev.scheduleMode = scheduleMode;
-    }
-    if (!isRunCancelled(runId)) {
-      emitToolResultGrouped(ev, i);
+    ev.completion = {
+      state: 'completed',
+      mustAnswerFromResult: true,
+      instruction: 'Tool execution has finished for this step. Answer the user based on the tool result and extracted files/resources.'
+    };
+    if (canEmitLiveEvents()) {
+      groupEventCoordinator.emitToolResultGrouped(ev, i);
       await HistoryStore.append(runId, ev);
     }
 
-    if (enablePlanPatchHook && !stopRequested) {
-      const ok2 = isResultOk(res);
-      const trigger = shouldTriggerPlanPatch({ result: res, triggerMode })
-        ? `tool_result ok=${String(ok2)} success=${String(res?.success)} code=${String(res?.code || '')}`
-        : '';
-      if (!ok2 && trigger && !pauseForPlanPatch && appliedPatches < maxPatches && planPatchCalls < maxPlanPatchCalls) {
-        pauseForPlanPatch = true;
-        pendingPlanPatch = {
-          atIndex: i,
-          atStepId: stepId,
-          aiName,
-          lastResult: ev,
-          trigger,
-        };
-      }
+    const finalOutcome = normalizeActionOutcome({
+      result: normalizedRes,
+      actionResult
+    });
+    const finalSuccess = finalOutcome.success === true;
+    const finalCode = String(finalOutcome.code || normalizedRes?.code || res?.code || '');
+    const finalState = effectiveMiniEval?.decision === MINI_EVAL_DECISION.replan
+      ? 'replanned'
+      : (finalSuccess ? 'succeeded' : 'failed');
+    syncCheckpointStepRuntime({
+      executionIndex: ev.executionIndex,
+      elapsedMs: elapsed,
+      success: finalSuccess,
+      code: finalCode,
+      state: finalState,
+      reasonCode: finalSuccess ? STEP_REASON_CODE.toolResultSuccess : STEP_REASON_CODE.toolResultFailed,
+      message: String(normalizedRes?.message || normalizedRes?.error || '')
+    });
+    if (config.memory?.enable && finalSuccess) {
+      await upsertToolMemory({ runId, stepIndex: i, aiName, objective, reason: formatReason(step.reason), args: toolArgs, result: normalizedRes, success: true });
     }
-    if (config.memory?.enable && res?.success) {
-      await upsertToolMemory({ runId, stepIndex: i, aiName, objective, reason: formatReason(step.reason), args: toolArgs, result: res, success: true });
-    }
-    if (config.flags.enableVerboseSteps) logger.info('执行结果', { label: 'RESULT', aiName, success: res.success, code: res.code, dataPreview: clip(res?.data) });
+    if (config.flags.enableVerboseSteps) logger.info('Tool execution result', { label: 'RESULT', aiName, success: finalSuccess, code: finalCode, dataPreview: clip(normalizedRes?.data) });
 
-    // 冷却命中：返回调度级延迟重排信息
-    if (!res.success && res.code === 'COOLDOWN_ACTIVE') {
-      const remainMs = Number(res.remainMs || (res.ttl ? res.ttl * 1000 : (config.planner?.cooldownDefaultMs || 1000)));
+    if (!finalSuccess && isCooldownResultCode(finalCode)) {
+      const remainMs = Number(normalizedRes.remainMs || (normalizedRes.ttl ? normalizedRes.ttl * 1000 : (config.planner?.cooldownDefaultMs || 1000)));
       const jitter = Math.floor(100 + Math.random() * 200);
       const requeueMs = Math.max(200, remainMs + jitter);
-      return { usedEntry: { aiName, elapsedMs: elapsed, success: res.success, code: res.code }, succeeded: 0, requeueMs };
+      const availableAt = now() + requeueMs;
+      syncCheckpointStepRuntime({
+        executionIndex: ev.executionIndex,
+        elapsedMs: elapsed,
+        success: false,
+        code: finalCode,
+        state: 'retrying',
+        reasonCode: MINI_EVAL_REASON_CODE.retrySame,
+        message: String(normalizedRes?.message || normalizedRes?.error || ''),
+        availableAt
+      });
+      return { usedEntry: buildStepUsedEntry({ executionIndex: ev.executionIndex, elapsedMs: elapsed, success: finalSuccess, code: finalCode }), succeeded: 0, requeueMs };
     }
 
-    // 重试模式下记录执行状态
     if (retrySteps) {
       stepStatus.set(i, {
-        success: res.success,
-        reason: res.success ? '成功' : (res.message || res.error || `失败: ${res.code}`)
+        success: finalSuccess,
+        reason: finalSuccess ? 'ok' : (normalizedRes.message || normalizedRes.error || `execution failed: ${finalCode}`)
+      });
+    }
+    if (!isMiniEvalStopDecision(effectiveMiniEval?.decision)) {
+      await emitStepState({
+        stepIndex: i,
+        step,
+        aiName,
+        executor: stepExecutor,
+        actionRef: stepActionRef,
+        state: finalSuccess ? 'succeeded' : 'failed',
+        reasonCode: finalSuccess ? STEP_REASON_CODE.toolResultSuccess : STEP_REASON_CODE.toolResultFailed,
+        reason: finalSuccess ? 'tool result accepted' : String(normalizedRes.message || normalizedRes.error || ''),
+        attemptNo,
+        resultCode: finalCode
       });
     }
 
-    return { usedEntry: { aiName, elapsedMs: elapsed, success: res.success, code: res.code }, succeeded: res.success ? 1 : 0 };
+    return { usedEntry: buildStepUsedEntry({ executionIndex: ev.executionIndex, elapsedMs: elapsed, success: finalSuccess, code: finalCode }), succeeded: finalSuccess ? 1 : 0 };
   };
 
   const isReady = (i) => {
-    // 重试模式：只执行指定的重试步骤
+    if (!isExecutionActive()) return false;
+    if (stopRequested) return false;
+    if (hardStopRequested || isHardStopRequestedByDirective() || isRunCancelled(runId)) return false;
     if (retrySteps && !retrySteps.has(i)) return false;
-    // 正常模式：不执行起点之前的步骤
-    if (!retrySteps && i < startIndex) return false;
+    if (!retrySteps && i < schedulerStartIndex) return false;
     if (started.has(i) || finished.has(i)) return false;
     const due = delayUntil.get(i) || 0; if (due && now() < due) return false;
     const aiName = plan.steps[i]?.aiName;
@@ -1829,7 +3355,6 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
     const pRun = runningByProvider.get(normKey(prov)) || 0;
     if (tRun >= toolLim) return false;
     if (pRun >= provLim) return false;
-    // 使用预先归一化的 depsArr 作为依赖来源（来自 dependsOnStepIds 的 stepId->index 映射）
     const deps = depsArr[i] || [];
     if (!deps.length) return true;
     for (const idx of deps) {
@@ -1842,20 +3367,27 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
   const track = (i, p) => p.finally(() => { inFlight.delete(i); });
 
   while (finished.size < plan.steps.length) {
-    if (isRunCancelled(runId)) {
+    await pollRuntimeSignal({ phase: 'scheduler_loop', stepIndex: -1 });
+    if (!isExecutionActive()) break;
+    if (isRunCancelled(runId)) hardStopRequested = true;
+    if (isHardStopRequestedByDirective()) hardStopRequested = true;
+    if (hardStopRequested) {
       if (config.flags.enableVerboseSteps) {
-        logger.info?.('执行计划检测到取消信号，提前结束调度', { label: 'RUN', runId });
+        logger.info?.('scheduler hard-stop requested; break immediately', {
+          label: 'RUN',
+          runId,
+          action: String(runtimeDirective?.action || '')
+        });
       }
-      flushAllOnCancel();
+      groupEventCoordinator.flushAllOnCancel();
       break;
     }
-    if (pauseForPlanPatch) {
-      if (inFlight.size === 0) {
-        await maybeProcessPendingPlanPatch();
-      } else {
-        await Promise.race([...inFlight.values()]);
+    if (isRunCancelled(runId)) {
+      if (config.flags.enableVerboseSteps) {
+        logger.info?.('Run cancellation detected during scheduling; stop early', { label: 'RUN', runId });
       }
-      continue;
+      groupEventCoordinator.flushAllOnCancel();
+      break;
     }
     if (stopRequested) {
       if (inFlight.size === 0) {
@@ -1865,23 +3397,17 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
       continue;
     }
 
-    for (let i = startIndex; i < plan.steps.length; i++) {
+    for (let i = schedulerStartIndex; i < plan.steps.length; i++) {
       const s = plan.steps[i];
       if (s && s.skip === true && !finished.has(i)) {
         finished.add(i);
         const isFinalStep = finished.size >= plan.steps.length;
-        flushIsolatedResultIfAny(i, isFinalStep);
-        const gid2 = groupOf[i];
-        if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
-          groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-          const finalGid = isFinalStep && groups.length ? groups[groups.length - 1].id : null;
-          flushReadyGroupsInOrder({ force: false, finalGroupId: finalGid });
-        }
+        groupEventCoordinator.flushIsolatedResultIfAny(i, isFinalStep);
+        groupEventCoordinator.decrementGroupPendingAndMaybeFlush(i, { isFinalStep });
       }
     }
 
-    // 尝试补满并发槽位
-    for (let i = startIndex; i < plan.steps.length && inFlight.size < maxConc; i++) {
+    for (let i = schedulerStartIndex; i < plan.steps.length && inFlight.size < maxConc; i++) {
       if (isReady(i)) {
         started.add(i);
         const aiName = plan.steps[i]?.aiName;
@@ -1890,57 +3416,182 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         const provKey = normKey(prov);
         runningByProvider.set(provKey, (runningByProvider.get(provKey) || 0) + 1);
 
-        const p = track(i, executeSingleStep(i).then((r) => {
-          // 释放并发占位
-          runningByTool.set(aiName, Math.max(0, (runningByTool.get(aiName) || 1) - 1));
+        const p = track(i, executeSingleStep(i).then(async (r) => {
           runningByProvider.set(provKey, Math.max(0, (runningByProvider.get(provKey) || 1) - 1));
+          if (!isExecutionActive()) return;
+          if (r?.stale) return;
+          if (hardStopRequested || isHardStopRequestedByDirective() || isRunCancelled(runId)) return;
 
           if (r?.requeueMs > 0) {
-            // 调度级延迟重排：不标记完成，设置最早可调度时间
-            // 孤立步骤：仍需把本次结果作为 progress 发出（例如 COOLDOWN_ACTIVE），避免“无反馈”。
-            flushIsolatedResultIfAny(i, false);
+            groupEventCoordinator.flushIsolatedResultIfAny(i, false);
             delayUntil.set(i, now() + r.requeueMs);
             started.delete(i);
             if (r?.usedEntry) used.push(r.usedEntry);
+            await updateRuntimeCheckpoint({
+              stage: 'execute_step_requeue',
+              lastCompletedStepIndex: Number(i),
+              lastCompletedStepId: String(plan.steps[i]?.stepId || ''),
+              lastToolName: String(r?.usedEntry?.aiName || aiName || ''),
+              lastToolCode: String(r?.usedEntry?.code || ''),
+              lastToolSuccess: r?.usedEntry?.success ? '1' : '0',
+              nextRetryAt: Number(delayUntil.get(i) || 0),
+              lastExecutionIndex: Number.isFinite(Number(r?.usedEntry?.executionIndex))
+                ? Number(r.usedEntry.executionIndex)
+                : Math.max(-1, Number(nextExecutionIndex || 0) - 1),
+              stepRuntimeIndex: serializeCheckpointStepRuntimeIndex()
+            }, {
+              type: 'runtime_step_requeue',
+              stepIndex: Number(i),
+              stepId: String(plan.steps[i]?.stepId || ''),
+              aiName: String(aiName || ''),
+              code: String(r?.usedEntry?.code || ''),
+              requeueMs: Number(r?.requeueMs || 0)
+            });
             return;
           }
           finished.add(i);
           const isFinalStep = finished.size >= plan.steps.length;
-          flushIsolatedResultIfAny(i, isFinalStep);
-          // 中文：更新组内剩余计数并在组完成时统一刷新实时事件
-          const gid2 = groupOf[i];
-          if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
-            groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-            const finalGid = isFinalStep && groups.length ? groups[groups.length - 1].id : null;
-            flushReadyGroupsInOrder({ force: false, finalGroupId: finalGid });
-          }
+          groupEventCoordinator.flushIsolatedResultIfAny(i, isFinalStep);
+          groupEventCoordinator.decrementGroupPendingAndMaybeFlush(i, { isFinalStep });
           if (r?.usedEntry) used.push(r.usedEntry);
           if (r?.succeeded) succeeded += r.succeeded;
-        }).catch((e) => {
-          // 释放并发占位
-          runningByTool.set(aiName, Math.max(0, (runningByTool.get(aiName) || 1) - 1));
+          await updateRuntimeCheckpoint({
+            stage: 'execute_step_done',
+            lastCompletedStepIndex: Number(i),
+            lastCompletedStepId: String(plan.steps[i]?.stepId || ''),
+            lastToolName: String(r?.usedEntry?.aiName || aiName || ''),
+            lastToolCode: String(r?.usedEntry?.code || ''),
+            lastToolSuccess: r?.usedEntry?.success ? '1' : '0',
+            lastExecutionIndex: Number.isFinite(Number(r?.usedEntry?.executionIndex))
+              ? Number(r.usedEntry.executionIndex)
+              : Math.max(-1, Number(nextExecutionIndex || 0) - 1),
+            stepRuntimeIndex: serializeCheckpointStepRuntimeIndex()
+          }, {
+            type: 'runtime_step_done',
+            stepIndex: Number(i),
+            stepId: String(plan.steps[i]?.stepId || ''),
+            aiName: String(aiName || ''),
+            code: String(r?.usedEntry?.code || ''),
+            success: r?.usedEntry?.success === true
+          });
+        }).catch(async (e) => {
           runningByProvider.set(provKey, Math.max(0, (runningByProvider.get(provKey) || 1) - 1));
+          stopRequested = true;
+          try {
+            if (canEmitLiveEvents()) {
+              const ffEv = {
+                type: 'step_fail_fast',
+                stepIndex: i,
+                stepId: String(plan.steps[i]?.stepId || ''),
+                aiName: String(aiName || ''),
+                reason: String(e || 'STEP_EXCEPTION')
+              };
+              emitRunEvent(runId, ffEv);
+              await HistoryStore.append(runId, ffEv);
+            }
+          } catch { }
+          const exceptionExecutor = normalizePlanExecutor(plan.steps[i], toolMeta.get(aiName) || {});
+          const exceptionUsedEntry = {
+            aiName: String(aiName || ''),
+            executor: String(exceptionExecutor || ''),
+            stepId: String(plan.steps[i]?.stepId || ''),
+            stepIndex: Number(i),
+            executionIndex: -1,
+            attemptNo: 0,
+            elapsedMs: 0,
+            success: false,
+            code: 'STEP_EXCEPTION'
+          };
+          used.push(exceptionUsedEntry);
+          upsertCheckpointStepRuntime({
+            stepIndex: Number(i),
+            stepId: String(plan.steps[i]?.stepId || ''),
+            aiName: String(aiName || ''),
+            executor: String(exceptionExecutor || ''),
+            state: 'failed',
+            reasonCode: STEP_REASON_CODE.stepException,
+            resultCode: 'STEP_EXCEPTION',
+            attemptNo: 0,
+            executionIndex: -1,
+            success: false,
+            elapsedMs: 0,
+            message: String(e || '')
+          });
+          const exceptionDiff = await captureWorkspaceDiffArtifacts({
+            stepIndex: i,
+            stepId: plan.steps[i]?.stepId,
+            aiName,
+            usedEntry: exceptionUsedEntry,
+            error: String(e)
+          });
+          const checkpointDiff = upsertWorkspaceDiffCheckpointIndex({
+            stepIndex: i,
+            stepId: plan.steps[i]?.stepId,
+            aiName,
+            workspaceDiff: exceptionDiff
+          });
+          if (checkpointDiff) {
+            context.lastWorkspaceDiffStepKey = checkpointDiff.stepKey;
+            context.lastWorkspaceDiffByStepKey = checkpointDiff.byStepKey;
+            await updateRuntimeCheckpoint({
+              lastWorkspaceDiffStepKey: checkpointDiff.stepKey,
+              lastWorkspaceDiff: checkpointDiff.entry,
+              lastWorkspaceDiffByStepKey: checkpointDiff.byStepKey
+            }, {
+              type: 'runtime_workspace_diff',
+              stepIndex: Number(i),
+              stepId: String(plan.steps[i]?.stepId || ''),
+              aiName: String(aiName || ''),
+              stepKey: checkpointDiff.stepKey,
+              effect: String(checkpointDiff.entry.effect || ''),
+              summary: checkpointDiff.entry.summary
+            });
+          }
+          if (!isExecutionActive()) return;
+          if (hardStopRequested || isHardStopRequestedByDirective() || isRunCancelled(runId)) return;
           finished.add(i);
           const isFinalStep = finished.size >= plan.steps.length;
-          flushIsolatedResultIfAny(i, isFinalStep);
-          // 中文：异常也视为完成，避免组刷新被阻塞
-          const gid2 = groupOf[i];
-          if (gid2 !== null && gid2 !== undefined && groupPending.has(gid2)) {
-            groupPending.set(gid2, Math.max(0, (groupPending.get(gid2) || 0) - 1));
-            const finalGid = isFinalStep && groups.length ? groups[groups.length - 1].id : null;
-            flushReadyGroupsInOrder({ force: false, finalGroupId: finalGid });
-          }
-          logger.warn?.('并行执行异常', { label: 'STEP', index: i, error: String(e) });
+          groupEventCoordinator.flushIsolatedResultIfAny(i, isFinalStep);
+          groupEventCoordinator.decrementGroupPendingAndMaybeFlush(i, { isFinalStep });
+          await emitStepState({
+            stepIndex: i,
+            step: plan.steps[i] || {},
+            aiName: String(aiName || ''),
+            executor: normalizePlanExecutor(plan.steps[i], toolMeta.get(aiName) || {}),
+            actionRef: String(plan.steps[i]?.actionRef || ''),
+            state: 'failed',
+            reasonCode: STEP_REASON_CODE.stepException,
+            reason: String(e || ''),
+            attemptNo: 0,
+            resultCode: 'STEP_EXCEPTION'
+          });
+          await updateRuntimeCheckpoint({
+            stage: 'execute_step_exception',
+            lastCompletedStepIndex: Number(i),
+            lastCompletedStepId: String(plan.steps[i]?.stepId || ''),
+            lastToolName: String(aiName || ''),
+            lastToolCode: 'STEP_EXCEPTION',
+            lastToolSuccess: '0',
+            lastError: String(e),
+            lastExecutionIndex: Math.max(-1, Number(nextExecutionIndex || 0) - 1),
+            stepRuntimeIndex: serializeCheckpointStepRuntimeIndex()
+          }, {
+            type: 'runtime_step_exception',
+            stepIndex: Number(i),
+            stepId: String(plan.steps[i]?.stepId || ''),
+            aiName: String(aiName || ''),
+            error: String(e)
+          });
+          logger.warn?.('Parallel step execution exception', { label: 'STEP', index: i, error: String(e) });
         }));
         inFlight.set(i, p);
       }
     }
 
     if (inFlight.size === 0) {
-      // 若有延迟中的任务，等待最近的到期时间后继续调度
       let minWait = Infinity;
       for (const [idx, ts] of delayUntil.entries()) {
-        if (idx < startIndex || finished.has(idx)) continue;
+        if (idx < schedulerStartIndex || finished.has(idx)) continue;
         const w = (ts || 0) - now();
         if (w > 0) minWait = Math.min(minWait, w);
       }
@@ -1948,119 +3599,263 @@ export async function executePlan(runId, objective, mcpcore, plan, opts = {}) {
         await wait(minWait);
         continue;
       }
-      // 无可执行项且没有运行中的任务：可能存在循环依赖/无效 dependsOnStepIds
       if (finished.size < plan.steps.length) {
-        logger.warn?.('无可执行步骤，可能存在循环依赖/无效 dependsOnStepIds，强制跳过剩余步骤', { label: 'PLAN' });
-        for (let i = startIndex; i < plan.steps.length; i++) {
+        logger.warn?.('No schedulable steps; possible dependency cycle or invalid dependsOnStepIds', { label: 'PLAN' });
+        for (let i = schedulerStartIndex; i < plan.steps.length; i++) {
           if (!finished.has(i)) {
             finished.add(i);
-            // 组计数归零，便于 flush
             const gid = groupOf[i];
             if (gid !== null && gid !== undefined && groupPending.has(gid)) {
               groupPending.set(gid, Math.max(0, (groupPending.get(gid) || 0) - 1));
             }
           }
         }
-        // 强制刷新所有已无待完成步数的组
         const finalGid = groups.length ? groups[groups.length - 1].id : null;
-        flushReadyGroupsInOrder({ force: true, finalGroupId: finalGid });
+        groupEventCoordinator.flushReadyGroupsInOrder({ force: true, finalGroupId: finalGid });
       }
       break;
     }
 
-    // 等待任意一个任务结束以继续调度
     await Promise.race([...inFlight.values()]);
   }
 
   const attempted = used.length;
   const successRate = attempted ? succeeded / attempted : 0;
-  // 兜底：循环结束后，若仍有未刷新的组（理论上不应发生），统一刷新
   if (isRunCancelled(runId)) {
-    flushAllOnCancel();
+    groupEventCoordinator.flushAllOnCancel();
   } else {
     const finalGid = groups.length ? groups[groups.length - 1].id : null;
-    flushReadyGroupsInOrder({ force: true, finalGroupId: finalGid });
+    groupEventCoordinator.flushReadyGroupsInOrder({ force: true, finalGroupId: finalGid });
   }
-  return { used, attempted, succeeded, successRate };
+  await updateRuntimeCheckpoint({
+    stage: hardStopRequested || isRunCancelled(runId) ? 'execute_plan_stopped' : 'execute_plan_done',
+    status: isRunCancelled(runId) ? 'cancelled' : 'running',
+    attempted: Number(used.length || 0),
+    succeeded: Number(succeeded || 0),
+    completedStepCount: Number(finished.size || 0),
+    finishedAt: hardStopRequested || isRunCancelled(runId) ? now() : 0,
+    lastExecutionIndex: Math.max(-1, Number(nextExecutionIndex || 0) - 1),
+    stepRuntimeIndex: serializeCheckpointStepRuntimeIndex()
+  }, {
+    type: 'runtime_execute_done',
+    attempted: Number(used.length || 0),
+    succeeded: Number(succeeded || 0),
+    cancelled: isRunCancelled(runId) === true,
+    hardStopRequested: hardStopRequested === true,
+    directiveAction: String(runtimeDirective?.action || '')
+  });
+  for (let i = 0; i < plan.steps.length; i++) {
+    if (!finished.has(i)) continue;
+    if (preFinalized.has(i)) continue;
+    const step = plan.steps[i] || {};
+    await emitStepState({
+      stepIndex: i,
+      step,
+      aiName: String(step?.aiName || ''),
+      executor: normalizePlanExecutor(step, toolMeta.get(step?.aiName) || {}),
+      actionRef: String(step?.actionRef || ''),
+      state: 'finalized',
+      reasonCode: isRunCancelled(runId) ? STEP_REASON_CODE.runCancelledFinalize : STEP_REASON_CODE.executePlanFinalize,
+      reason: isRunCancelled(runId) ? 'run cancelled' : 'step finalized in run cleanup',
+      attemptNo: 0
+    });
+  }
+  return {
+    used,
+    attempted,
+    succeeded,
+    successRate,
+    runtimeControl,
+    runtimeDirective,
+    runtimeSignalCursorTs,
+    runtimeSignalGeneration,
+    runtimeSignalSeq,
+    workspace: {
+      capturedSteps: workspaceDiffCaptureCount,
+      changedSteps: workspaceDiffChangedCount,
+      artifactsUpserted: workspaceArtifactsUpserted
+    }
+  };
+  } finally {
+    executionClosed = true;
+    releaseRunExecutionEpoch(runIdText, executeEpoch);
+  }
 }
 
 export async function planThenExecute({ objective, context = {}, mcpcore, conversation, forceNeedTools = false }) {
-  const runId = uuidv4();
-  const ctx0 = (context && typeof context === 'object') ? context : {};
-  registerRunStart({ runId, channelId: ctx0.channelId, identityKey: ctx0.identityKey, objective });
-  const ctx = injectConcurrencyOverlay({ runId, objective, context: ctx0 });
+  const runId = resolveRuntimeRunId(context);
+  const { ctx } = createRuntimeContext({
+    runId,
+    objective,
+    context,
+    registerRunStart,
+    injectConcurrencyOverlay
+  });
+  const runtimeControl = resolveRuntimeControl(ctx);
   try {
-    await HistoryStore.append(runId, { type: 'start', objective, context: sanitizeContextForLog(ctx) });
-
-    // 步骤1：构建工具清单
-    let manifest0 = buildPlanningManifest(mcpcore);
-
-    // 步骤2：判断是否需要工具（使用原始工具列表）
-    const judgeFunc = (config.llm?.toolStrategy || 'auto') === 'fc' ? judgeToolNecessityFC : judgeToolNecessity;
-    const judge = forceNeedTools
-      ? { need: true, summary: 'forced_need_tools=true', toolNames: [], ok: true, forced: true }
-      : await judgeFunc(objective, manifest0, conversation, ctx);
-    const toolPreReplySingleSkipTools = Array.isArray(config.flags?.toolPreReplySingleSkipTools)
-      ? config.flags.toolPreReplySingleSkipTools
-      : [];
-    await HistoryStore.append(runId, {
-      type: 'judge',
-      need: judge.need,
-      summary: judge.summary,
-      toolNames: judge.toolNames,
-      ok: judge.ok !== false,
-      toolPreReplySingleSkipTools
+    await emitRunStart({
+      runId,
+      objective,
+      context: ctx,
+      sanitizeContextForLog,
+      emitRunEvent,
+      historyStore: HistoryStore
     });
-    if (judge && judge.ok === false) {
-      const plan = { manifest: manifest0, steps: [] };
-      const plan2 = normalizePlanStepIds(plan);
-      await HistoryStore.setPlan(runId, plan2);
-      await HistoryStore.append(runId, { type: 'plan', plan: plan2 });
-      const exec = { used: [], attempted: 0, succeeded: 0, successRate: 0 };
-      await HistoryStore.append(runId, { type: 'done', exec });
-      const summary = String(judge.summary || 'Judge阶段失败');
-      try { await HistoryStore.setSummary(runId, summary); } catch { }
-      await HistoryStore.append(runId, { type: 'summary', summary });
-      return fail('JUDGE_FAILED', 'JUDGE_FAILED', { runId, plan: plan2, exec, eval: { success: false, summary }, summary });
-    }
-    if (!judge.need) {
-      const plan = { manifest: manifest0, steps: [] };
-      const plan2 = normalizePlanStepIds(plan);
-      await HistoryStore.setPlan(runId, plan2);
-      await HistoryStore.append(runId, { type: 'plan', plan: plan2 });
-      const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
-      const evalObj = { success: true, summary: '判定无需调用工具，直接完成。' };
-      await HistoryStore.append(runId, { type: 'done', exec });
-      const summary = '本次任务判定无需调用工具。';
-      await HistoryStore.setSummary(runId, summary);
-      await HistoryStore.append(runId, { type: 'summary', summary });
-      return ok({ runId, plan: plan2, exec, eval: evalObj, summary });
+    if (runtimeControl.enabled) {
+      await HistoryStore.append(runId, {
+        type: 'runtime_control',
+        phase: 'plan_then_execute',
+        reason: String(runtimeControl.reason || ''),
+        singlePass: runtimeControl.singlePass === true,
+        skipEvaluation: runtimeControl.skipEvaluation === true,
+        skipSummary: runtimeControl.skipSummary === true,
+        disableAdaptive: runtimeControl.disableAdaptive === true,
+        disablePlanRepair: runtimeControl.disablePlanRepair === true,
+        disableArgFixRetry: runtimeControl.disableArgFixRetry === true
+      });
     }
 
-    const planRaw = await generatePlan(objective, mcpcore, { ...ctx, runId, judge }, conversation);
-    const plan = normalizePlanStepIds(planRaw);
-    await HistoryStore.setPlan(runId, plan);
-    await HistoryStore.append(runId, { type: 'plan', plan });
+    const resumePlan = await resolveResumePlanFromRuntimeCheckpoint({
+      runId,
+      context: ctx,
+      normalizePlanFn: normalizePlanStepIds
+    });
+    let plan = null;
+    if (resumePlan.enabled) {
+      plan = resumePlan.plan;
+      await HistoryStore.setPlan(runId, plan);
+      await HistoryStore.append(runId, {
+        type: 'resume_executor_applied',
+        reason: String(resumePlan.reason || ''),
+        checkpointStage: String(resumePlan?.checkpoint?.stage || ''),
+        checkpointStatus: String(resumePlan?.checkpoint?.status || ''),
+        checkpointUpdatedAt: Number(resumePlan?.checkpoint?.updatedAt || 0),
+        resumeCursorIndex: Number(resumePlan.resumeCursorIndex || 0),
+        planSignature: String(resumePlan.planSignature || ''),
+        checkpointPlanSignature: String(resumePlan.checkpointSignature || ''),
+        totalSteps: Number(plan?.steps?.length || 0)
+      });
+      await HistoryStore.append(runId, {
+        type: 'plan',
+        plan,
+        resumedFromCheckpoint: true
+      });
+    } else {
+      const manifest0 = await buildJudgeManifestWithPrefilter({
+        objective,
+        baseManifest: buildPlanningManifest(mcpcore),
+        context: ctx
+      });
 
-    const exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
-    const enableEval = config.flags?.enableEval !== false;
-    let evalObj = null;
-    if (enableEval) {
-      evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
+      const judge = await runJudgeStage({
+        objective,
+        manifest: manifest0,
+        conversation,
+        context: ctx,
+        forceNeedTools
+      });
+      await HistoryStore.append(runId, {
+        type: 'judge',
+        need: judge.need,
+        summary: judge.summary,
+        toolNames: judge.toolNames,
+        ok: judge.ok !== false
+      });
+      await HistoryStore.append(runId, buildToolGateEvent({
+        judge,
+        manifest: manifest0
+      }));
+      if (judge && judge.ok === false) {
+        const planFallback = { manifest: manifest0, steps: [] };
+        const plan2 = normalizePlanStepIds(planFallback);
+        await HistoryStore.setPlan(runId, plan2);
+        await HistoryStore.append(runId, { type: 'plan', plan: plan2 });
+        const exec = { used: [], attempted: 0, succeeded: 0, successRate: 0 };
+        await HistoryStore.append(runId, { type: 'done', exec });
+        const summary = String(judge.summary || 'Judge stage failed');
+        try { await HistoryStore.setSummary(runId, summary); } catch { }
+        await HistoryStore.append(runId, { type: 'summary', summary });
+        return fail('JUDGE_FAILED', 'JUDGE_FAILED', { runId, plan: plan2, exec, eval: { success: false, summary }, summary });
+      }
+      if (!judge.need) {
+        const planFallback = { manifest: manifest0, steps: [] };
+        const plan2 = normalizePlanStepIds(planFallback);
+        await HistoryStore.setPlan(runId, plan2);
+        await HistoryStore.append(runId, { type: 'plan', plan: plan2 });
+        const noToolsResultEvent = buildNoToolsResultGroupEvent({
+          reasonCode: NO_TOOL_REASON_CODE.judgeNoTools,
+          reason: String(judge.summary || '').trim() || 'Judge determined no MCP tool invocation is needed',
+          summary: 'No tool invocation was required for this run.'
+        });
+        await HistoryStore.append(runId, noToolsResultEvent);
+        const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
+        const evalObj = { success: true, summary: 'No tools are required for this request; completed directly.' };
+        await HistoryStore.append(runId, { type: 'done', exec });
+        const summary = 'No tool invocation was required for this run.';
+        await HistoryStore.setSummary(runId, summary);
+        await HistoryStore.append(runId, { type: 'summary', summary });
+        return ok({ runId, plan: plan2, exec, eval: evalObj, summary });
+      }
+
+      plan = await runPlanStage({
+        objective,
+        mcpcore,
+        context: ctx,
+        conversation,
+        runId,
+        judge,
+        generatePlanFn: generatePlan,
+        normalizePlanFn: normalizePlanStepIds
+      });
+      await HistoryStore.setPlan(runId, plan);
+      await HistoryStore.append(runId, { type: 'plan', plan });
+      if (isPlanEmpty(plan)) {
+        logger.info('Plan returned empty steps; finish as no-tools run', { label: 'PLAN', runId, reason: 'empty_plan_short_circuit' });
+        const noToolsResultEvent = buildNoToolsResultGroupEvent({
+          reasonCode: NO_TOOL_REASON_CODE.emptyPlan,
+          reason: 'Planner returned an empty executable plan',
+          summary: 'No tool invocation was required for this run (empty plan).'
+        });
+        await HistoryStore.append(runId, noToolsResultEvent);
+        const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
+        const evalObj = {
+          success: true,
+          incomplete: false,
+          nextAction: 'perfect',
+          completionLevel: 'perfect',
+          summary: 'Planner returned an empty executable plan; treated as no tool invocation required.'
+        };
+        await HistoryStore.append(runId, { type: 'done', exec });
+        const summary = 'No tool invocation was required for this run (empty plan).';
+        await HistoryStore.setSummary(runId, summary);
+        await HistoryStore.append(runId, { type: 'summary', summary });
+        return ok({ runId, plan, exec, eval: evalObj, summary });
+      }
+    }
+
+    let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
+    let evalObj = runtimeControl.skipEvaluation
+      ? buildSkippedEvalResult(runtimeControl.reason || 'runtime_control_skip_evaluation')
+      : await runEvaluateStage({ objective, plan, exec, runId, context: ctx });
+    if (runtimeControl.skipEvaluation) {
+      await HistoryStore.append(runId, {
+        type: 'evaluation_skipped',
+        reason: String(runtimeControl.reason || 'runtime_control_skip_evaluation')
+      });
     }
 
     // Global repair loop (circuit breaker): limit the number of repair cycles
     const enableRepair = !(config.runner?.enableRepair === false);
-    const maxRepairs = enableRepair ? Math.max(0, Number(config.runner?.maxRepairs ?? 1)) : 0;
+    const maxRepairs = (enableRepair && !runtimeControl.disablePlanRepair && !runtimeControl.skipEvaluation)
+      ? Math.max(0, Number(config.runner?.maxRepairs ?? 1))
+      : 0;
     let repairs = 0;
-    while (enableEval && evalObj && !evalObj.success && repairs < maxRepairs) {
-      // 收集所有失败的步骤（不只是第一个）
+    while (evalObj && !evalObj.success && repairs < maxRepairs) {
       const failedSteps = Array.isArray(evalObj.failedSteps) && evalObj.failedSteps.length
         ? evalObj.failedSteps.filter((f) => typeof f?.stepId === 'string' && f.stepId.trim())
         : [];
       if (failedSteps.length === 0) break;
 
-      // 提取失败步骤的索引（仅用于内部执行；身份以 stepId 为准）
       const stepIdToIndex = new Map((plan.steps || []).map((s, idx) => [typeof s?.stepId === 'string' ? s.stepId : '', idx]).filter(([k]) => k));
       const failedIndices = Array.from(new Set(failedSteps.map((f) => {
         const sid = typeof f?.stepId === 'string' ? f.stepId.trim() : '';
@@ -2068,17 +3863,14 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
         return Number.isFinite(idx) ? idx : NaN;
       }).filter((x) => Number.isFinite(x)))).sort((a, b) => a - b);
 
-      // 构建依赖链：找出所有依赖失败步骤的下游步骤
       const retryChain = buildDependencyChain(plan.steps, failedIndices);
       const retryIndices = Array.from(retryChain).sort((a, b) => a - b);
 
-      // 构建成功步骤的上下文（所有成功的步骤结果）
       const history = await HistoryStore.list(runId, 0, -1);
       const prior = history
         .filter((h) => h.type === 'tool_result' && Number(h.result?.success) === 1)
         .map((h) => ({ aiName: h.aiName, args: h.args, result: h.result, data: h.result?.data }));
 
-      // 记录重试事件
       await HistoryStore.append(runId, {
         type: 'retry_begin',
         failedSteps: failedSteps.map((f) => ({ stepId: f.stepId, displayIndex: f.displayIndex, aiName: f.aiName, reason: f.reason })),
@@ -2086,7 +3878,7 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
       });
 
       if (config.flags.enableVerboseSteps) {
-        logger.info('开始重试失败步骤及其依赖链', {
+        logger.info('Retrying failed steps and dependency chain', {
           label: 'RETRY',
           originalFailed: failedIndices,
           retryChain: retryIndices,
@@ -2095,12 +3887,14 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
         });
       }
 
-      // 重试失败步骤及其所有下游依赖步骤
       const retryExec = await executePlan(runId, objective, mcpcore, plan, {
-        retrySteps: retryIndices,  // 执行失败步骤 + 依赖它们的步骤
+        retrySteps: retryIndices,  // Retry all failed steps plus their downstream dependency chain.
         seedRecent: prior,
         conversation,
-        context
+        context: ctx,
+        runtimeSignalCursorTs: Number(exec?.runtimeSignalCursorTs || 0),
+        runtimeSignalGeneration: Number(exec?.runtimeSignalGeneration || 0),
+        runtimeSignalSeq: Number(exec?.runtimeSignalSeq || 0)
       });
 
       await HistoryStore.append(runId, {
@@ -2110,7 +3904,6 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
         exec: retryExec
       });
 
-      // 重试后，需要从 history 中重新统计全局的 exec（因为 retryExec 只包含重试步骤）
       const updatedHistory = await HistoryStore.list(runId, 0, -1);
       const allToolResults = updatedHistory.filter((h) => h.type === 'tool_result');
       const globalUsed = allToolResults.map((h) => ({
@@ -2127,20 +3920,32 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
       };
       exec = globalExec;
 
-      evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
+      evalObj = await runEvaluateStage({ objective, plan, exec, runId, context: ctx });
       repairs++;
     }
 
     await HistoryStore.append(runId, { type: 'done', exec });
 
-    // 总结步骤，支持失败反馈
-    const enableSummary = config.flags?.enableSummary !== false;
-    const summaryResult = enableSummary
-      ? await summarizeToolHistory(runId, '', ctx)
-      : { success: true, summary: '' };
+    const enableSummary = config.flags?.enableSummary !== false && !runtimeControl.skipSummary;
+    const summarySkipped = enableSummary && shouldSkipSummaryByEval(evalObj);
+    const summaryResult = !enableSummary
+      ? {
+        success: true,
+        summary: '',
+        skipped: true,
+        reason: runtimeControl.skipSummary ? 'runtime_control_skip_summary' : 'summary_disabled'
+      }
+      : summarySkipped
+        ? {
+          success: true,
+          summary: String(evalObj?.summary || ''),
+          skipped: true,
+          reason: 'evaluation_success'
+        }
+        : await summarizeToolHistory(runId, '', ctx);
 
-    if (enableSummary && !summaryResult.success && config.flags.enableVerboseSteps) {
-      logger.warn('总结步骤失败', {
+    if (enableSummary && !summarySkipped && !summaryResult.success && config.flags.enableVerboseSteps) {
+      logger.warn('Summary stage failed', {
         label: 'RUN',
         runId,
         error: summaryResult.error,
@@ -2148,7 +3953,6 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
       });
     }
 
-    // 向后兼容：返回 summary 字符串
     const summary = summaryResult.summary || '';
 
     const okres = ok({
@@ -2157,7 +3961,7 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
       exec,
       eval: evalObj,
       summary,
-      summaryResult  // 附加完整的总结结果
+      summaryResult  // Full summary stage payload for debugging and downstream consumers.
     });
     if (config.flags.enableVerboseSteps) {
       logger.info('Run completed', { label: 'RUN', runId, attempted: exec.attempted, succeeded: exec.succeeded, successRate: exec.successRate });
@@ -2165,614 +3969,513 @@ export async function planThenExecute({ objective, context = {}, mcpcore, conver
     return okres;
   } finally {
     const cancelled = isRunCancelled(runId);
+    await persistRuntimeRunFinal({
+      runId,
+      context: ctx,
+      objective,
+      status: cancelled ? 'cancelled' : 'completed',
+      reasonCode: cancelled ? RUNTIME_REASON_CODE.runCancelled : RUNTIME_REASON_CODE.runFinished,
+      source: 'planners.planThenExecute.finally'
+    });
     try { markRunFinished(runId, { cancelled }); } catch { }
     try { removeRun(runId); } catch { }
     try { clearRunCancelled(runId); } catch { }
   }
 }
 
-// 流式执行：通过 RunEvents 推送（同时持久化到 HistoryStore），以 JSON 事件逐步产出
-// 事件类型包括：start, judge, plan, args, tool_result, retry_begin, retry_done, evaluation, done, summary
 export async function* planThenExecuteStream({ objective, context = {}, mcpcore, conversation, pollIntervalMs = 200, forceNeedTools = false }) {
-  const runId = uuidv4();
+  const runId = resolveRuntimeRunId(context);
   const sub = RunEvents.subscribe(runId);
-  const ctx0 = (context && typeof context === 'object') ? context : {};
-  registerRunStart({ runId, channelId: ctx0.channelId, identityKey: ctx0.identityKey, objective });
-  const ctx = injectConcurrencyOverlay({ runId, objective, context: ctx0 });
+  const { ctx } = createRuntimeContext({
+    runId,
+    objective,
+    context,
+    registerRunStart,
+    injectConcurrencyOverlay
+  });
+  const runtimeControl = resolveRuntimeControl(ctx);
 
   // Producer: run the workflow in background while emitting events
   (async () => {
     try {
       // Start
-      const sanitizedCtx = sanitizeContextForLog(ctx);
-      emitRunEvent(runId, { type: 'start', objective, context: sanitizedCtx });
-      await HistoryStore.append(runId, { type: 'start', objective, context: sanitizedCtx });
-
-      // 步骤1：构建工具清单
-      let manifest0 = buildPlanningManifest(mcpcore);
-
-      // 步骤2：判断是否需要工具（使用原始工具列表）
-      const judgeFunc = (config.llm?.toolStrategy || 'auto') === 'fc' ? judgeToolNecessityFC : judgeToolNecessity;
-      const judge = forceNeedTools
-        ? { need: true, summary: 'forced_need_tools=true', toolNames: [], ok: true, forced: true }
-        : await judgeFunc(objective, manifest0, conversation, ctx);
-      const toolPreReplySingleSkipTools = Array.isArray(config.flags?.toolPreReplySingleSkipTools)
-        ? config.flags.toolPreReplySingleSkipTools
-        : [];
-      emitRunEvent(runId, {
-        type: 'judge',
-        need: judge.need,
-        summary: judge.summary,
-        toolNames: judge.toolNames,
-        ok: judge.ok !== false,
-        forced: !!judge.forced,
-        toolPreReplySingleSkipTools
+      await emitRunStart({
+        runId,
+        objective,
+        context: ctx,
+        sanitizeContextForLog,
+        emitRunEvent,
+        historyStore: HistoryStore
       });
-      await HistoryStore.append(runId, {
-        type: 'judge',
-        need: judge.need,
-        summary: judge.summary,
-        toolNames: judge.toolNames,
-        ok: judge.ok !== false,
-        forced: !!judge.forced,
-        toolPreReplySingleSkipTools
-      });
-      if (judge && judge.ok === false) {
-        const plan0 = { manifest: manifest0, steps: [] };
-        const plan = normalizePlanStepIds(plan0);
-        await HistoryStore.setPlan(runId, plan);
-        emitRunEvent(runId, { type: 'plan', plan });
-        await HistoryStore.append(runId, { type: 'plan', plan });
-        const exec = { used: [], attempted: 0, succeeded: 0, successRate: 0 };
-        emitRunEvent(runId, { type: 'done', exec });
-        await HistoryStore.append(runId, { type: 'done', exec });
-        const summary = String(judge.summary || 'Judge阶段失败');
-        try { await HistoryStore.setSummary(runId, summary); } catch { }
-        emitRunEvent(runId, { type: 'summary', summary });
-        await HistoryStore.append(runId, { type: 'summary', summary });
-        return;
-      }
-      if (!judge.need) {
-        const plan0 = { manifest: manifest0, steps: [] };
-        const plan = normalizePlanStepIds(plan0);
-        await HistoryStore.setPlan(runId, plan);
-        emitRunEvent(runId, { type: 'plan', plan });
-        await HistoryStore.append(runId, { type: 'plan', plan });
-        const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
-        emitRunEvent(runId, { type: 'done', exec });
-        await HistoryStore.append(runId, { type: 'done', exec });
-        const summary = '本次任务判定无需调用工具。';
-        try { await HistoryStore.setSummary(runId, summary); } catch { }
-        emitRunEvent(runId, { type: 'summary', summary });
-        await HistoryStore.append(runId, { type: 'summary', summary });
-        return;
+      if (runtimeControl.enabled) {
+        const runtimeControlEvent = {
+          type: 'runtime_control',
+          phase: 'plan_then_execute_stream',
+          reason: String(runtimeControl.reason || ''),
+          singlePass: runtimeControl.singlePass === true,
+          skipEvaluation: runtimeControl.skipEvaluation === true,
+          skipSummary: runtimeControl.skipSummary === true,
+          disableAdaptive: runtimeControl.disableAdaptive === true,
+          disablePlanRepair: runtimeControl.disablePlanRepair === true,
+          disableArgFixRetry: runtimeControl.disableArgFixRetry === true
+        };
+        emitRunEvent(runId, runtimeControlEvent);
+        await HistoryStore.append(runId, runtimeControlEvent);
       }
 
-      // Plan (after judge)
-      const planRaw = await generatePlan(objective, mcpcore, { ...ctx, runId, judge }, conversation);
-      const plan = normalizePlanStepIds(planRaw);
-      await HistoryStore.setPlan(runId, plan);
-      emitRunEvent(runId, { type: 'plan', plan });
-      await HistoryStore.append(runId, { type: 'plan', plan });
+      const resumePlan = await resolveResumePlanFromRuntimeCheckpoint({
+        runId,
+        context: ctx,
+        normalizePlanFn: normalizePlanStepIds
+      });
+      let judge;
+      let activePlan;
+      let activeObjective = objective;
+      if (resumePlan.enabled) {
+        activePlan = resumePlan.plan;
+        judge = {
+          need: true,
+          summary: 'resume_executor_checkpoint_plan',
+          toolNames: Array.isArray(activePlan?.manifest)
+            ? activePlan.manifest.map((m) => String(m?.aiName || '').trim()).filter(Boolean)
+            : [],
+          ok: true,
+          forced: true,
+          resumed: true
+        };
+        emitRunEvent(runId, {
+          type: 'resume_executor_applied',
+          reason: String(resumePlan.reason || ''),
+          checkpointStage: String(resumePlan?.checkpoint?.stage || ''),
+          checkpointStatus: String(resumePlan?.checkpoint?.status || ''),
+          checkpointUpdatedAt: Number(resumePlan?.checkpoint?.updatedAt || 0),
+          resumeCursorIndex: Number(resumePlan.resumeCursorIndex || 0),
+          planSignature: String(resumePlan.planSignature || ''),
+          checkpointPlanSignature: String(resumePlan.checkpointSignature || ''),
+          totalSteps: Number(activePlan?.steps?.length || 0)
+        });
+        await HistoryStore.append(runId, {
+          type: 'resume_executor_applied',
+          reason: String(resumePlan.reason || ''),
+          checkpointStage: String(resumePlan?.checkpoint?.stage || ''),
+          checkpointStatus: String(resumePlan?.checkpoint?.status || ''),
+          checkpointUpdatedAt: Number(resumePlan?.checkpoint?.updatedAt || 0),
+          resumeCursorIndex: Number(resumePlan.resumeCursorIndex || 0),
+          planSignature: String(resumePlan.planSignature || ''),
+          checkpointPlanSignature: String(resumePlan.checkpointSignature || ''),
+          totalSteps: Number(activePlan?.steps?.length || 0)
+        });
+        emitRunEvent(runId, {
+          type: 'judge',
+          need: true,
+          summary: String(judge.summary || ''),
+          toolNames: judge.toolNames,
+          ok: true,
+          forced: true
+        });
+        await HistoryStore.append(runId, {
+          type: 'judge',
+          need: true,
+          summary: String(judge.summary || ''),
+          toolNames: judge.toolNames,
+          ok: true,
+          forced: true
+        });
+        const resumeToolGateEvent = buildToolGateEvent({
+          judge,
+          manifest: Array.isArray(activePlan?.manifest) ? activePlan.manifest : []
+        });
+        emitRunEvent(runId, resumeToolGateEvent);
+        await HistoryStore.append(runId, resumeToolGateEvent);
+        await HistoryStore.setPlan(runId, activePlan);
+        emitRunEvent(runId, { type: 'plan', plan: activePlan, resumedFromCheckpoint: true });
+        await HistoryStore.append(runId, { type: 'plan', plan: activePlan, resumedFromCheckpoint: true });
+      } else {
+        const manifest0 = await buildJudgeManifestWithPrefilter({
+          objective,
+          baseManifest: buildPlanningManifest(mcpcore),
+          context: ctx
+        });
+
+        judge = await runJudgeStage({
+          objective,
+          manifest: manifest0,
+          conversation,
+          context: ctx,
+          forceNeedTools
+        });
+        emitRunEvent(runId, {
+          type: 'judge',
+          need: judge.need,
+          summary: judge.summary,
+          toolNames: judge.toolNames,
+          ok: judge.ok !== false,
+          forced: !!judge.forced
+        });
+        await HistoryStore.append(runId, {
+          type: 'judge',
+          need: judge.need,
+          summary: judge.summary,
+          toolNames: judge.toolNames,
+          ok: judge.ok !== false,
+          forced: !!judge.forced
+        });
+        const toolGateEvent = buildToolGateEvent({ judge, manifest: manifest0 });
+        emitRunEvent(runId, toolGateEvent);
+        await HistoryStore.append(runId, toolGateEvent);
+        if (judge && judge.ok === false) {
+          const plan0 = { manifest: manifest0, steps: [] };
+          const plan = normalizePlanStepIds(plan0);
+          await HistoryStore.setPlan(runId, plan);
+          emitRunEvent(runId, { type: 'plan', plan });
+          await HistoryStore.append(runId, { type: 'plan', plan });
+          const exec = { used: [], attempted: 0, succeeded: 0, successRate: 0 };
+          emitRunEvent(runId, { type: 'done', exec });
+          await HistoryStore.append(runId, { type: 'done', exec });
+          const summary = String(judge.summary || 'Judge stage failed');
+          try { await HistoryStore.setSummary(runId, summary); } catch { }
+          emitRunEvent(runId, { type: 'summary', summary });
+          await HistoryStore.append(runId, { type: 'summary', summary });
+          return;
+        }
+        if (!judge.need) {
+          const plan0 = { manifest: manifest0, steps: [] };
+          const plan = normalizePlanStepIds(plan0);
+          await HistoryStore.setPlan(runId, plan);
+          emitRunEvent(runId, { type: 'plan', plan });
+          await HistoryStore.append(runId, { type: 'plan', plan });
+          const noToolsResultEvent = buildNoToolsResultGroupEvent({
+            reasonCode: NO_TOOL_REASON_CODE.judgeNoTools,
+            reason: String(judge.summary || '').trim() || 'Judge determined no MCP tool invocation is needed',
+            summary: 'No tool invocation was required for this run.'
+          });
+          emitRunEvent(runId, noToolsResultEvent);
+          await HistoryStore.append(runId, noToolsResultEvent);
+          const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
+          emitRunEvent(runId, { type: 'done', exec });
+          await HistoryStore.append(runId, { type: 'done', exec });
+          const summary = 'No tool invocation was required for this run.';
+          try { await HistoryStore.setSummary(runId, summary); } catch { }
+          emitRunEvent(runId, { type: 'summary', summary });
+          await HistoryStore.append(runId, { type: 'summary', summary });
+          return;
+        }
+
+        // Plan (after judge)
+        activePlan = await runPlanStage({
+          objective,
+          mcpcore,
+          context: ctx,
+          conversation,
+          runId,
+          judge,
+          generatePlanFn: generatePlan,
+          normalizePlanFn: normalizePlanStepIds
+        });
+        await HistoryStore.setPlan(runId, activePlan);
+        emitRunEvent(runId, { type: 'plan', plan: activePlan });
+        await HistoryStore.append(runId, { type: 'plan', plan: activePlan });
+        if (isPlanEmpty(activePlan)) {
+          logger.info('Plan returned empty steps; finish stream run as no-tools', { label: 'PLAN', runId, reason: 'empty_plan_short_circuit' });
+          const noToolsResultEvent = buildNoToolsResultGroupEvent({
+            reasonCode: NO_TOOL_REASON_CODE.emptyPlan,
+            reason: 'Planner returned an empty executable plan',
+            summary: 'No tool invocation was required for this run (empty plan).'
+          });
+          emitRunEvent(runId, noToolsResultEvent);
+          await HistoryStore.append(runId, noToolsResultEvent);
+          const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
+          emitRunEvent(runId, { type: 'done', exec });
+          await HistoryStore.append(runId, { type: 'done', exec });
+          const summary = 'No tool invocation was required for this run (empty plan).';
+          try { await HistoryStore.setSummary(runId, summary); } catch { }
+          emitRunEvent(runId, { type: 'summary', summary });
+          await HistoryStore.append(runId, { type: 'summary', summary });
+          return;
+        }
+      }
 
       // Execute concurrently (existing executor emits args/tool_result events)
-      const exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
+      let exec = await executePlan(runId, activeObjective, mcpcore, activePlan, { conversation, context: ctx });
+      let adaptiveRoundsUsed = 0;
+      let latestFeedbackTs = Number(exec?.runtimeSignalCursorTs || 0);
+      let finalAction = 'perfect';
+      let evalObj = null;
 
-      // 若运行在执行阶段被取消，则跳过后续评估/补救/总结，直接发出 cancelled 结束事件
+      let runtimeDirective = (exec && typeof exec === 'object' && exec.runtimeDirective && typeof exec.runtimeDirective === 'object')
+        ? exec.runtimeDirective
+        : null;
+
+      if (!runtimeControl.disableAdaptive && runtimeDirective && (runtimeDirective.action === 'replan' || runtimeDirective.action === 'supplement')) {
+        adaptiveRoundsUsed = 1;
+        finalAction = runtimeDirective.action;
+        activeObjective = buildRuntimeAdaptiveObjective({
+          baseObjective: objective,
+          runtimeDirective,
+          round: adaptiveRoundsUsed
+        });
+
+        const triggerEvent = {
+          type: 'runtime_adaptive_trigger',
+          action: runtimeDirective.action,
+          reason: String(runtimeDirective.reason || ''),
+          message: String(runtimeDirective.message || ''),
+          adaptiveRoundsUsed,
+          maxAdaptiveRounds: 1,
+        };
+        emitRunEvent(runId, triggerEvent);
+        await HistoryStore.append(runId, triggerEvent);
+
+        activePlan = await runPlanStage({
+          objective: activeObjective,
+          mcpcore,
+          context: {
+            ...ctx,
+            adaptiveRound: adaptiveRoundsUsed,
+            adaptiveAction: runtimeDirective.action,
+            previousRuntimeDirective: runtimeDirective,
+            previousObjective: objective
+          },
+          conversation,
+          runId,
+          judge,
+          generatePlanFn: generatePlan,
+          normalizePlanFn: normalizePlanStepIds
+        });
+
+        await HistoryStore.setPlan(runId, activePlan);
+        emitRunEvent(runId, {
+          type: 'plan',
+          plan: activePlan,
+          adaptive: true,
+          adaptiveRound: adaptiveRoundsUsed,
+          adaptiveAction: runtimeDirective.action,
+          runtimeDriven: true,
+        });
+        await HistoryStore.append(runId, {
+          type: 'plan',
+          plan: activePlan,
+          adaptive: true,
+          adaptiveRound: adaptiveRoundsUsed,
+          adaptiveAction: runtimeDirective.action,
+          runtimeDriven: true,
+        });
+
+        exec = await executePlan(runId, activeObjective, mcpcore, activePlan, {
+          conversation,
+          context: ctx,
+          runtimeSignalCursorTs: Number(exec?.runtimeSignalCursorTs || latestFeedbackTs || 0),
+          runtimeSignalGeneration: Number(exec?.runtimeSignalGeneration || 0),
+          runtimeSignalSeq: Number(exec?.runtimeSignalSeq || 0)
+        });
+        latestFeedbackTs = Number(exec?.runtimeSignalCursorTs || latestFeedbackTs || 0);
+        runtimeDirective = (exec && typeof exec === 'object' && exec.runtimeDirective && typeof exec.runtimeDirective === 'object')
+          ? exec.runtimeDirective
+          : runtimeDirective;
+      }
+
+      // cancellation still uses unified terminal stream: tool_result(runtime__control) -> done -> completed -> summary
       if (isRunCancelled(runId)) {
         if (config.flags.enableVerboseSteps) {
           logger.info('Run cancelled after executePlan, skip evaluation/reflection/summary', { label: 'RUN', runId });
         }
-        const summary = '本次运行已被上游取消，仅保留已完成的工具结果，不再继续评估与总结。';
-        emitRunEvent(runId, { type: 'cancelled', exec, summary, cancelled: true });
-        await HistoryStore.append(runId, { type: 'cancelled', exec, summary, cancelled: true });
+        await emitCancelledTerminalEvents({
+          runId,
+          exec,
+          summary: String(runtimeDirective?.reason || 'Run cancelled by upstream request. Preserve finished tool results and stop follow-up evaluation.')
+        });
         return;
       }
 
-      // Evaluate
-      const enableEval = config.flags?.enableEval !== false;
-      let evalObj = null;
-      if (enableEval) {
-        evalObj = await evaluateRun(objective, plan, exec, runId, ctx); // evaluation event emitted inside
-      }
+      if (runtimeControl.skipEvaluation) {
+        evalObj = buildSkippedEvalResult(runtimeControl.reason || 'runtime_control_skip_evaluation');
+        finalAction = 'perfect';
+        const evSkipped = {
+          type: 'evaluation_skipped',
+          reason: String(runtimeControl.reason || 'runtime_control_skip_evaluation')
+        };
+        emitRunEvent(runId, evSkipped);
+        await HistoryStore.append(runId, evSkipped);
+      } else {
+        const maxAdaptiveRounds = runtimeControl.disableAdaptive ? adaptiveRoundsUsed : 1;
+        while (true) {
+          const currentRound = adaptiveRoundsUsed + 1;
+          const roundResult = await runFeedbackEvaluationRound({
+            runId,
+            objective: activeObjective,
+            plan: activePlan,
+            exec,
+            context: ctx,
+            round: currentRound,
+            sinceTs: latestFeedbackTs,
+            adaptiveRoundsUsed,
+            maxAdaptiveRounds,
+            waitForAssistantFeedbackBatches,
+            runEvaluateStage,
+            normalizeEvalAction,
+            emitRunEvent,
+            historyStore: HistoryStore
+          });
+          latestFeedbackTs = roundResult.nextSinceTs;
+          evalObj = roundResult.evalObj;
+          finalAction = roundResult.finalAction;
+          const canAdaptive = !!roundResult.canAdaptive;
 
-      // Retry loop if enabled and within global limits
-      const enableRepair = !(config.runner?.enableRepair === false);
-      const maxRepairs = enableRepair ? Math.max(0, Number(config.runner?.maxRepairs ?? 1)) : 0;
-      let repairs = 0;
-      while (enableEval && evalObj && !evalObj.success && repairs < maxRepairs) {
-        // 收集所有失败的步骤
-        const failedSteps = Array.isArray(evalObj.failedSteps) && evalObj.failedSteps.length
-          ? evalObj.failedSteps.filter((f) => typeof f?.stepId === 'string' && f.stepId.trim())
-          : [];
-        if (failedSteps.length > 0) {
-          // 提取失败步骤的索引（仅用于内部执行；身份以 stepId 为准）
-          const stepIdToIndex = new Map((plan.steps || []).map((s, idx) => [typeof s?.stepId === 'string' ? s.stepId : '', idx]).filter(([k]) => k));
-          const failedIndices = Array.from(new Set(failedSteps.map((f) => {
-            const sid = typeof f?.stepId === 'string' ? f.stepId.trim() : '';
-            const idx = sid ? stepIdToIndex.get(sid) : undefined;
-            return Number.isFinite(idx) ? idx : NaN;
-          }).filter((x) => Number.isFinite(x)))).sort((a, b) => a - b);
+          if (!canAdaptive) break;
 
-          // 构建依赖链：找出所有依赖失败步骤的下游步骤
-          const retryChain = buildDependencyChain(plan.steps, failedIndices);
-          const retryIndices = Array.from(retryChain).sort((a, b) => a - b);
+          adaptiveRoundsUsed += 1;
+          const previousObjective = activeObjective;
+          const adaptiveObjective = buildAdaptiveObjective({
+            baseObjective: objective,
+            action: finalAction,
+            evalObj,
+            round: adaptiveRoundsUsed,
+          });
+          activeObjective = adaptiveObjective;
 
-          // 构建成功步骤的上下文
-          const history = await HistoryStore.list(runId, 0, -1);
-          const prior = history
+          activePlan = await runPlanStage({
+            objective: adaptiveObjective,
+            mcpcore,
+            context: {
+              ...ctx,
+              adaptiveRound: adaptiveRoundsUsed,
+              adaptiveAction: finalAction,
+              previousEval: evalObj,
+              previousObjective
+            },
+            conversation,
+            runId,
+            judge,
+            generatePlanFn: generatePlan,
+            normalizePlanFn: normalizePlanStepIds
+          });
+
+          await HistoryStore.setPlan(runId, activePlan);
+          emitRunEvent(runId, {
+            type: 'plan',
+            plan: activePlan,
+            adaptive: true,
+            adaptiveRound: adaptiveRoundsUsed,
+            adaptiveAction: finalAction,
+          });
+          await HistoryStore.append(runId, {
+            type: 'plan',
+            plan: activePlan,
+            adaptive: true,
+            adaptiveRound: adaptiveRoundsUsed,
+            adaptiveAction: finalAction,
+          });
+
+          const historyForRetry = await HistoryStore.list(runId, 0, -1);
+          const prior = historyForRetry
             .filter((h) => h.type === 'tool_result' && Number(h.result?.success) === 1)
             .map((h) => ({ aiName: h.aiName, args: h.args, result: h.result, data: h.result?.data }));
 
-          emitRunEvent(runId, {
-            type: 'retry_begin',
-            failedSteps: failedSteps.map((f) => ({ stepId: f.stepId, displayIndex: f.displayIndex, aiName: f.aiName, reason: f.reason }))
-          });
-          await HistoryStore.append(runId, {
-            type: 'retry_begin',
-            failedSteps: failedSteps.map((f) => ({ stepId: f.stepId, displayIndex: f.displayIndex, aiName: f.aiName, reason: f.reason }))
-          });
-
-          if (config.flags.enableVerboseSteps) {
-            logger.info('开始重试失败步骤及其依赖链', {
-              label: 'RETRY',
-              originalFailed: failedIndices,
-              retryChain: retryIndices,
-              chainSize: retryIndices.length,
-              failedSteps: failedSteps.map((f) => `stepId=${f.stepId} displayIndex=${f.displayIndex} (${f.aiName}): ${f.reason}`)
-            });
-          }
-
-          // 重试失败步骤及其所有下游依赖步骤
-          const retryExec = await executePlan(runId, objective, mcpcore, plan, {
-            retrySteps: retryIndices,  // 执行失败步骤 + 依赖它们的步骤
+          exec = await executePlan(runId, adaptiveObjective, mcpcore, activePlan, {
             seedRecent: prior,
             conversation,
-            context
+            context: ctx,
+            runtimeSignalCursorTs: Number(exec?.runtimeSignalCursorTs || 0),
+            runtimeSignalGeneration: Number(exec?.runtimeSignalGeneration || 0),
+            runtimeSignalSeq: Number(exec?.runtimeSignalSeq || 0)
           });
 
-          emitRunEvent(runId, {
-            type: 'retry_done',
-            failedSteps: failedSteps.map((f) => ({ stepId: f.stepId, displayIndex: f.displayIndex, aiName: f.aiName, reason: f.reason })),
-            exec: retryExec
-          });
-          await HistoryStore.append(runId, {
-            type: 'retry_done',
-            failedSteps: failedSteps.map((f) => ({ stepId: f.stepId, displayIndex: f.displayIndex, aiName: f.aiName, reason: f.reason })),
-            exec: retryExec
-          });
-
-          // 重试后，需要从 history 中重新统计全局的 exec（因为 retryExec 只包含重试步骤）
-          const updatedHistory = await HistoryStore.list(runId, 0, -1);
-          const allToolResults = updatedHistory.filter((h) => h.type === 'tool_result');
-          const globalUsed = allToolResults.map((h) => ({
-            aiName: h.aiName,
-            args: h.args,
-            result: h.result
-          }));
-          const globalSucceeded = allToolResults.filter((h) => Number(h.result?.success) === 1).length;
-          const globalExec = {
-            used: globalUsed,
-            attempted: allToolResults.length,
-            succeeded: globalSucceeded,
-            successRate: allToolResults.length ? globalSucceeded / allToolResults.length : 0
-          };
-          exec = globalExec;
-
-          evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
+          if (isRunCancelled(runId)) {
+            if (config.flags.enableVerboseSteps) {
+              logger.info('Run cancelled during adaptive round, stop before summary', { label: 'RUN', runId, adaptiveRoundsUsed });
+            }
+            const summary = 'Run cancelled during adaptive replan phase. Keep finished tool results only.';
+            await emitCancelledTerminalEvents({ runId, exec, summary, adaptiveRoundsUsed, evaluation: evalObj });
+            return;
+          }
         }
-        repairs++;
       }
 
-      // Done + summary
       emitRunEvent(runId, { type: 'done', exec });
       await HistoryStore.append(runId, { type: 'done', exec });
 
-      // Reflection：基于 evaluation 的 incomplete 字段判断是否需要补充遗漏的操作
-      // success 表示已执行步骤是否成功，incomplete 表示任务是否有遗漏步骤
-      const shouldReflect = enableEval && config.flags.enableReflection && evalObj?.incomplete === true;
-      if (!config.flags.enableReflection) {
-        if (config.flags.enableVerboseSteps) {
-          logger.info('Reflection: 未启用 enableReflection，跳过完整性检查', { label: 'REFLECTION', runId });
-        }
-      } else if (enableEval && evalObj?.incomplete === false) {
-        if (config.flags.enableVerboseSteps) {
-          logger.info('Reflection: evaluation 判定任务完整，跳过完整性检查', {
-            label: 'REFLECTION',
-            runId,
-            evalSuccess: evalObj?.success,
-            evalIncomplete: false,
-            evalSummary: evalObj?.summary?.slice(0, 100)
-          });
-        }
-      } else if (shouldReflect) {
-        if (config.flags.enableVerboseSteps) {
-          logger.info('Reflection: evaluation 判定任务不完整，开始完整性检查', {
-            label: 'REFLECTION',
-            runId,
-            evalSuccess: evalObj?.success,
-            evalIncomplete: true,
-            evalSummary: evalObj?.summary?.slice(0, 200)
-          });
-        }
-        try {
-          const reflection = await checkTaskCompleteness(runId, objective, plan.manifest, ctx);
+      const enableSummary = config.flags?.enableSummary !== false && !runtimeControl.skipSummary;
+      const summarySkipped = enableSummary && shouldSkipSummaryByEval(evalObj);
+      emitRunEvent(runId, {
+        type: 'completed',
+        exec,
+        evaluation: evalObj,
+        finalAction,
+        adaptiveRoundsUsed,
+        summaryPending: enableSummary && !summarySkipped,
+        resultStream: true,
+        resultStatus: 'final'
+      });
+      await HistoryStore.append(runId, {
+        type: 'completed',
+        exec,
+        evaluation: evalObj,
+        finalAction,
+        adaptiveRoundsUsed,
+        summaryPending: enableSummary && !summarySkipped,
+        resultStream: true,
+        resultStatus: 'final'
+      });
 
-          emitRunEvent(runId, {
-            type: 'reflection',
-            isComplete: reflection.isComplete,
-            analysis: reflection.analysis,
-            missingsCount: reflection.missings?.length || 0,
-            supplementsCount: reflection.supplements?.length || 0
-          });
-          await HistoryStore.append(runId, {
-            type: 'reflection',
-            isComplete: reflection.isComplete,
-            analysis: reflection.analysis,
-            missings: reflection.missings,
-            supplements: reflection.supplements
-          });
+      if (enableSummary) {
+        let summaryResult;
+        if (summarySkipped) {
+          summaryResult = {
+            success: true,
+            summary: String(evalObj?.summary || ''),
+            skipped: true,
+            reason: 'evaluation_success'
+          };
+        } else {
+          summaryResult = await summarizeToolHistory(runId, '', ctx);
 
-          if (config.flags.enableVerboseSteps) {
-            logger.info('Reflection: 完整性检查完成', {
-              label: 'REFLECTION',
+          if (!summaryResult.success && config.flags.enableVerboseSteps) {
+            logger.warn('Summary stage failed', {
+              label: 'RUN',
               runId,
-              isComplete: reflection.isComplete,
-              missingsCount: reflection.missings?.length || 0,
-              supplementsCount: reflection.supplements?.length || 0
+              error: summaryResult.error,
+              attempts: summaryResult.attempts
             });
           }
-
-          // 如果任务不完整且有补充建议，生成并执行补充计划
-          if (!reflection.isComplete && Array.isArray(reflection.supplements) && reflection.supplements.length > 0) {
-            const maxSupplements = Math.max(1, config.flags.reflectionMaxSupplements || 3);
-            const limitedSupplements = reflection.supplements.slice(0, maxSupplements);
-
-            if (config.flags.enableVerboseSteps) {
-              logger.info('Reflection: 开始生成补充计划', {
-                label: 'REFLECTION',
-                runId,
-                supplementsCount: limitedSupplements.length,
-                supplements: limitedSupplements.map(s => s.operation)
-              });
-            }
-
-            // 提取已完成的工具执行历史（用于补充计划的上下文）
-            const history = await HistoryStore.list(runId, 0, -1);
-            const completedTools = history
-              .filter((h) => h.type === 'tool_result')
-              .map((h, idx) => ({
-                stepIndex: idx,
-                aiName: h.aiName,
-                args: h.args,
-                result: h.result,
-                success: Number(h.result?.success) === 1
-              }));
-
-            // 构建已完成步骤的描述（包含完整的 args 和 result，不截断）
-            const completedStepsDesc = completedTools.length > 0
-              ? `\n\n【已完成的步骤】（补充计划应基于这些结果继续，不要重复执行）：\n${completedTools.map((t, i) => {
-                const argsStr = JSON.stringify(t.args);
-                const resultStr = JSON.stringify(t.result);
-                const statusIcon = t.success ? ' ✓' : ' ✗';
-                return `${i}. ${t.aiName}${statusIcon}:\n   参数: ${argsStr}\n   结果: ${resultStr}`;
-              }).join('\n')}`
-              : '';
-
-            // 构建补充操作的描述（用于重排序）
-            const supplementsDesc = limitedSupplements.map((s, i) => `${i + 1}. ${s.operation}：${s.reason}`).join('\n');
-
-            // 构建补充目标（强调这是补充操作，不是重新开始；历史由规划器按 runId 内部加载）
-            const supplementObjective = `${objective}\n\n【需要补充的操作】（仅基于当前运行历史补充以下遗漏的关键操作）：\n${supplementsDesc}`;
-
-            // 生成补充计划（不拼接历史；由规划器基于 runId 内部加载）
-            const supplementConversation = Array.isArray(conversation) ? conversation : [];
-
-            const supplementPlan = await generatePlan(supplementObjective, mcpcore, {
-              ...ctx,
-              runId,
-              isReflectionSupplement: true,
-              originalPlan: plan,
-              completedSteps: completedTools
-            }, supplementConversation);
-
-            if (Array.isArray(supplementPlan?.steps) && supplementPlan.steps.length > 0) {
-              // 清理 dependsOnStepIds：补充计划独立执行，不应引用原计划的 stepId
-              supplementPlan.steps = supplementPlan.steps.map(s => {
-                const { dependsOnStepIds, ...rest } = s;
-                return { ...rest, dependsOnStepIds: undefined };
-              });
-
-              emitRunEvent(runId, {
-                type: 'reflection_plan',
-                plan: supplementPlan,
-                supplementsCount: supplementPlan.steps.length
-              });
-              await HistoryStore.append(runId, {
-                type: 'reflection_plan',
-                plan: supplementPlan
-              });
-
-              if (config.flags.enableVerboseSteps) {
-                logger.info('Reflection: 补充计划生成成功', {
-                  label: 'REFLECTION',
-                  runId,
-                  stepsCount: supplementPlan.steps.length,
-                  steps: supplementPlan.steps.map(s => `${s.aiName}: ${formatReason(s.reason)}`)
-                });
-              }
-
-              // 执行补充计划（继承之前的工具上下文）
-              const history = await HistoryStore.list(runId, 0, -1);
-              const prior = history
-                .filter((h) => h.type === 'tool_result' && Number(h.result?.success) === 1)
-                .map((h) => ({ aiName: h.aiName, args: h.args, result: h.result, data: h.result?.data }));
-
-              const supplementExec = await executePlan(runId, supplementObjective, mcpcore, supplementPlan, {
-                seedRecent: prior,
-                conversation,
-                context: ctx
-              });
-
-              emitRunEvent(runId, {
-                type: 'reflection_exec',
-                exec: supplementExec
-              });
-              await HistoryStore.append(runId, {
-                type: 'reflection_exec',
-                exec: supplementExec
-              });
-
-              // 更新全局 exec 统计（包含补充执行的结果）
-              const updatedHistory = await HistoryStore.list(runId, 0, -1);
-              const allToolResults = updatedHistory.filter((h) => h.type === 'tool_result');
-              const globalUsed = allToolResults.map((h) => ({
-                aiName: h.aiName,
-                args: h.args,
-                result: h.result
-              }));
-              const globalSucceeded = allToolResults.filter((h) => Number(h.result?.success) === 1).length;
-              exec = {
-                used: globalUsed,
-                attempted: allToolResults.length,
-                succeeded: globalSucceeded,
-                successRate: allToolResults.length ? globalSucceeded / allToolResults.length : 0
-              };
-
-              if (config.flags.enableVerboseSteps) {
-                logger.info('Reflection: 补充执行完成', {
-                  label: 'REFLECTION',
-                  runId,
-                  supplementAttempted: supplementExec.attempted,
-                  supplementSucceeded: supplementExec.succeeded,
-                  globalAttempted: exec.attempted,
-                  globalSucceeded: exec.succeeded
-                });
-              }
-            } else {
-              if (config.flags.enableVerboseSteps) {
-                logger.warn('Reflection: 补充计划生成失败或为空', {
-                  label: 'REFLECTION',
-                  runId
-                });
-              }
-            }
-          }
-        } catch (e) {
-          logger.error('Reflection: 完整性检查或补充执行异常', {
-            label: 'REFLECTION',
-            runId,
-            error: String(e)
-          });
-          // Reflection 失败不应阻止总结，继续执行
-        }
-      }
-
-      const enableSummary = config.flags?.enableSummary !== false;
-      emitRunEvent(runId, {
-        type: 'completed',
-        exec,
-        evaluation: enableEval ? evalObj : null,
-        summaryPending: enableSummary,
-        resultStream: true,
-        resultStatus: 'final'
-      });
-      await HistoryStore.append(runId, {
-        type: 'completed',
-        exec,
-        evaluation: enableEval ? evalObj : null,
-        summaryPending: enableSummary,
-        resultStream: true,
-        resultStatus: 'final'
-      });
-
-      if (enableSummary) {
-        // 总结步骤，支持失败反馈
-        const summaryResult = await summarizeToolHistory(runId, '', ctx);
-
-        if (!summaryResult.success && config.flags.enableVerboseSteps) {
-          logger.warn('总结步骤失败', {
-            label: 'RUN',
-            runId,
-            error: summaryResult.error,
-            attempts: summaryResult.attempts
-          });
         }
 
-        // 向后兼容：发送 summary 字符串
         const summary = summaryResult.summary || '';
         try { await HistoryStore.setSummary(runId, summary); } catch { }
 
-        // 发送总结事件，包含失败信息
         emitRunEvent(runId, {
           type: 'summary',
           summary,
           success: summaryResult.success,
           error: summaryResult.error,
-          attempts: summaryResult.attempts
+          attempts: summaryResult.attempts,
+          skipped: summaryResult.skipped === true,
+          reason: summaryResult.reason
         });
         await HistoryStore.append(runId, {
           type: 'summary',
           summary,
           success: summaryResult.success,
           error: summaryResult.error,
-          attempts: summaryResult.attempts
+          attempts: summaryResult.attempts,
+          skipped: summaryResult.skipped === true,
+          reason: summaryResult.reason
         });
       }
     } catch (e) {
       emitRunEvent(runId, { type: 'done', error: String(e) });
       await HistoryStore.append(runId, { type: 'done', error: String(e) });
     } finally {
-      const cancelled = isRunCancelled(runId);
-      try { markRunFinished(runId, { cancelled }); } catch { }
-      try { removeRun(runId); } catch { }
-      try { await sub.return?.(); } catch { }
-      try { RunEvents.close(runId); } catch { }
-      try { clearRunCancelled(runId); } catch { }
-    }
-  })();
-
-  try {
-    for await (const ev of sub) {
-      yield ev;
-      if (ev?.type === 'completed' || ev?.type === 'summary' || ev?.type === 'cancelled') break;
-    }
-  } finally {
-    const cancelled = isRunCancelled(runId);
-    try { markRunFinished(runId, { cancelled }); } catch { }
-    try { removeRun(runId); } catch { }
-    try { await sub.return?.(); } catch { }
-    try { RunEvents.close(runId); } catch { }
-    try { clearRunCancelled(runId); } catch { }
-  }
-}
-
-export async function* planThenExecuteStreamToolsXml({ objective, toolsXml, context = {}, mcpcore, conversation }) {
-  const runId = uuidv4();
-  const sub = RunEvents.subscribe(runId);
-  const ctx0 = (context && typeof context === 'object') ? context : {};
-  registerRunStart({ runId, channelId: ctx0.channelId, identityKey: ctx0.identityKey, objective });
-  const ctx = injectConcurrencyOverlay({ runId, objective, context: ctx0 });
-
-  (async () => {
-    try {
-      const sanitizedCtx = sanitizeContextForLog(ctx);
-      emitRunEvent(runId, { type: 'start', objective, context: sanitizedCtx });
-      await HistoryStore.append(runId, { type: 'start', objective, context: sanitizedCtx });
-
-      let manifest0 = buildPlanningManifest(mcpcore);
-
-      const judge = { need: true, summary: 'direct_tools_xml', toolNames: [], ok: true, forced: true };
-      const toolPreReplySingleSkipTools = Array.isArray(config.flags?.toolPreReplySingleSkipTools)
-        ? config.flags.toolPreReplySingleSkipTools
-        : [];
-      emitRunEvent(runId, {
-        type: 'judge',
-        need: true,
-        summary: judge.summary,
-        toolNames: judge.toolNames,
-        ok: true,
-        forced: true,
-        toolPreReplySingleSkipTools
+      await cleanupRuntimeRun({
+        runId,
+        sub,
+        isRunCancelled,
+        markRunFinished,
+        removeRun,
+        closeRunEvents: (rid) => RunEvents.close(rid),
+        clearRunCancelled,
+        context: ctx,
+        objective
       });
-      await HistoryStore.append(runId, {
-        type: 'judge',
-        need: true,
-        summary: judge.summary,
-        toolNames: judge.toolNames,
-        ok: true,
-        forced: true,
-        toolPreReplySingleSkipTools
-      });
-
-      const rawToolsXml = String(toolsXml || '').trim();
-      const calls = parseFunctionCalls(rawToolsXml, { format: (config.fcLlm?.format || 'sentra') });
-      const steps = (Array.isArray(calls) ? calls : [])
-        .filter((c) => c && typeof c === 'object')
-        .map((c) => ({
-          stepId: newStepId(),
-          aiName: String(c.name || '').trim(),
-          reason: ['direct_tools_xml'],
-          nextStep: '',
-          draftArgs: (c.arguments && typeof c.arguments === 'object') ? c.arguments : {},
-          dependsOnStepIds: undefined
-        }))
-        .filter((s) => s.aiName);
-
-      const plan0 = { manifest: manifest0, steps };
-      const plan = normalizePlanStepIds(plan0);
-      await HistoryStore.setPlan(runId, plan);
-      emitRunEvent(runId, { type: 'plan', plan });
-      await HistoryStore.append(runId, { type: 'plan', plan });
-
-      const exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
-
-      if (isRunCancelled(runId)) {
-        const summary = '本次运行已被上游取消（用户改主意），仅保留已完成的工具结果，不再继续评估与总结。';
-        try { await HistoryStore.setSummary(runId, summary); } catch { }
-        emitRunEvent(runId, { type: 'done', exec, cancelled: true });
-        await HistoryStore.append(runId, { type: 'done', exec, cancelled: true });
-        emitRunEvent(runId, { type: 'summary', summary, cancelled: true });
-        await HistoryStore.append(runId, { type: 'summary', summary, cancelled: true });
-        return;
-      }
-
-      const enableEval = config.flags?.enableEval !== false;
-      let evalObj = null;
-      if (enableEval) {
-        evalObj = await evaluateRun(objective, plan, exec, runId, ctx);
-      }
-
-      emitRunEvent(runId, { type: 'done', exec });
-      await HistoryStore.append(runId, { type: 'done', exec });
-
-      const enableSummary = config.flags?.enableSummary !== false;
-      emitRunEvent(runId, {
-        type: 'completed',
-        exec,
-        evaluation: enableEval ? evalObj : null,
-        summaryPending: enableSummary,
-        resultStream: true,
-        resultStatus: 'final'
-      });
-      await HistoryStore.append(runId, {
-        type: 'completed',
-        exec,
-        evaluation: enableEval ? evalObj : null,
-        summaryPending: enableSummary,
-        resultStream: true,
-        resultStatus: 'final'
-      });
-
-      if (enableSummary) {
-        const summaryResult = await summarizeToolHistory(runId, '', ctx);
-        const summary = summaryResult.summary || '';
-        try { await HistoryStore.setSummary(runId, summary); } catch { }
-        emitRunEvent(runId, {
-          type: 'summary',
-          summary,
-          success: summaryResult.success,
-          error: summaryResult.error,
-          attempts: summaryResult.attempts
-        });
-        await HistoryStore.append(runId, {
-          type: 'summary',
-          summary,
-          success: summaryResult.success,
-          error: summaryResult.error,
-          attempts: summaryResult.attempts
-        });
-      }
-    } catch (e) {
-      emitRunEvent(runId, { type: 'done', error: String(e) });
-      await HistoryStore.append(runId, { type: 'done', error: String(e) });
-    } finally {
-      const cancelled = isRunCancelled(runId);
-      try { markRunFinished(runId, { cancelled }); } catch { }
-      try { removeRun(runId); } catch { }
-      try { await sub.return?.(); } catch { }
-      try { RunEvents.close(runId); } catch { }
-      try { clearRunCancelled(runId); } catch { }
     }
   })();
 
@@ -2782,13 +4485,323 @@ export async function* planThenExecuteStreamToolsXml({ objective, toolsXml, cont
       if (ev?.type === 'completed' || ev?.type === 'summary') break;
     }
   } finally {
-    const cancelled = isRunCancelled(runId);
-    try { markRunFinished(runId, { cancelled }); } catch { }
-    try { removeRun(runId); } catch { }
-    try { await sub.return?.(); } catch { }
-    try { RunEvents.close(runId); } catch { }
-    try { clearRunCancelled(runId); } catch { }
+    await cleanupRuntimeRun({
+      runId,
+      sub,
+      isRunCancelled,
+      markRunFinished,
+      removeRun,
+      closeRunEvents: (rid) => RunEvents.close(rid),
+      clearRunCancelled,
+      context: ctx,
+      objective
+    });
+  }
+}
+
+export async function* planThenExecuteStreamToolsXml({ objective, toolsXml, context = {}, mcpcore, conversation }) {
+  const runId = resolveRuntimeRunId(context);
+  const sub = RunEvents.subscribe(runId);
+  const { ctx } = createRuntimeContext({
+    runId,
+    objective,
+    context,
+    registerRunStart,
+    injectConcurrencyOverlay
+  });
+  const runtimeControl = resolveRuntimeControl(ctx);
+
+  (async () => {
+    try {
+      await emitRunStart({
+        runId,
+        objective,
+        context: ctx,
+        sanitizeContextForLog,
+        emitRunEvent,
+        historyStore: HistoryStore
+      });
+      if (runtimeControl.enabled) {
+        const runtimeControlEvent = {
+          type: 'runtime_control',
+          phase: 'plan_then_execute_stream_tools_xml',
+          reason: String(runtimeControl.reason || ''),
+          singlePass: runtimeControl.singlePass === true,
+          skipEvaluation: runtimeControl.skipEvaluation === true,
+          skipSummary: runtimeControl.skipSummary === true,
+          disableAdaptive: runtimeControl.disableAdaptive === true,
+          disablePlanRepair: runtimeControl.disablePlanRepair === true,
+          disableArgFixRetry: runtimeControl.disableArgFixRetry === true
+        };
+        emitRunEvent(runId, runtimeControlEvent);
+        await HistoryStore.append(runId, runtimeControlEvent);
+      }
+
+      let manifest0 = buildPlanningManifest(mcpcore);
+
+      const judge = { need: true, summary: 'direct_tools_xml', toolNames: [], ok: true, forced: true };
+      emitRunEvent(runId, {
+        type: 'judge',
+        need: true,
+        summary: judge.summary,
+        toolNames: judge.toolNames,
+        ok: true,
+        forced: true
+      });
+      await HistoryStore.append(runId, {
+        type: 'judge',
+        need: true,
+        summary: judge.summary,
+        toolNames: judge.toolNames,
+        ok: true,
+        forced: true
+      });
+      const toolGateEvent = buildToolGateEvent({ judge, manifest: manifest0 });
+      emitRunEvent(runId, toolGateEvent);
+      await HistoryStore.append(runId, toolGateEvent);
+
+      const rawToolsXml = String(toolsXml || '').trim();
+      const calls = parseFunctionCalls(rawToolsXml, { format: (config.fcLlm?.format || 'sentra') });
+      const steps = (Array.isArray(calls) ? calls : [])
+        .filter((c) => c && typeof c === 'object')
+        .map((c) => {
+          const rawName = String(c.name || '').trim();
+          const isTerminal = rawName === TERMINAL_RUNTIME_ACTION
+            || rawName === TERMINAL_RUNTIME_AI_NAME;
+          return {
+            stepId: newStepId(),
+            aiName: isTerminal ? TERMINAL_RUNTIME_AI_NAME : rawName,
+            executor: isTerminal ? 'sandbox' : 'mcp',
+            actionRef: isTerminal ? TERMINAL_RUNTIME_ACTION : undefined,
+            reason: ['direct_tools_xml'],
+            nextStep: '',
+            draftArgs: (c.arguments && typeof c.arguments === 'object') ? c.arguments : {},
+            dependsOnStepIds: undefined
+          };
+        })
+        .filter((s) => s.aiName);
+
+      const plan0 = { manifest: manifest0, steps };
+      const plan = normalizePlanStepIds(plan0);
+      await HistoryStore.setPlan(runId, plan);
+      emitRunEvent(runId, { type: 'plan', plan });
+      await HistoryStore.append(runId, { type: 'plan', plan });
+      if (isPlanEmpty(plan)) {
+        logger.info('Direct tools xml produced empty steps; finish as no-tools run', { label: 'PLAN', runId, reason: 'empty_plan_short_circuit' });
+        const noToolsResultEvent = buildNoToolsResultGroupEvent({
+          reasonCode: NO_TOOL_REASON_CODE.emptyDirectToolsPlan,
+          reason: 'Direct tools XML produced no executable calls',
+          summary: 'No tool invocation was required for this run (empty direct tools plan).'
+        });
+        emitRunEvent(runId, noToolsResultEvent);
+        await HistoryStore.append(runId, noToolsResultEvent);
+        const exec = { used: [], attempted: 0, succeeded: 0, successRate: 1 };
+        emitRunEvent(runId, { type: 'done', exec });
+        await HistoryStore.append(runId, { type: 'done', exec });
+        const summary = 'No tool invocation was required for this run (empty direct tools plan).';
+        try { await HistoryStore.setSummary(runId, summary); } catch { }
+        emitRunEvent(runId, { type: 'summary', summary });
+        await HistoryStore.append(runId, { type: 'summary', summary });
+        return;
+      }
+
+      let exec = await executePlan(runId, objective, mcpcore, plan, { conversation, context: ctx });
+      let activePlan = plan;
+      let activeObjective = objective;
+      let adaptiveRoundsUsed = 0;
+
+      let runtimeDirective = (exec && typeof exec === 'object' && exec.runtimeDirective && typeof exec.runtimeDirective === 'object')
+        ? exec.runtimeDirective
+        : null;
+
+      if (!runtimeControl.disableAdaptive && runtimeDirective && (runtimeDirective.action === 'replan' || runtimeDirective.action === 'supplement')) {
+        adaptiveRoundsUsed = 1;
+        activeObjective = buildRuntimeAdaptiveObjective({
+          baseObjective: objective,
+          runtimeDirective,
+          round: adaptiveRoundsUsed
+        });
+        activePlan = await runPlanStage({
+          objective: activeObjective,
+          mcpcore,
+          context: {
+            ...ctx,
+            adaptiveRound: adaptiveRoundsUsed,
+            adaptiveAction: runtimeDirective.action,
+            previousRuntimeDirective: runtimeDirective,
+            previousObjective: objective
+          },
+          conversation,
+          runId,
+          judge,
+          generatePlanFn: generatePlan,
+          normalizePlanFn: normalizePlanStepIds
+        });
+        await HistoryStore.setPlan(runId, activePlan);
+        emitRunEvent(runId, {
+          type: 'plan',
+          plan: activePlan,
+          adaptive: true,
+          adaptiveRound: adaptiveRoundsUsed,
+          adaptiveAction: runtimeDirective.action,
+          runtimeDriven: true,
+        });
+        await HistoryStore.append(runId, {
+          type: 'plan',
+          plan: activePlan,
+          adaptive: true,
+          adaptiveRound: adaptiveRoundsUsed,
+          adaptiveAction: runtimeDirective.action,
+          runtimeDriven: true,
+        });
+
+        exec = await executePlan(runId, activeObjective, mcpcore, activePlan, {
+          conversation,
+          context: ctx,
+          runtimeSignalCursorTs: Number(exec?.runtimeSignalCursorTs || 0),
+          runtimeSignalGeneration: Number(exec?.runtimeSignalGeneration || 0),
+          runtimeSignalSeq: Number(exec?.runtimeSignalSeq || 0)
+        });
+        runtimeDirective = (exec && typeof exec === 'object' && exec.runtimeDirective && typeof exec.runtimeDirective === 'object')
+          ? exec.runtimeDirective
+          : runtimeDirective;
+      }
+
+      if (isRunCancelled(runId)) {
+        const summary = String(runtimeDirective?.reason || 'Run cancelled by upstream request (user intent changed). Preserve completed tool results only.');
+        await emitCancelledTerminalEvents({ runId, exec, summary });
+        return;
+      }
+
+      let evalObj = null;
+      let finalAction = 'perfect';
+      if (runtimeControl.skipEvaluation) {
+        evalObj = buildSkippedEvalResult(runtimeControl.reason || 'runtime_control_skip_evaluation');
+        const evSkipped = {
+          type: 'evaluation_skipped',
+          reason: String(runtimeControl.reason || 'runtime_control_skip_evaluation')
+        };
+        emitRunEvent(runId, evSkipped);
+        await HistoryStore.append(runId, evSkipped);
+      } else {
+        const currentRound = 1;
+        const feedbackSinceTsBase = Number(exec?.runtimeSignalCursorTs || 0);
+        const roundResult = await runFeedbackEvaluationRound({
+          runId,
+          objective: activeObjective,
+          plan: activePlan,
+          exec,
+          context: ctx,
+          round: currentRound,
+          sinceTs: feedbackSinceTsBase,
+          adaptiveRoundsUsed,
+          maxAdaptiveRounds: runtimeControl.disableAdaptive ? adaptiveRoundsUsed : 1,
+          waitForAssistantFeedbackBatches,
+          runEvaluateStage,
+          normalizeEvalAction,
+          emitRunEvent,
+          historyStore: HistoryStore
+        });
+        evalObj = roundResult.evalObj;
+        finalAction = roundResult.finalAction;
+      }
+
+      emitRunEvent(runId, { type: 'done', exec });
+      await HistoryStore.append(runId, { type: 'done', exec });
+
+      const enableSummary = config.flags?.enableSummary !== false && !runtimeControl.skipSummary;
+      const summarySkipped = enableSummary && shouldSkipSummaryByEval(evalObj);
+      emitRunEvent(runId, {
+        type: 'completed',
+        exec,
+        evaluation: evalObj,
+        finalAction,
+        adaptiveRoundsUsed,
+        summaryPending: enableSummary && !summarySkipped,
+        resultStream: true,
+        resultStatus: 'final'
+      });
+      await HistoryStore.append(runId, {
+        type: 'completed',
+        exec,
+        evaluation: evalObj,
+        finalAction,
+        adaptiveRoundsUsed,
+        summaryPending: enableSummary && !summarySkipped,
+        resultStream: true,
+        resultStatus: 'final'
+      });
+
+      if (enableSummary) {
+        const summaryResult = summarySkipped
+          ? {
+            success: true,
+            summary: String(evalObj?.summary || ''),
+            skipped: true,
+            reason: 'evaluation_success'
+          }
+          : await summarizeToolHistory(runId, '', ctx);
+        const summary = summaryResult.summary || '';
+        try { await HistoryStore.setSummary(runId, summary); } catch { }
+        emitRunEvent(runId, {
+          type: 'summary',
+          summary,
+          success: summaryResult.success,
+          error: summaryResult.error,
+          attempts: summaryResult.attempts,
+          skipped: summaryResult.skipped === true,
+          reason: summaryResult.reason
+        });
+        await HistoryStore.append(runId, {
+          type: 'summary',
+          summary,
+          success: summaryResult.success,
+          error: summaryResult.error,
+          attempts: summaryResult.attempts,
+          skipped: summaryResult.skipped === true,
+          reason: summaryResult.reason
+        });
+      }
+    } catch (e) {
+      emitRunEvent(runId, { type: 'done', error: String(e) });
+      await HistoryStore.append(runId, { type: 'done', error: String(e) });
+    } finally {
+      await cleanupRuntimeRun({
+        runId,
+        sub,
+        isRunCancelled,
+        markRunFinished,
+        removeRun,
+        closeRunEvents: (rid) => RunEvents.close(rid),
+        clearRunCancelled,
+        context: ctx,
+        objective
+      });
+    }
+  })();
+
+  try {
+    for await (const ev of sub) {
+      yield ev;
+      if (ev?.type === 'completed' || ev?.type === 'summary') break;
+    }
+  } finally {
+    await cleanupRuntimeRun({
+      runId,
+      sub,
+      isRunCancelled,
+      markRunFinished,
+      removeRun,
+      closeRunEvents: (rid) => RunEvents.close(rid),
+      clearRunCancelled,
+      context: ctx,
+      objective
+    });
   }
 }
 
 export default { generatePlan, executePlan, evaluateRun, planThenExecute, planThenExecuteStream };
+
+
+
+

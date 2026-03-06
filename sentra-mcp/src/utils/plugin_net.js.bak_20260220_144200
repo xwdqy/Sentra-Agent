@@ -1,0 +1,42 @@
+import { httpRequestWithRetry } from './http.js';
+import logger from '../logger/index.js';
+
+export async function fetchBinaryWithRetry(url, options = {}) {
+  const {
+    timeoutMs = 60000,
+    retries = 2,
+    retryBaseMs = 800,
+    retryMaxMs = 6000,
+    retryJitterMs = 200,
+    tag = 'plugin',
+    headers,
+    validateStatus = () => true,
+    responseType = 'arraybuffer',
+  } = options || {};
+
+  return httpRequestWithRetry({
+    method: 'GET',
+    url,
+    timeoutMs,
+    headers,
+    responseType,
+    validateStatus,
+  }, {
+    retries,
+    retryBaseMs,
+    retryMaxMs,
+    retryJitterMs,
+    validateResponse: (resp) => Number(resp?.status) >= 200 && Number(resp?.status) < 300,
+    onRetry: ({ attempt, delayMs, error }) => {
+      logger.warn?.(`${String(tag || 'plugin')}:fetch_retry`, {
+        label: 'PLUGIN',
+        attempt,
+        delayMs,
+        url: String(url || '').slice(0, 140),
+        error: String(error?.message || error),
+      });
+    },
+  });
+}
+
+export default { fetchBinaryWithRetry };

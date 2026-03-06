@@ -1,0 +1,392 @@
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { PROJECT_ROOT } from '../agent/workspace/hash.js';
+import { getArtifactRootDir, upsertArtifact } from '../agent/workspace/registry.js';
+import { truncateTextByTokens } from './tokenizer.js';
+
+const RESULT_CONTRACT_VERSION = 'sentra.tool_result.v2';
+
+function sanitizeToken(raw, fallback = 'x', maxLen = 48) {
+  const s = String(raw || '').trim().replace(/[^a-zA-Z0-9._-]/g, '_');
+  if (!s) return fallback;
+  return s.length > maxLen ? s.slice(0, maxLen) : s;
+}
+
+function escapeXmlText(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function toAbsPathMaybe(raw) {
+  const s0 = String(raw || '').trim();
+  if (!s0) return null;
+  let s = s0;
+
+  if (s.startsWith('file://')) {
+    try {
+      const url = new URL(s);
+      if (url.protocol === 'file:') {
+        s = decodeURIComponent(url.pathname || '');
+        if (/^\/[a-zA-Z]:\//.test(s)) s = s.slice(1);
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  if (/^[a-zA-Z]:[\\/]/.test(s)) return path.resolve(s);
+  if (s.startsWith('/')) return path.resolve(s);
+
+  const rel = s.replace(/^\.?[\\/]/, '');
+  if (rel.startsWith('artifacts/') || rel.startsWith('artifacts\\')) {
+    return path.resolve(PROJECT_ROOT, rel);
+  }
+
+  return null;
+}
+
+function collectPathLikeStrings(input, out, depth = 0) {
+  if (depth > 6 || out.size > 128) return;
+  if (typeof input === 'string') {
+    const s = input.trim();
+    if (!s) return;
+    out.add(s);
+    const linkRe = /\[[^\]]*\]\(([^)]+)\)/g;
+    let m;
+    while ((m = linkRe.exec(s)) !== null) {
+      if (m[1]) out.add(String(m[1]).trim());
+    }
+    return;
+  }
+  if (Array.isArray(input)) {
+    for (const it of input) collectPathLikeStrings(it, out, depth + 1);
+    return;
+  }
+  if (input && typeof input === 'object') {
+    for (const v of Object.values(input)) collectPathLikeStrings(v, out, depth + 1);
+  }
+}
+
+function extractLocalPaths(value) {
+  const raws = new Set();
+  collectPathLikeStrings(value, raws, 0);
+  const out = [];
+  for (const raw of raws) {
+    const abs = toAbsPathMaybe(raw);
+    if (!abs) continue;
+    if (!fs.existsSync(abs)) continue;
+    out.push(path.resolve(abs));
+  }
+  return Array.from(new Set(out));
+}
+
+async function ensureDir(dirPath) {
+  await fsp.mkdir(path.resolve(String(dirPath || '')), { recursive: true });
+}
+
+async function writeJson(filePath, value) {
+  await ensureDir(path.dirname(filePath));
+  await fsp.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
+}
+
+async function writeText(filePath, text) {
+  await ensureDir(path.dirname(filePath));
+  await fsp.writeFile(filePath, String(text || ''), 'utf8');
+}
+
+function clipText(s, maxTokens = 320) {
+  const str = String(s || '');
+  const out = truncateTextByTokens(str, {
+    maxTokens,
+    suffix: '...'
+  });
+  return out.text;
+}
+
+function resolveToolKind(aiName) {
+  const n = String(aiName || '').toLowerCase();
+  if (n.includes('search') || n.includes('web_parser') || n.includes('github_repo') || n.includes('bilibili')) return 'search';
+  if (n.includes('image') || n.includes('draw') || n.includes('vision')) return 'image';
+  if (n.includes('video')) return 'video';
+  if (n.includes('audio') || n.includes('music') || n.includes('transcribe') || n.includes('suno')) return 'audio';
+  if (n.includes('qq') || n.includes('rpc') || n.includes('message')) return 'messaging';
+  if (n.includes('sandbox') || n.includes('exec')) return 'exec';
+  if (n.includes('document') || n.includes('file')) return 'document';
+  if (n.includes('weather')) return 'weather';
+  return 'generic';
+}
+
+function extractSemanticHint(args, result) {
+  const candidates = [];
+  const push = (v) => {
+    const s = sanitizeToken(v, '', 28);
+    if (s) candidates.push(s);
+  };
+  if (args && typeof args === 'object') {
+    push(args.query);
+    push(args.q);
+    push(args.keyword);
+    push(args.prompt);
+    push(args.url);
+    push(args.title);
+  }
+  if (result && typeof result === 'object') {
+    push(result.code);
+  }
+  return candidates[0] || '';
+}
+
+function toRefRow(artifact) {
+  return {
+    uuid: String(artifact?.artifactId || ''),
+    artifactId: String(artifact?.artifactId || ''),
+    type: String(artifact?.type || ''),
+    role: String(artifact?.role || ''),
+    path: String(artifact?.absPath || ''),
+    hash: String(artifact?.hash || ''),
+    hashMode: String(artifact?.hashMode || ''),
+    size: Number.isFinite(Number(artifact?.size)) ? Number(artifact.size) : null,
+    source: String(artifact?.source || ''),
+  };
+}
+
+async function upsertFileArtifact(record) {
+  try {
+    const saved = await upsertArtifact(record);
+    return toRefRow(saved);
+  } catch {
+    return null;
+  }
+}
+
+function toResultErrorText(result) {
+  if (!result || typeof result !== 'object') return '';
+  const err = result.error;
+  if (!err) return '';
+  if (typeof err === 'string') return err;
+  if (typeof err?.message === 'string') return err.message;
+  return clipText(JSON.stringify(err), 1000);
+}
+
+function normalizeAbsArtifactPath(raw) {
+  const input = String(raw || '').trim();
+  if (!input) return '';
+  const detected = toAbsPathMaybe(input);
+  if (detected) return path.resolve(detected);
+  if (/^[a-zA-Z]:[\\/]/.test(input) || input.startsWith('/')) return path.resolve(input);
+  return path.resolve(PROJECT_ROOT, input.replace(/^\.?[\\/]/, ''));
+}
+
+function normalizeRef(r = {}) {
+  return {
+    uuid: String(r?.uuid || r?.artifactId || ''),
+    path: normalizeAbsArtifactPath(r?.path || r?.absPath || ''),
+    type: String(r?.type || ''),
+    role: String(r?.role || ''),
+    hash: String(r?.hash || ''),
+    size: Number.isFinite(Number(r?.size)) ? Number(r.size) : null,
+  };
+}
+
+export function buildToolResultContract(result = {}) {
+  const refsRaw = Array.isArray(result?.artifacts) ? result.artifacts : [];
+  const refs = refsRaw.map((x) => normalizeRef(x)).filter((x) => x.uuid || x.path);
+  const resultRef = refs.find((x) => x.role === 'tool_result')
+    || refs.find((x) => x.role === 'tool_data')
+    || refs.find((x) => x.role === 'tool_summary')
+    || refs[0]
+    || null;
+  const artifactUuids = Array.from(new Set(refs.map((x) => String(x.uuid || '')).filter(Boolean)));
+  return {
+    version: RESULT_CONTRACT_VERSION,
+    success: result?.success === true,
+    code: String(result?.code || ''),
+    provider: String(result?.provider || ''),
+    error: toResultErrorText(result),
+    resultRef,
+    artifactUuids,
+    artifacts: refs
+  };
+}
+
+function renderToolResultContractXml(contract = {}) {
+  const c = (contract && typeof contract === 'object') ? contract : {};
+  const lines = [];
+  lines.push(
+    `<tool-result-contract version="${escapeXmlText(String(c.version || RESULT_CONTRACT_VERSION))}" success="${escapeXmlText(String(c.success === true))}" code="${escapeXmlText(String(c.code || ''))}" provider="${escapeXmlText(String(c.provider || ''))}">`
+  );
+  const ref = c.resultRef && typeof c.resultRef === 'object' ? c.resultRef : null;
+  if (ref) {
+    lines.push(
+      `  <result_ref uuid="${escapeXmlText(String(ref.uuid || ''))}" path="${escapeXmlText(String(ref.path || ''))}" type="${escapeXmlText(String(ref.type || ''))}" role="${escapeXmlText(String(ref.role || ''))}" hash="${escapeXmlText(String(ref.hash || ''))}" size="${escapeXmlText(String(ref.size ?? ''))}" />`
+    );
+  } else {
+    lines.push('  <result_ref />');
+  }
+  lines.push('  <artifact_uuids>');
+  for (const u of (Array.isArray(c.artifactUuids) ? c.artifactUuids : [])) {
+    lines.push(`    <uuid>${escapeXmlText(String(u || ''))}</uuid>`);
+  }
+  lines.push('  </artifact_uuids>');
+  if (c.error) lines.push(`  <error>${escapeXmlText(String(c.error || ''))}</error>`);
+  lines.push('</tool-result-contract>');
+  return lines.join('\n');
+}
+
+export async function persistToolArtifacts({
+  runId,
+  stepIndex,
+  stepId,
+  aiName,
+  args,
+  result
+} = {}) {
+  const rid = sanitizeToken(runId || 'adhoc_run', 'adhoc_run', 64);
+  const sid = sanitizeToken(stepId || `step_${Number.isFinite(Number(stepIndex)) ? Number(stepIndex) : 0}`, 'step_0', 64);
+  const safeTool = sanitizeToken(aiName || 'tool', 'tool', 64);
+  const toolKind = resolveToolKind(aiName);
+  const semanticHint = extractSemanticHint(args, result);
+  const ts = Date.now();
+
+  const artifactRoot = getArtifactRootDir();
+  const outputDir = path.join(artifactRoot, 'runs', rid, 'outputs');
+  await ensureDir(outputDir);
+
+  const hintPart = semanticHint ? `_${semanticHint}` : '';
+  const prefix = `${ts}_${toolKind}_${safeTool}${hintPart}_${sid}`;
+  const argsPath = path.join(outputDir, `${prefix}_args.json`);
+  const rawResultPath = path.join(outputDir, `${prefix}_raw_result.json`);
+  const summaryPath = path.join(outputDir, `${prefix}_summary.txt`);
+
+  await writeJson(argsPath, args || {});
+  await writeJson(rawResultPath, result || {});
+  await writeText(summaryPath, [
+    `runId=${rid}`,
+    `stepId=${sid}`,
+    `stepIndex=${Number.isFinite(Number(stepIndex)) ? Number(stepIndex) : 0}`,
+    `aiName=${safeTool}`,
+    `toolKind=${toolKind}`,
+    `success=${String(result?.success === true)}`,
+    `code=${String(result?.code || '')}`,
+    `provider=${String(result?.provider || '')}`,
+    `error=${clipText(toResultErrorText(result))}`,
+  ].join('\n'));
+
+  const refs = [];
+  const common = {
+    runId: rid,
+    stepId: sid,
+    source: 'tool_output',
+    dependsOn: [sid],
+    metadata: {
+      stepIndex: Number.isFinite(Number(stepIndex)) ? Number(stepIndex) : 0,
+      aiName: safeTool,
+      toolKind
+    }
+  };
+
+  const argsRef = await upsertFileArtifact({
+    ...common,
+    type: 'tool_io',
+    role: 'tool_args',
+    path: argsPath,
+    summary: `tool args for ${safeTool}`,
+  });
+  if (argsRef) refs.push(argsRef);
+
+  const rawRef = await upsertFileArtifact({
+    ...common,
+    type: 'tool_io',
+    role: 'tool_result',
+    path: rawResultPath,
+    summary: `tool result for ${safeTool}`,
+  });
+  if (rawRef) refs.push(rawRef);
+
+  const sumRef = await upsertFileArtifact({
+    ...common,
+    type: 'tool_io',
+    role: 'tool_summary',
+    path: summaryPath,
+    summary: `tool summary for ${safeTool}`,
+  });
+  if (sumRef) refs.push(sumRef);
+
+  const data = result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'data')
+    ? result.data
+    : result;
+  if (data !== undefined && data !== null) {
+    const ext = typeof data === 'string' ? '.txt' : '.json';
+    const dataPath = path.join(outputDir, `${prefix}_data${ext}`);
+    if (typeof data === 'string') await writeText(dataPath, data);
+    else await writeJson(dataPath, data);
+    const dataRef = await upsertFileArtifact({
+      ...common,
+      type: 'tool_payload',
+      role: 'tool_data',
+      path: dataPath,
+      summary: `tool data payload for ${safeTool}`,
+    });
+    if (dataRef) refs.push(dataRef);
+  }
+
+  const referencedPaths = extractLocalPaths(result).slice(0, 48);
+  for (const abs of referencedPaths) {
+    const ref = await upsertFileArtifact({
+      ...common,
+      type: 'tool_file_ref',
+      role: 'file_ref',
+      path: abs,
+      source: 'tool_output_ref',
+      summary: `file ref from ${safeTool}: ${abs}`,
+    });
+    if (ref) refs.push(ref);
+  }
+
+  const contract = buildToolResultContract({
+    success: result?.success === true,
+    code: String(result?.code || ''),
+    provider: String(result?.provider || ''),
+    error: toResultErrorText(result),
+    artifacts: refs
+  });
+  const contractJsonPath = path.join(outputDir, `${prefix}_contract.json`);
+  const contractXmlPath = path.join(outputDir, `${prefix}_contract.xml`);
+  await writeJson(contractJsonPath, contract);
+  await writeText(contractXmlPath, renderToolResultContractXml(contract));
+
+  const contractJsonRef = await upsertFileArtifact({
+    ...common,
+    type: 'tool_contract',
+    role: 'tool_contract_json',
+    path: contractJsonPath,
+    summary: `tool contract json for ${safeTool}`,
+  });
+  if (contractJsonRef) refs.push(contractJsonRef);
+
+  const contractXmlRef = await upsertFileArtifact({
+    ...common,
+    type: 'tool_contract',
+    role: 'tool_contract_xml',
+    path: contractXmlPath,
+    summary: `tool contract xml for ${safeTool}`,
+  });
+  if (contractXmlRef) refs.push(contractXmlRef);
+
+  return {
+    outputDir: path.resolve(outputDir),
+    toolKind,
+    artifacts: refs,
+    contract
+  };
+}
+
+export default {
+  persistToolArtifacts,
+  buildToolResultContract
+};

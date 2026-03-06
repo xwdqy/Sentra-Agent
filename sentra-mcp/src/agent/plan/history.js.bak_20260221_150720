@@ -1,0 +1,331 @@
+import { HistoryStore } from '../../history/store.js';
+import { clip } from '../../utils/text.js';
+import { formatSentraToolCall, formatSentraResult } from '../../utils/fc.js';
+import { listArtifacts } from '../workspace/registry.js';
+import fs from 'node:fs/promises';
+
+/**
+ * 格式化 reason 数组为字符串（用于显示）
+ * - 数组：用 '; ' 连接
+ * - 其他：返回空字符串
+ */
+function formatReason(reason) {
+  if (Array.isArray(reason) && reason.length > 0) {
+    return reason.join('; ');
+  }
+  return '';
+}
+
+const MAX_DEP_ARTIFACTS_PER_STEP = 8;
+const MAX_DEP_ARTIFACT_PREVIEW_CHARS = 1800;
+
+function escapeXmlText(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function toCDataText(v) {
+  return String(v ?? '').replace(/]]>/g, ']]]]><![CDATA[>');
+}
+
+async function readTextPreview(absPath, maxChars = MAX_DEP_ARTIFACT_PREVIEW_CHARS) {
+  try {
+    const data = await fs.readFile(String(absPath || ''));
+    const sample = data.length > (maxChars * 2) ? data.subarray(0, maxChars * 2) : data;
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    const text = decoder.decode(sample);
+    if (text.includes('\u0000')) return '';
+    return clip(text, maxChars);
+  } catch {
+    return '';
+  }
+}
+
+async function buildDependencyArtifactContext(runId, stepIds = [], useFC = false) {
+  const deps = Array.isArray(stepIds)
+    ? stepIds.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean)
+    : [];
+  if (!deps.length) return '';
+
+  const all = [];
+  for (const sid of deps) {
+    const artifacts = await listArtifacts(runId, sid);
+    const arr = Array.isArray(artifacts) ? artifacts.slice(0, MAX_DEP_ARTIFACTS_PER_STEP) : [];
+    for (const a of arr) {
+      const preview = await readTextPreview(a?.absPath, MAX_DEP_ARTIFACT_PREVIEW_CHARS);
+      all.push({
+        stepId: sid,
+        uuid: String(a?.artifactId || ''),
+        role: String(a?.role || ''),
+        type: String(a?.type || ''),
+        path: String(a?.absPath || ''),
+        relPath: String(a?.relPath || ''),
+        hash: String(a?.hash || ''),
+        size: Number.isFinite(Number(a?.size)) ? Number(a.size) : null,
+        summary: String(a?.summary || ''),
+        preview: String(preview || ''),
+      });
+    }
+  }
+  if (!all.length) return '';
+
+  if (!useFC) {
+    return `\n依赖产物(JSON):\n${JSON.stringify(all, null, 2)}`;
+  }
+
+  const lines = [];
+  lines.push('<artifact-context>');
+  for (const a of all) {
+    lines.push(
+      `  <artifact step_id="${escapeXmlText(a.stepId)}" uuid="${escapeXmlText(a.uuid)}" role="${escapeXmlText(a.role)}" type="${escapeXmlText(a.type)}" path="${escapeXmlText(a.path)}" rel_path="${escapeXmlText(a.relPath)}" hash="${escapeXmlText(a.hash)}" size="${escapeXmlText(a.size == null ? '' : String(a.size))}">`
+    );
+    if (a.summary) lines.push(`    <summary>${escapeXmlText(a.summary)}</summary>`);
+    if (a.preview) {
+      lines.push('    <preview><![CDATA[');
+      lines.push(`      ${toCDataText(a.preview)}`);
+      lines.push('    ]]></preview>');
+    }
+    lines.push('  </artifact>');
+  }
+  lines.push('</artifact-context>');
+  return lines.join('\n');
+}
+
+function renderResultArtifactRefsXml(result) {
+  const refs = Array.isArray(result?.artifacts) ? result.artifacts : [];
+  if (!refs.length) return '';
+  const lines = [];
+  lines.push('<artifacts>');
+  for (const r of refs.slice(0, 12)) {
+    lines.push(
+      `  <artifact uuid="${escapeXmlText(String(r?.uuid || r?.artifactId || ''))}" path="${escapeXmlText(String(r?.path || ''))}" rel_path="${escapeXmlText(String(r?.relPath || ''))}" type="${escapeXmlText(String(r?.type || ''))}" role="${escapeXmlText(String(r?.role || ''))}" hash="${escapeXmlText(String(r?.hash || ''))}" size="${escapeXmlText(String(r?.size ?? ''))}" />`
+    );
+  }
+  lines.push('</artifacts>');
+  return lines.join('\n');
+}
+
+// 中文：构造“工具对话式上下文”，把所有已完成的步骤整理成一问一答：
+// user: 现在该使用 <aiName> 了
+// assistant: 参数(JSON): {...}\n结果(JSON): {...}
+
+// 中文：返回可直接拼接到 user 消息末尾的依赖文本（而不是单独的 assistant 轮次），以保持 user/assistant 交替结构
+/**
+ * @param {Object} options
+ * @param {string} options.runId - Run ID
+ * @param {Array<string>} options.dependsOnStepIds - Dependency stepIds
+ * @param {boolean} options.useFC - Use Sentra XML format (FC mode)
+ */
+export async function buildDependentContextText(runId, dependsOnStepIds = [], useFC = false) {
+  if (!Array.isArray(dependsOnStepIds) || dependsOnStepIds.length === 0) return '';
+  try {
+    const raw = Array.from(new Set(dependsOnStepIds));
+    const ids = raw
+      .map((x) => (typeof x === 'string' ? x.trim() : ''))
+      .filter(Boolean);
+    if (ids.length === 0) return '';
+    const history = await HistoryStore.list(runId, 0, -1);
+    const plan = await HistoryStore.getPlan(runId);
+    // 取每个 stepId 的“最新” tool_result
+    const lastByStepId = new Map();
+    for (const h of history) {
+      if (h.type !== 'tool_result') continue;
+      if (typeof h.stepId === 'string' && h.stepId.trim()) {
+        lastByStepId.set(h.stepId.trim(), h);
+      }
+    }
+    const items = [];
+    for (const sid of ids) {
+      const h = lastByStepId.get(sid);
+      if (!h) continue;
+      const idx = Number(h.plannedStepIndex);
+      const r = (Number.isFinite(idx) && plan?.steps && plan.steps[idx]) ? plan.steps[idx].reason : '';
+      items.push({ idx, h, reason: r });
+    }
+    if (!items.length) return '';
+
+    const artifactContextText = await buildDependencyArtifactContext(runId, ids, useFC);
+    // FC 模式：使用 Sentra XML 格式（返回完整的上游参数与结果，避免信息丢失）
+    if (useFC) {
+      const xmlResults = items.map(({ idx, h, reason }) =>
+        formatSentraResult({
+          stepIndex: idx, // XML 中仍使用 step 属性
+          stepId: h?.stepId,
+          aiName: h.aiName,
+          reason,
+          args: h.args,
+          result: h.result
+        })
+      ).join('\n\n');
+      return `${[xmlResults, artifactContextText].filter(Boolean).join('\n\n')}`;
+    }
+    
+    // 默认：JSON 格式
+    const jsonItems = items.map(({ idx, h, reason }) => ({
+      plannedStepIndex: idx,
+      stepId: h?.stepId,
+      aiName: h.aiName,
+      reason: clip(reason),
+      argsPreview: clip(h.args),
+      resultPreview: clip((h.result?.resultRef?.path || h.result?.data) ?? h.result),
+    }));
+    return [`\n依赖结果(JSON):\n${JSON.stringify(jsonItems, null, 2)}`, artifactContextText].filter(Boolean).join('\n');
+  } catch {
+    return '';
+  }
+}
+/**
+ * Build tool dialogue messages
+ * @param {string} runId - Run ID
+ * @param {number} upToStepIndex - Up to step index
+ * @param {boolean} useFC - Use Sentra XML format (FC mode)
+ * @param {boolean} includeCurrentStep - 重试模式：包含当前步骤的失败历史（默认 false）
+ */
+export async function buildToolDialogueMessages(runId, upToStepIndex, useFC = false, includeCurrentStep = false) {
+  try {
+    const history = await HistoryStore.list(runId, 0, -1);
+    const plan = await HistoryStore.getPlan(runId);
+    
+    // 🔧 修复并发问题：只包含依赖链上的步骤，避免并发分支污染
+    const currentStep = plan?.steps?.[upToStepIndex];
+    const dependsOnStepIds = Array.isArray(currentStep?.dependsOnStepIds) ? currentStep.dependsOnStepIds : [];
+    
+    // 构建依赖链（包括间接依赖）
+    const dependencyChain = new Set();
+    const planStepIdToIdx = new Map((plan?.steps || []).map((s, idx) => [typeof s?.stepId === 'string' ? s.stepId : '', idx]).filter(([k]) => k));
+    const addDependencies = (stepIdx) => {
+      if (dependencyChain.has(stepIdx)) return;
+      dependencyChain.add(stepIdx);
+      const step = plan?.steps?.[stepIdx];
+      const deps = Array.isArray(step?.dependsOnStepIds) ? step.dependsOnStepIds : [];
+      for (const sid of deps) {
+        const k = typeof sid === 'string' ? sid.trim() : '';
+        const idx = planStepIdToIdx.get(k);
+        if (Number.isFinite(idx) && idx >= 0 && idx < upToStepIndex) {
+          addDependencies(idx);
+        }
+      }
+    };
+    dependsOnStepIds.forEach((sid) => {
+      const k = typeof sid === 'string' ? sid.trim() : '';
+      const idx = planStepIdToIdx.get(k);
+      if (Number.isFinite(idx) && idx >= 0 && idx < upToStepIndex) {
+        addDependencies(idx);
+      }
+    });
+    
+    // 选择策略：
+    // - 若声明了 dependsOnStepIds（dependencyChain 非空），仅包含依赖链上的“最新”步骤历史
+    // - 若未声明 dependsOnStepIds（dependencyChain 为空），回退到包含所有之前步骤（idx < upToStepIndex）的“最新”历史
+    // 先构建每个索引的“最新” tool_result 映射
+    const lastByIndex = new Map();
+    for (const h of history) {
+      if (h.type !== 'tool_result') continue;
+      const idx = Number(h.plannedStepIndex);
+      if (!Number.isFinite(idx)) continue;
+      lastByIndex.set(idx, h);
+    }
+    const allowed = new Set();
+    for (let i = 0; i < upToStepIndex; i++) {
+      if (dependencyChain.size > 0) {
+        if (dependencyChain.has(i)) allowed.add(i);
+      } else {
+        allowed.add(i);
+      }
+    }
+    // includeCurrentStep=true 时，允许加入当前索引（用于重试上下文）
+    if (includeCurrentStep && Number.isFinite(upToStepIndex)) allowed.add(upToStepIndex);
+    const orderedIdx = Array.from(allowed).sort((a, b) => a - b);
+    const prev = [];
+    for (const idx of orderedIdx) {
+      const h = lastByIndex.get(idx);
+      if (h) prev.push(h);
+    }
+    
+    const msgs = [];
+    for (const h of prev) {
+      const aiName = h.aiName;
+      const reasonRaw = plan?.steps?.[Number(h.plannedStepIndex)]?.reason;
+      const reason = formatReason(reasonRaw);
+      const plannedStepIndex = Number(h.plannedStepIndex);
+      
+      // FC 模式：使用 Sentra XML 格式（仅输出 XML，不再添加非 XML 的用户提示行）
+      if (useFC) {
+        // 工具调用 XML
+        const toolCallXml = formatSentraToolCall(aiName, h.args);
+        // 工具结果 XML
+        const resultXml = formatSentraResult({
+          stepIndex: plannedStepIndex,  // XML 中仍使用 step 属性
+          stepId: h?.stepId,
+          aiName,
+          reason: reasonRaw,
+          args: h.args,
+          result: h.result
+        });
+        const resultArtifactRefs = renderResultArtifactRefsXml(h?.result);
+        msgs.push({ role: 'assistant', content: `${[toolCallXml, resultXml, resultArtifactRefs].filter(Boolean).join('\n\n')}` });
+      } else {
+        // 默认：JSON 格式
+        const argsPreview = clip(h.args);
+        const resultPreview = clip((h.result?.resultRef?.path || h.result?.data) ?? h.result);
+        const refs = Array.isArray(h?.result?.artifacts) ? h.result.artifacts : [];
+        const refsPreview = refs.slice(0, 8).map((a) => ({
+          uuid: String(a?.uuid || ''),
+          path: String(a?.path || ''),
+          role: String(a?.role || ''),
+          type: String(a?.type || '')
+        }));
+        msgs.push({ role: 'user', content: `现在该使用 ${aiName} 了。原因: ${reason || '(未提供)'}` });
+        msgs.push({ role: 'assistant', content: [
+          `参数(JSON): ${argsPreview}`,
+          `结果(JSON): ${resultPreview}`,
+          `产物(JSON): ${JSON.stringify(refsPreview)}`
+        ].join('\n') });
+      }
+    }
+    return msgs;
+  } catch (e) {
+    // 不要中断主流程
+    return [];
+  }
+}
+
+// 中文：将 dependsOnStepIds 指定的上游步骤结果，整理为一个“依赖结果(JSON)”的 assistant 消息，便于参数生成阶段作为证据使用
+export async function buildDependentContextMessages(runId, dependsOnStepIds = []) {
+  if (!Array.isArray(dependsOnStepIds) || dependsOnStepIds.length === 0) return [];
+  try {
+    const ids = Array.from(new Set(dependsOnStepIds.map((x) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean)));
+    if (ids.length === 0) return [];
+    const history = await HistoryStore.list(runId, 0, -1);
+    const lastByStepId = new Map();
+    for (const h of history) {
+      if (h.type !== 'tool_result') continue;
+      if (typeof h.stepId === 'string' && h.stepId.trim()) {
+        lastByStepId.set(h.stepId.trim(), h);
+      }
+    }
+    const items = [];
+    for (const sid of ids) {
+      const h = lastByStepId.get(sid);
+      if (!h) continue;
+      items.push({
+        stepId: sid,
+        plannedStepIndex: Number(h.plannedStepIndex),
+        aiName: h.aiName,
+        argsPreview: clip(h.args),
+        resultPreview: clip((h.result?.resultRef?.path || h.result?.data) ?? h.result),
+      });
+    }
+    if (!items.length) return [];
+    const content = `依赖结果(JSON):\n${JSON.stringify(items, null, 2)}`;
+    return [{ role: 'assistant', content }];
+  } catch {
+    return [];
+  }
+}
+
+export default { buildToolDialogueMessages };

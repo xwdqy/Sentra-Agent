@@ -225,7 +225,7 @@ export async function queryWithNeo4j(neo4j, chatOpenai, embeddingOpenai, policy,
   let vectorHits = [];
   if (Number.isFinite(kVector) && kVector > 0) {
     // Embedding
-    const embeddingModel = getEnv('EMBEDDING_MODEL', { defaultValue: 'text-embedding-3-small' });
+    const embeddingModel = getEnv('EMBEDDING_MODEL', { defaultValue: 'qwen3-embedding-4b' });
     const emb = await embeddingOpenai.embeddings.create({ model: embeddingModel, input: queryText });
     const queryEmbedding = emb.data?.[0]?.embedding;
     if (!Array.isArray(queryEmbedding)) throw new Error('Embedding failed');

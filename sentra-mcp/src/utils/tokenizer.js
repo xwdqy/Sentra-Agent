@@ -8,10 +8,14 @@ function getEncoder(model) {
   if (cached) return cached;
 
   let enc;
-  if (key === '__default__' || key === 'cl100k_base') {
+  try {
+    if (key === '__default__' || key === 'cl100k_base') {
+      enc = get_encoding('cl100k_base');
+    } else {
+      enc = encoding_for_model(key);
+    }
+  } catch {
     enc = get_encoding('cl100k_base');
-  } else {
-    enc = encoding_for_model(key);
   }
 
   _encCache.set(key, enc);
@@ -64,5 +68,64 @@ export function fitToTokenLimit(text, opts = {}) {
     text: out,
     tokens: total,
     truncated: out.length !== s.length,
+  };
+}
+
+export function truncateTextByTokens(text, opts = {}) {
+  const raw = String(text ?? '');
+  const maxTokens = Number(opts?.maxTokens);
+  const model = opts?.model;
+  const suffix = typeof opts?.suffix === 'string' ? opts.suffix : '';
+
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+    const tokens = countTokens(raw, { model });
+    return {
+      text: raw,
+      tokens,
+      originalTokens: tokens,
+      truncated: false,
+      omittedTokens: 0,
+      omittedChars: 0,
+    };
+  }
+
+  const max = Math.max(1, Math.floor(maxTokens));
+  const originalTokens = countTokens(raw, { model });
+  if (originalTokens <= max) {
+    return {
+      text: raw,
+      tokens: originalTokens,
+      originalTokens,
+      truncated: false,
+      omittedTokens: 0,
+      omittedChars: 0,
+    };
+  }
+
+  const suffixTokens = suffix ? countTokens(suffix, { model }) : 0;
+  const bodyBudget = Math.max(0, max - suffixTokens);
+  let body = '';
+
+  if (bodyBudget > 0) {
+    const fitted = fitToTokenLimit(raw, { maxTokens: bodyBudget, model });
+    body = fitted.text;
+  }
+
+  let out = suffix ? `${body}${suffix}` : body;
+  let outTokens = countTokens(out, { model });
+
+  if (outTokens > max) {
+    const fittedAll = fitToTokenLimit(out, { maxTokens: max, model });
+    out = fittedAll.text;
+    outTokens = fittedAll.tokens;
+  }
+
+  return {
+    text: out,
+    tokens: outTokens,
+    originalTokens,
+    truncated: true,
+    omittedTokens: Math.max(0, originalTokens - outTokens),
+    omittedChars: Math.max(0, raw.length - out.length),
   };
 }

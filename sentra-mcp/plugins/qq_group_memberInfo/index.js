@@ -93,3 +93,6 @@ export default async function handler(args = {}, options = {}) {
   }
   return ok({ mode: 'batch', results });
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

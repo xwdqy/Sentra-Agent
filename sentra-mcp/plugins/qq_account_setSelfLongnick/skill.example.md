@@ -11,12 +11,21 @@
 
 ## When to use
 
-- 用户明确要求把签名改成某段文案，并给出完整文案。
+- 目标与工具能力一致：修改当前 QQ 账号的个性签名。
+- 可提供必需入参：`longNick`。
+- 你明确接受该操作可能产生的副作用（发送/修改/写入/生成）。
 
-## When NOT to use
+## When not to use
 
-- 没有 `longNick` 文案或用户未确认。
+- 缺少必需入参时不要调用：`longNick`。
+- 仅希望查询信息、且不希望产生副作用时，不要调用。
 
+## Success Criteria
+
+- Must have `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be non-empty, `data.request.requestId` must be present, and `data.request.args` must match this call (`longNick`).
+- `data.response` must be present (non-null object/string), proving RPC was sent and acknowledged.
+- Retry guidance: timeout/network may retry once with same args; input/schema errors should regenerate args; business rejection should replan.
 ## Input
 
 - Required:

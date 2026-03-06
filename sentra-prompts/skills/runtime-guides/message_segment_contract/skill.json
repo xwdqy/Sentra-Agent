@@ -1,0 +1,43 @@
+{
+  "id": "message_segment_contract",
+  "uuid": "c61ca347-d71e-4c67-b8ee-ebfb1f7458d9",
+  "title": "Message Segment Contract",
+  "summary": "Defines canonical sentra-message segment schema, ordering, and per-type field requirements.",
+  "selection": "auto",
+  "when": [
+    "full",
+    "response_only",
+    "router"
+  ],
+  "priority": 150,
+  "deps": [
+    "route_resolution",
+    "read_only_context"
+  ],
+  "tags": [
+    "protocol",
+    "message_contract",
+    "message_segments",
+    "response"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "segment",
+      "chat_type",
+      "message schema",
+      "segment index",
+      "text segment",
+      "split",
+      "structure",
+      "消息段",
+      "分段",
+      "索引",
+      "结构化",
+      "消息结构"
+    ],
+    "regex": [
+      "/(segment|chat_type|message\\s*schema|segment\\s*index|text\\s*segment|split|structure|消息段|分段|索引|结构化|消息结构)/i"
+    ]
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "id": "runtime_sandbox_communication",
+  "uuid": "5d391d5e-0be6-4f3d-9274-0716455f7e6e",
+  "title": "Runtime Sandbox Communication",
+  "summary": "Defines Sentra runtime identity, sandbox operating posture, and roleplay-safe communication behavior.",
+  "selection": "manual",
+  "when": [
+    "full",
+    "response_only",
+    "tools_only",
+    "router"
+  ],
+  "priority": 10,
+  "deps": [],
+  "tags": [
+    "global",
+    "runtime",
+    "sandbox",
+    "rp"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "sandbox",
+      "runtime",
+      "persona",
+      "style",
+      "chat",
+      "沙盒",
+      "运行时",
+      "人设",
+      "语气",
+      "风格",
+      "聊天"
+    ],
+    "regex": [
+      "/(sandbox|runtime|persona|style|chat|沙盒|运行时|人设|语气|风格|聊天)/i"
+    ]
+  }
+}

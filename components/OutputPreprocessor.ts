@@ -1,3 +1,5 @@
+import { extractFullXMLTag } from '../utils/xmlUtils.js';
+
 export function preprocessPlainModelOutput(raw: unknown): string {
   const input = typeof raw === 'string' ? raw : String(raw ?? '');
   let s = input;
@@ -7,16 +9,23 @@ export function preprocessPlainModelOutput(raw: unknown): string {
   //    We intentionally do NOT remove mid-text occurrences to avoid breaking user content.
   try {
     const maxLoops = 8;
+    const thinkTags = ['think', 'thinking', 'reasoning'] as const;
     for (let i = 0; i < maxLoops; i++) {
       const trimmedStart = s.replace(/^\uFEFF/, '').trimStart();
-      const m = trimmedStart.match(/^<(think|thinking|reasoning)\b[\s\S]*?<\/\1>\s*/i);
-      if (!m) break;
-      s = trimmedStart.slice(m[0].length);
+      let stripped = false;
+      for (const tag of thinkTags) {
+        const full = extractFullXMLTag(trimmedStart, tag);
+        if (!full || !trimmedStart.startsWith(full)) continue;
+        s = trimmedStart.slice(full.length);
+        stripped = true;
+        break;
+      }
+      if (!stripped) break;
     }
   } catch {}
 
   // 2) Strip markdown code fences around the XML when fences contain a sentra block.
-  //    Handle ``` / ```xml and ~~~ variants. Only unwrap when the fenced content contains sentra-response/tools.
+  //    Handle ``` / ```xml and ~~~ variants. Only unwrap when the fenced content contains sentra-message/tools.
   try {
     const unwrapFence = (text: unknown): string | null => {
       const t = String(text || '');
@@ -25,9 +34,9 @@ export function preprocessPlainModelOutput(raw: unknown): string {
       const inner = String(fenceMatch[3] || '').trim();
       if (!inner) return null;
       const hasSentra =
-        inner.includes('<sentra-response>') ||
+        inner.includes('<sentra-message>') ||
         inner.includes('<sentra-tools>') ||
-        inner.includes('</sentra-response>') ||
+        inner.includes('</sentra-message>') ||
         inner.includes('</sentra-tools>');
       if (!hasSentra) return null;
       return inner;

@@ -7,6 +7,11 @@ import mime from 'mime-types';
 import { httpRequest } from '../../src/utils/http.js';
 import { toAbsoluteLocalPath } from '../../src/utils/path.js';
 import { ok, fail } from '../../src/utils/result.js';
+import {
+  resolveModelFailoverPolicy,
+  resolvePluginModelCandidates,
+  runWithModelFailover,
+} from '../../src/utils/plugin_llm_failover.js';
 
 function isTimeoutError(e) {
   const msg = String(e?.message || e || '').toLowerCase();
@@ -127,7 +132,15 @@ export default async function handler(args = {}, options = {}) {
   const penv = options?.pluginEnv || {};
   const apiKey = penv.VISION_API_KEY || process.env.VISION_API_KEY || config.llm.apiKey;
   const baseURL = penv.VISION_BASE_URL || process.env.VISION_BASE_URL || config.llm.baseURL;
-  const model = penv.VISION_MODEL || process.env.VISION_MODEL || config.llm.model;
+  const modelArg = String(args.model || '').trim();
+  const modelCandidates = resolvePluginModelCandidates({
+    pluginEnv: penv,
+    primaryKey: 'VISION_MODEL',
+    explicitModel: modelArg,
+    defaultModel: config.llm.model,
+  });
+  const model = String(modelCandidates[0] || '').trim();
+  const failoverPolicy = resolveModelFailoverPolicy(penv);
   const convertGif = String(penv.VISION_CONVERT_GIF || process.env.VISION_CONVERT_GIF || 'false').toLowerCase() === 'true';
 
   const oai = new OpenAI({ apiKey, baseURL });
@@ -159,15 +172,24 @@ export default async function handler(args = {}, options = {}) {
 
   try {
     logger.info?.('image_vision_read:calling_api', { label: 'PLUGIN', model });
-    const res = await oai.chat.completions.create({ model, messages });
+    const { value: res, model: usedModel } = await runWithModelFailover({
+      models: modelCandidates,
+      policy: failoverPolicy,
+      tag: 'image_vision_read',
+      meta: { baseURL },
+      execute: async (pickedModel) => oai.chat.completions.create({ model: pickedModel, messages }),
+    });
     const content = res?.choices?.[0]?.message?.content || '';
     logger.info?.('image_vision_read:api_success', { label: 'PLUGIN', responseLength: content?.length || 0 });
     // 仅返回所需字段：prompt、图片描述与摘要统计
     const formats = Array.from(new Set((prepared || []).map((x) => x.mime))).filter(Boolean);
-    return ok({ prompt, description: content, image_count: images.length, formats });
+    return ok({ prompt, description: content, image_count: images.length, formats, model: usedModel });
   } catch (e) {
     logger.warn?.('image_vision_read:request_failed', { label: 'PLUGIN', error: String(e?.message || e), stack: e?.stack });
     const isTimeout = isTimeoutError(e);
     return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'image_vision_read', images_count: images.length }) });
   }
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

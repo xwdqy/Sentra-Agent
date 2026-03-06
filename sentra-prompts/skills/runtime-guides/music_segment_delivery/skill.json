@@ -1,0 +1,47 @@
+{
+  "id": "music_segment_delivery",
+  "uuid": "9c2dc8c5-6a10-486c-ad90-bf901d85f9fd",
+  "title": "Music Segment Delivery",
+  "summary": "Maps music intent to native music segment delivery with platform/song id.",
+  "selection": "auto",
+  "runtimeDynamic": true,
+  "when": [
+    "full",
+    "response_only",
+    "router"
+  ],
+  "priority": 200,
+  "deps": [
+    "message_segment_contract"
+  ],
+  "tags": [
+    "protocol",
+    "media_delivery",
+    "response",
+    "qq",
+    "music_delivery"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "music",
+      "song",
+      "songs",
+      "track",
+      "playlist",
+      "music card",
+      "provider",
+      "song_id",
+      "音乐",
+      "歌曲",
+      "点歌",
+      "推歌",
+      "音乐卡片",
+      "网易云",
+      "qq音乐"
+    ],
+    "regex": [
+      "/(music|song|songs|track|playlist|music\\s*card|provider|song[_\\s-]?id|音乐|歌曲|点歌|推歌|音乐卡片|网易云|qq音乐)/i"
+    ]
+  }
+}

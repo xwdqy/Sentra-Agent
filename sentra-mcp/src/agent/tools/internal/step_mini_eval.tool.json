@@ -1,0 +1,10 @@
+{
+  "type": "function",
+  "function": {
+    "name": "step_mini_eval",
+    "description": "Decide step-level execution outcome and retry/replan action using tool evidence and plugin success criteria.",
+    "parameters": {
+      "$ref": "./step_mini_eval.schema.json"
+    }
+  }
+}

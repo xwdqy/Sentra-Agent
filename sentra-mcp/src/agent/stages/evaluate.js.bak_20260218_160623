@@ -1,0 +1,275 @@
+import logger from '../../logger/index.js';
+import { config, getStageModel, getStageProvider, getStageTimeoutMs } from '../../config/index.js';
+import { chatCompletion } from '../../openai/client.js';
+import { HistoryStore } from '../../history/store.js';
+import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
+import { compactMessages } from '../utils/messages.js';
+import { emitRunEvent } from '../utils/events.js';
+import { getPreThought } from './prethought.js';
+import { clip } from '../../utils/text.js';
+import { parseFunctionCalls, buildFunctionCallInstruction, buildFCPolicy } from '../../utils/fc.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { loadToolDef } from '../tools/loader.js';
+import { manifestToBulletedText, manifestToXmlToolsCatalog } from '../plan/manifest.js';
+
+function toBool(v, fallback = false) {
+  if (typeof v === 'boolean') return v;
+  const s = String(v ?? '').trim().toLowerCase();
+  if (!s) return fallback;
+  if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true;
+  if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false;
+  return fallback;
+}
+
+function toAction({ nextAction, completionLevel, success, incomplete }) {
+  const a = String(nextAction || '').trim().toLowerCase();
+  if (a === 'perfect' || a === 'supplement' || a === 'replan') return a;
+  const lv = String(completionLevel || '').trim().toLowerCase();
+  if (lv === 'perfect') return 'perfect';
+  if (lv === 'partial') return 'supplement';
+  if (lv === 'poor') return 'replan';
+  if (success && !incomplete) return 'perfect';
+  if (success && incomplete) return 'supplement';
+  return 'replan';
+}
+
+function normalizeAssistantFeedback(raw) {
+  const payload = (raw && typeof raw === 'object') ? raw : {};
+  const batchesRaw = Array.isArray(payload.batches) ? payload.batches : [];
+  const responsesRaw = Array.isArray(payload.responses)
+    ? payload.responses
+    : batchesRaw.flatMap((b) => (Array.isArray(b?.responses) ? b.responses : []));
+
+  const clipContent = (v, max = 1200) => {
+    const s = String(v ?? '');
+    if (!s) return '';
+    return s.length > max ? `${s.slice(0, max)}... (len=${s.length})` : s;
+  };
+
+  const responses = responsesRaw
+    .map((r) => {
+      const item = (r && typeof r === 'object') ? r : {};
+      const content = clipContent(item.content, 1200);
+      if (!content) return null;
+      return {
+        phase: String(item.phase || 'unknown'),
+        content,
+        noReply: item.noReply === true,
+        delivered: item.delivered === true,
+        ts: Number.isFinite(Number(item.ts)) ? Number(item.ts) : 0,
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    responseCount: responses.length,
+    responses,
+  };
+}
+
+export async function evaluateRun(objective, plan, exec, runId, context = {}) {
+  const stepsArr = Array.isArray(plan?.steps) ? plan.steps : [];
+  const stepIdToIndex = new Map(stepsArr.map((s, idx) => [typeof s?.stepId === 'string' ? s.stepId : '', idx]).filter(([k]) => k));
+  const normalizeFailedSteps = (rawFailed) => {
+    const list = Array.isArray(rawFailed) ? rawFailed : [];
+    const out = [];
+    for (const it of list) {
+      const sid = (typeof it?.stepId === 'string' && it.stepId.trim()) ? it.stepId.trim() : '';
+      const idx = sid ? stepIdToIndex.get(sid) : undefined;
+      if (!sid || !Number.isFinite(idx) || idx < 0 || idx >= stepsArr.length) continue;
+      const step = stepsArr[idx] || {};
+      const stepId = typeof step.stepId === 'string' ? step.stepId : sid;
+      const displayIndex = Number.isFinite(Number(step.displayIndex)) ? Number(step.displayIndex) : (Number(idx) + 1);
+      const aiName = typeof it?.aiName === 'string' ? it.aiName : (typeof step.aiName === 'string' ? step.aiName : undefined);
+      const reason = String(it?.reason || '').trim();
+      if (!reason) continue;
+      out.push({ stepId, displayIndex, aiName, reason });
+    }
+    return out;
+  };
+
+  const normalizeResultArgs = (args) => {
+    const raw = (args && typeof args === 'object') ? args : {};
+    const success = toBool(raw.success, true);
+    const incomplete = toBool(raw.incomplete, false);
+    const failedSteps = normalizeFailedSteps(raw.failedSteps);
+    const summary = typeof raw.summary === 'string' ? raw.summary : '';
+    const completionLevel = typeof raw.completionLevel === 'string' ? raw.completionLevel : '';
+    const missingGoals = Array.isArray(raw.missingGoals)
+      ? raw.missingGoals.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 16)
+      : [];
+    const confidenceRaw = Number(raw.confidence);
+    const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : undefined;
+    const nextAction = toAction({
+      nextAction: raw.nextAction,
+      completionLevel,
+      success,
+      incomplete,
+    });
+    return {
+      success,
+      incomplete,
+      failedSteps,
+      summary,
+      nextAction,
+      completionLevel,
+      missingGoals,
+      ...(confidence != null ? { confidence } : {}),
+    };
+  };
+
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const judgeToolDef = await loadToolDef({
+    baseDir: __dirname,
+    toolPath: '../tools/internal/final_judge.tool.json',
+    schemaPath: '../tools/internal/final_judge.schema.json',
+    fallbackTool: { type: 'function', function: { name: 'final_judge', description: 'judge final success/failure with optional failedSteps & summary', parameters: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] } } },
+    fallbackSchema: { type: 'object', properties: { success: { type: 'boolean' } }, required: ['success'] },
+  });
+
+  const fj = await loadPrompt('final_judge');
+  const overlays = (context?.promptOverlays || context?.overlays || {});
+  const overlayGlobal = overlays.global?.system || overlays.global || '';
+  const overlayEval = overlays.final_judge?.system || overlays.final_judge || overlays.eval?.system || overlays.eval || '';
+  const sys = composeSystem(fj.system, [overlayGlobal, overlayEval].filter(Boolean).join('\n\n'));
+  const history = await HistoryStore.list(runId, 0, -1);
+  const stepNames = (exec?.used || []).map((u) => u.aiName).join(', ');
+  const tail = history;
+  const manifestArr = Array.isArray(plan?.manifest) ? plan.manifest : [];
+  const strategy = String(config.llm?.toolStrategy || 'auto');
+  const manifestText = strategy === 'fc'
+    ? manifestToXmlToolsCatalog(manifestArr)
+    : manifestToBulletedText(manifestArr);
+
+  let preThought = '';
+  if (config.flags.evalUsePreThought) {
+    try { preThought = await getPreThought(objective, [], []); } catch {}
+  }
+
+  const assistantFeedback = normalizeAssistantFeedback(context?.assistantFeedback);
+  const assistantFeedbackText = assistantFeedback.responseCount > 0
+    ? clip(JSON.stringify({
+      responseCount: assistantFeedback.responseCount,
+      responses: assistantFeedback.responses.slice(0, 24),
+    }), 12000)
+    : '';
+
+  const baseMsgs = compactMessages([
+    { role: 'system', content: sys },
+    { role: 'user', content: renderTemplate(fj.user_goal, { objective }) },
+    ...(config.flags.evalUsePreThought
+      ? [{ role: 'assistant', content: renderTemplate(fj.assistant_thought || 'pre-thought:\n{{preThought}}', { preThought }) }]
+      : []),
+    {
+      role: 'assistant',
+      content: renderTemplate(fj.assistant_exec_stats, {
+        attempted: exec.attempted,
+        succeeded: exec.succeeded,
+        successRate: exec.successRate.toFixed(2),
+        stepNames,
+      })
+    },
+    { role: 'assistant', content: renderTemplate(fj.assistant_tools_manifest || 'available tools:\n{{manifestBulleted}}', { manifestBulleted: manifestText }) },
+    { role: 'user', content: fj.user_history_intro },
+    { role: 'assistant', content: JSON.stringify(tail) },
+    ...(assistantFeedbackText
+      ? [{ role: 'assistant', content: `MAIN_PROGRAM_ASSISTANT_FEEDBACK:\n${assistantFeedbackText}` }]
+      : []),
+    { role: 'user', content: fj.user_request }
+  ]);
+
+  const policy = await buildFCPolicy();
+  const fcInstr = await buildFunctionCallInstruction({ name: 'final_judge', parameters: judgeToolDef.function?.parameters || { type: 'object', properties: {} }, locale: 'zh-CN' });
+  const fc = config.fcLlm || {};
+  const omit = !(Number.isFinite(fc.maxTokens) && fc.maxTokens > 0);
+  const maxRetries = Math.max(1, Number(fc.evalMaxRetries ?? 3));
+  const temperature = Number.isFinite(config.fcLlm?.evalTemperature) ? config.fcLlm.evalTemperature : (Number.isFinite(fc.temperature) ? Math.min(0.2, fc.temperature) : 0.1);
+  const top_p = Number.isFinite(config.fcLlm?.evalTopP) ? config.fcLlm.evalTopP : undefined;
+
+  let result = { success: true, incomplete: false, nextAction: 'perfect' };
+  let lastContent = '';
+  const useFC = strategy === 'fc';
+  const useAuto = strategy === 'auto';
+
+  if (!useFC) {
+    const tools = [judgeToolDef];
+    const res = await chatCompletion({
+      messages: baseMsgs,
+      tools,
+      tool_choice: { type: 'function', function: { name: 'final_judge' } },
+      temperature: 0.1,
+      timeoutMs: getStageTimeoutMs('eval')
+    });
+    const call = res.choices?.[0]?.message?.tool_calls?.[0];
+    if (call?.function?.arguments) {
+      try {
+        const args = JSON.parse(call.function.arguments);
+        result = normalizeResultArgs(args);
+        emitRunEvent(runId, { type: 'evaluation', result });
+        await HistoryStore.append(runId, { type: 'evaluation', result });
+        return result;
+      } catch {}
+    }
+    if (!useAuto) {
+      emitRunEvent(runId, { type: 'evaluation', result });
+      await HistoryStore.append(runId, { type: 'evaluation', result });
+      return result;
+    }
+  }
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    let reinforce = '';
+    if (attempt > 1) {
+      try {
+        const pr = await loadPrompt('fc_reinforce_eval');
+        const tpl = pr.zh;
+        reinforce = renderTemplate(tpl, { attempt: String(attempt), max_retries: String(maxRetries) });
+      } catch {}
+    }
+    const messages = compactMessages([...baseMsgs, { role: 'user', content: [reinforce, policy, fcInstr].filter(Boolean).join('\n\n') }]);
+    const provider = getStageProvider('eval');
+    const evalModel = getStageModel('eval');
+    const res = await chatCompletion({
+      messages,
+      temperature,
+      top_p,
+      timeoutMs: getStageTimeoutMs('eval'),
+      apiKey: provider.apiKey,
+      baseURL: provider.baseURL,
+      model: evalModel,
+      ...(omit ? { omitMaxTokens: true } : { max_tokens: fc.maxTokens })
+    });
+    const content = res?.choices?.[0]?.message?.content || '';
+    lastContent = content;
+    logger.info('FC eval raw output', {
+      label: 'EVAL',
+      attempt,
+      provider: { baseURL: provider.baseURL, model: evalModel },
+      contentPreview: clip(String(content)),
+      length: String(content || '').length
+    });
+
+    const calls = parseFunctionCalls(String(content), {});
+    const call = calls.find((c) => String(c.name) === 'final_judge') || calls[0];
+    try {
+      result = normalizeResultArgs(call?.arguments || {});
+      break;
+    } catch {}
+  }
+
+  if (!result || typeof result.success !== 'boolean') {
+    const raw = String(lastContent || '');
+    const rawSlice = raw.length > 4000 ? `${raw.slice(0, 4000)}...[truncated ${raw.length - 4000}]` : raw;
+    logger.warn?.('FC eval failed to parse result, fallback default', {
+      label: 'EVAL',
+      retries: maxRetries,
+      contentRaw: rawSlice
+    });
+    result = { success: true, incomplete: false, nextAction: 'perfect' };
+  }
+
+  emitRunEvent(runId, { type: 'evaluation', result });
+  await HistoryStore.append(runId, { type: 'evaluation', result });
+  return result;
+}

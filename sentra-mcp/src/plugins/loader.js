@@ -10,6 +10,75 @@ import { readSkillDocFromPluginDir } from '../utils/skillDoc.js';
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
 
+function normalizeStringArray(value, { maxItems = 32, maxLength = 80 } = {}) {
+  const src = Array.isArray(value) ? value : [];
+  const out = [];
+  const seen = new Set();
+  for (const item of src) {
+    const text = String(item ?? '').trim();
+    if (!text) continue;
+    const clipped = text.length > maxLength ? text.slice(0, maxLength) : text;
+    if (seen.has(clipped)) continue;
+    seen.add(clipped);
+    out.push(clipped);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function normalizeBoost(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  if (n <= 0) return 0;
+  if (n >= 100) return 100;
+  return n;
+}
+
+function buildRerankSignalsFromConfig(cfg = {}, baseMeta = {}) {
+  const cfgObj = (cfg && typeof cfg === 'object') ? cfg : {};
+  const metaObj = (baseMeta && typeof baseMeta === 'object') ? baseMeta : {};
+  const rr0 = (metaObj.rerank && typeof metaObj.rerank === 'object') ? metaObj.rerank : {};
+
+  const triggerKeywords = normalizeStringArray(
+    cfgObj.trigger_keywords
+      ?? cfgObj.triggerKeywords
+      ?? rr0.triggerKeywords
+      ?? rr0.trigger_keywords,
+    { maxItems: 64, maxLength: 80 }
+  );
+  const triggerPatterns = normalizeStringArray(
+    cfgObj.trigger_patterns
+      ?? cfgObj.triggerPatterns
+      ?? rr0.triggerPatterns
+      ?? rr0.trigger_patterns,
+    { maxItems: 32, maxLength: 160 }
+  );
+
+  const keywordBoost = normalizeBoost(
+    cfgObj.keyword_boost
+      ?? cfgObj.keywordBoost
+      ?? rr0.keywordBoost
+      ?? rr0.keyword_boost
+  );
+  const regexBoost = normalizeBoost(
+    cfgObj.regex_boost
+      ?? cfgObj.regexBoost
+      ?? rr0.regexBoost
+      ?? rr0.regex_boost
+  );
+
+  return {
+    ...metaObj,
+    rerank: {
+      ...rr0,
+      triggerKeywords,
+      triggerPatterns,
+      keywordBoost,
+      regexBoost
+    }
+  };
+}
+
 function normalizeTool(def) {
   if (!def?.name || typeof def.handler !== 'function') {
     throw new Error('Invalid plugin tool: name and handler required');
@@ -28,6 +97,7 @@ function normalizeTool(def) {
     skillDoc: def.skillDoc || null,
     _pluginDirName: def._pluginDirName,
     _pluginAbsDir: def._pluginAbsDir,
+    _pluginEntryPath: def._pluginEntryPath,
     handler: def.handler,
   };
 }
@@ -44,8 +114,6 @@ export async function loadPlugins(pluginsDir) {
     const libRoot = path.resolve(__dirname, '../..');
     candidates.push(path.join(libRoot, 'plugins'));
   } catch { }
-  // project cwd fallback
-  candidates.push(path.resolve(process.cwd(), 'plugins'));
   // de-duplicate candidates
   const seen = new Set();
   const uniq = [];
@@ -132,7 +200,7 @@ export async function loadPlugins(pluginsDir) {
 
       if (!enabled) {
         const name = cfg.name || dir;
-        try { logger.info('跳过插件（.env 关闭）', { label: 'PLUGIN', name, dir, reason: 'PLUGIN_ENABLED=true' }); } catch { }
+        try { logger.info('跳过插件（.env 关闭）', { label: 'PLUGIN', name, dir, reason: 'PLUGIN_ENABLED=false' }); } catch { }
         continue; // do not import handler, do not expose in SDK
       }
 
@@ -171,10 +239,11 @@ export async function loadPlugins(pluginsDir) {
         provider: cfg.provider || 'local',
         timeoutMs,
         pluginEnv: penv,
-        meta: cfg.meta || {},
+        meta: buildRerankSignalsFromConfig(cfg, cfg.meta || {}),
         skillDoc: readSkillDocFromPluginDir(base) || null,
         _pluginDirName: dir,
         _pluginAbsDir: base,
+        _pluginEntryPath: idxPath,
         handler,
       };
       const tool = normalizeTool(def);
@@ -203,6 +272,7 @@ export async function loadPlugins(pluginsDir) {
           continue;
         }
         const tool = normalizeTool(d);
+        if (!tool._pluginEntryPath) tool._pluginEntryPath = full;
         tool._validate = ajv.compile(tool.inputSchema);
         tools.push(tool);
         if (tool.name) loadedNames.add(tool.name);

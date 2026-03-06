@@ -79,6 +79,8 @@
   "MCP_TOOLS": "getMcpTools",
   "wechat_system_prompt": "getWeChatSystemPrompt",
   "sandbox_system_prompt": "getSandboxSystemPrompt",
+  "sandbox_system_prompt_response_only": "getSandboxSystemPromptResponseOnly",
+  "sandbox_system_prompt_tools_only": "getSandboxSystemPromptToolsOnly",
   "qq_system_prompt": "getQQSystemPrompt",
   "sentra_tools_rules": "getSandboxSystemPrompt",
   "sentra_protocol_output_contract": "getSentraProtocolSectionOutputContract",
@@ -106,8 +108,6 @@
   "sentra_repair_persona_prompt_system": "getRepairPersonaPromptSystem",
   "sentra_persona_initial_prompt_system": "getPersonaInitialPromptSystem",
   "sentra_persona_refine_prompt_system": "getPersonaRefinePromptSystem",
-  "sentra_preset_converter_prompt_system": "getPresetConverterPromptSystem",
   "sentra_preset_teaching_prompt_system": "getPresetTeachingPromptSystem",
-  "sentra_tool_prereply_constraints": "getToolPreReplyConstraints",
-  "sentra_task_completion_analyzer_prompt_system": "getTaskCompletionAnalyzerPromptSystem"
+  "sentra_tool_prereply_constraints": "getToolPreReplyConstraints"
 }

@@ -1,0 +1,18 @@
+{
+  "objective_lines": [
+    "输出 override_intent_decision 决策（reply|pending|cancel_and_restart|cancel_only）。"
+  ],
+  "constraints": [
+    "Detailed rules are defined in the system prompt (reply_override). This is a minimal placeholder."
+  ],
+  "guidance_lines": [
+    "Task: decide follow-up handling when a previous task may still be running.",
+    "Input: prefer <summary> fields; <text> may be empty/noisy.",
+    "Decision mapping:",
+    "- cancel_only: user cancels previous task without new/changed request.",
+    "- cancel_and_restart: user replaces the request OR adds clarifications/supplements to the same task (always).",
+    "- reply: worth replying but does NOT require canceling the old task.",
+    "- pending: hold and do not reply now."
+  ]
+}
+

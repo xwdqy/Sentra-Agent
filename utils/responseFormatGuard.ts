@@ -3,9 +3,26 @@ import { randomUUID } from 'node:crypto';
 import { extractAllFullXMLTags, tryParseXmlFragment, escapeXml } from './xmlUtils.js';
 import { getEnvBool } from './envHotReloader.js';
 import { repairSentraResponse } from './formatRepair.js';
+import { parseSentraMessage } from './protocolUtils.js';
+import type { SentraMessageSegment } from './protocolUtils.js';
 import type { ExpectedOutput, GuardResult, ModelFormatFixParams, ChatMessage } from '../src/types.js';
+import { tRuntimeFormat } from './i18n/runtimeFormatCatalog.js';
+import {
+  buildFormatFixRootDirectiveFromContract,
+  buildFormatFixSkillHintsFromContract
+} from './runtimeFormatContract.js';
 
 const logger = createLogger('ResponseFormatGuard');
+
+function isToolsOnlyExpectedOutput(expectedOutput: unknown): boolean {
+  const eo = String(expectedOutput || '').trim().toLowerCase();
+  return eo === 'sentra_tools' || eo === 'reply_gate_decision_tools' || eo === 'override_intent_decision_tools';
+}
+
+function isToolsOrMessageExpectedOutput(expectedOutput: unknown): boolean {
+  const eo = String(expectedOutput || '').trim().toLowerCase();
+  return eo === 'sentra_tools_or_message';
+}
 
 function extractFirstFullTag(text: unknown, tagName: string): string | null {
   const s = typeof text === 'string' ? text : '';
@@ -15,88 +32,151 @@ function extractFirstFullTag(text: unknown, tagName: string): string | null {
   return String(blocks[0] || '').trim() || null;
 }
 
-export function guardAndNormalizeSentraTools(raw: unknown, opts: { enabled?: boolean } = {}): GuardResult {
-  const enabled = opts.enabled ?? getEnvBool('ENABLE_LOCAL_FORMAT_GUARD', true);
-  if (!enabled) {
-    const response = typeof raw === 'string' ? raw : String(raw ?? '');
-    return { ok: true, normalized: response, changed: false };
-  }
-
-  const response = typeof raw === 'string' ? raw : String(raw ?? '');
-  const trimmed = response.trim();
-  if (!trimmed) {
-    return { ok: false, normalized: null, changed: false, reason: '响应为空' };
-  }
-
-  const only = extractOnlySentraToolsBlock(trimmed);
-  if (only && !only.includes('<sentra-response')) {
-    return { ok: true, normalized: only, changed: only !== trimmed };
-  }
-
-  // Try to extract the first full <sentra-tools> block.
-  const first = extractFirstFullTag(trimmed, 'sentra-tools');
-  if (first) {
-    try {
-      logger.warn('检测到 sentra-tools 外存在额外内容，已本地截取第一段 sentra-tools 放行');
-    } catch { }
-    return { ok: true, normalized: first, changed: true, reason: 'trim_to_first_sentra_tools' };
-  }
-
-  return {
-    ok: false,
-    normalized: null,
-    changed: false,
-    reason: '缺少或无法解析 <sentra-tools> 标签'
-  };
+function normalizeToArray<T>(value: T | T[] | null | undefined): T[] {
+  if (Array.isArray(value)) return value;
+  if (value == null) return [];
+  return [value];
 }
 
-export function guardAndNormalizeSentraToolsOrResponse(raw: unknown, opts: { enabled?: boolean } = {}): GuardResult {
-  const enabled = opts.enabled ?? getEnvBool('ENABLE_LOCAL_FORMAT_GUARD', true);
-  if (!enabled) {
-    const response = typeof raw === 'string' ? raw : String(raw ?? '');
-    return { ok: true, normalized: response, changed: false };
-  }
-
-  const response = typeof raw === 'string' ? raw : String(raw ?? '');
-  const trimmed = response.trim();
-  if (!trimmed) {
-    return { ok: false, normalized: null, changed: false, reason: '响应为空' };
-  }
-
-  const toolsOnly = extractOnlySentraToolsBlock(trimmed);
-  if (toolsOnly && !toolsOnly.includes('<sentra-response')) {
-    return { ok: true, normalized: toolsOnly, changed: false };
-  }
-
-  const guardedResp = guardAndNormalizeSentraResponse(trimmed, { enabled: true });
-  if (guardedResp && guardedResp.ok && guardedResp.normalized) {
-    return guardedResp;
-  }
-
-  // Prefer tools block as fallback.
-  const firstTools = extractFirstFullTag(trimmed, 'sentra-tools');
-  if (firstTools) {
-    try {
-      logger.warn('tools_or_response: 已本地截取第一段 sentra-tools 放行');
-    } catch { }
-    return { ok: true, normalized: firstTools, changed: true, reason: 'trim_to_first_sentra_tools' };
-  }
-
-  return {
-    ok: false,
-    normalized: null,
-    changed: false,
-    reason: '缺少或无法解析 <sentra-tools>/<sentra-response> 标签'
-  };
-}
-
-function isLikelySentraResponseBlock(xml: unknown): boolean {
-  if (!xml || typeof xml !== 'string') return false;
-  if (!xml.includes('<sentra-response')) return false;
-  if (!xml.includes('</sentra-response>')) return false;
+function getSentraMessageRootNode(xml: unknown): Record<string, unknown> | null {
   const parsed = tryParseXmlFragment(xml, 'root');
-  if (!parsed || typeof parsed !== 'object') return false;
-  return Object.prototype.hasOwnProperty.call(parsed, 'sentra-response');
+  if (!parsed || typeof parsed !== 'object') return null;
+  const rootObj = parsed as Record<string, unknown>;
+  const raw = rootObj['sentra-message'];
+  const node = Array.isArray(raw)
+    ? raw.find((item) => item && typeof item === 'object')
+    : raw;
+  return node && typeof node === 'object' ? node as Record<string, unknown> : null;
+}
+
+function diagnoseSentraMessageShape(xml: unknown): string[] {
+  const issues: string[] = [];
+  const root = getSentraMessageRootNode(xml);
+  if (!root) {
+    issues.push('shape:no_sentra_message_root');
+    return issues;
+  }
+
+  const hasMessageContainer = root.message != null;
+  const directSegments = normalizeToArray((root as Record<string, unknown>).segment);
+  const messageNode = (root as Record<string, unknown>).message;
+  const messageSegments = normalizeToArray(
+    messageNode && typeof messageNode === 'object'
+      ? (messageNode as Record<string, unknown>).segment
+      : undefined
+  );
+
+  if (!hasMessageContainer) {
+    issues.push('shape:missing_message_container');
+    if (directSegments.length > 0) issues.push('shape:segment_not_under_message');
+    return issues;
+  }
+
+  if (messageSegments.length === 0) {
+    issues.push('shape:message_without_segment');
+    if (directSegments.length > 0) issues.push('shape:segment_not_under_message');
+  }
+  return issues;
+}
+
+function withSentraMessageReasonTrace(baseReason: string, xml: unknown): string {
+  const reason = String(baseReason || '').trim() || tRuntimeFormat('invalid_sentra_message_segments');
+  const issues = diagnoseSentraMessageShape(xml);
+  if (!issues.length) return reason;
+  return `${reason} [trace:${issues.join('|')}]`;
+}
+
+function hasMeaningfulSegmentData(value: unknown, depth = 0): boolean {
+  if (value == null) return false;
+  if (depth > 3) return true;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number' || typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.some((item) => hasMeaningfulSegmentData(item, depth + 1));
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return false;
+    for (const [, v] of entries) {
+      if (hasMeaningfulSegmentData(v, depth + 1)) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+function isValidSentraMessageSegment(seg: SentraMessageSegment): boolean {
+  const type = typeof seg?.type === 'string' ? seg.type.trim().toLowerCase() : '';
+  if (!type) return false;
+  const data = seg?.data && typeof seg.data === 'object' ? seg.data : {};
+  if (type === 'text') {
+    const text = typeof data.text === 'string' ? data.text.trim() : '';
+    return text.length > 0;
+  }
+  return hasMeaningfulSegmentData(data);
+}
+
+function validateSentraMessageSegments(xml: unknown): { ok: boolean; reason?: string } {
+  try {
+    const parsed = parseSentraMessage(xml);
+    const chatType = typeof parsed?.chat_type === 'string' ? parsed.chat_type.trim().toLowerCase() : '';
+    const hasGroup = typeof parsed?.group_id === 'string' && parsed.group_id.trim().length > 0;
+    const hasUser = typeof parsed?.user_id === 'string' && parsed.user_id.trim().length > 0;
+
+    if (chatType !== 'group' && chatType !== 'private') {
+      return {
+        ok: false,
+        reason: withSentraMessageReasonTrace(tRuntimeFormat('sentra_message_must_include_chat_type'), xml)
+      };
+    }
+    if (chatType === 'group') {
+      if (!hasGroup) {
+        return {
+          ok: false,
+          reason: withSentraMessageReasonTrace(tRuntimeFormat('chat_type_group_requires_group_id'), xml)
+        };
+      }
+      if (hasUser) {
+        return {
+          ok: false,
+          reason: withSentraMessageReasonTrace(tRuntimeFormat('chat_type_group_cannot_include_user_id'), xml)
+        };
+      }
+    }
+    if (chatType === 'private') {
+      if (!hasUser) {
+        return {
+          ok: false,
+          reason: withSentraMessageReasonTrace(tRuntimeFormat('chat_type_private_requires_user_id'), xml)
+        };
+      }
+      if (hasGroup) {
+        return {
+          ok: false,
+          reason: withSentraMessageReasonTrace(tRuntimeFormat('chat_type_private_cannot_include_group_id'), xml)
+        };
+      }
+    }
+
+    const segments = Array.isArray(parsed?.message) ? parsed.message : [];
+    if (segments.length === 0) {
+      return {
+        ok: false,
+        reason: withSentraMessageReasonTrace(tRuntimeFormat('sentra_message_must_contain_segment'), xml)
+      };
+    }
+    const valid = segments.filter((seg) => isValidSentraMessageSegment(seg));
+    if (valid.length === 0) {
+      return {
+        ok: false,
+        reason: withSentraMessageReasonTrace(tRuntimeFormat('sentra_message_must_contain_valid_segment'), xml)
+      };
+    }
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      reason: withSentraMessageReasonTrace(tRuntimeFormat('sentra_message_parse_failed'), xml)
+    };
+  }
 }
 
 function extractOnlySentraToolsBlock(text: unknown): string | null {
@@ -110,7 +190,89 @@ function extractOnlySentraToolsBlock(text: unknown): string | null {
   return merged;
 }
 
-export function guardAndNormalizeSentraResponse(rawResponse: unknown, opts: { enabled?: boolean } = {}): GuardResult {
+function isLikelySentraMessageBlock(xml: unknown): boolean {
+  if (!xml || typeof xml !== 'string') return false;
+  if (!xml.includes('<sentra-message')) return false;
+  if (!xml.includes('</sentra-message>')) return false;
+  const parsed = tryParseXmlFragment(xml, 'root');
+  if (!parsed || typeof parsed !== 'object') return false;
+  return Object.prototype.hasOwnProperty.call(parsed, 'sentra-message');
+}
+
+export function guardAndNormalizeSentraTools(raw: unknown, opts: { enabled?: boolean } = {}): GuardResult {
+  const enabled = opts.enabled ?? getEnvBool('ENABLE_LOCAL_FORMAT_GUARD', true);
+  if (!enabled) {
+    const response = typeof raw === 'string' ? raw : String(raw ?? '');
+    return { ok: true, normalized: response, changed: false };
+  }
+
+  const response = typeof raw === 'string' ? raw : String(raw ?? '');
+  const trimmed = response.trim();
+  if (!trimmed) {
+    return { ok: false, normalized: null, changed: false, reason: tRuntimeFormat('guard_empty') };
+  }
+
+  const only = extractOnlySentraToolsBlock(trimmed);
+  if (only && !only.includes('<sentra-message')) {
+    return { ok: true, normalized: only, changed: only !== trimmed };
+  }
+
+  const first = extractFirstFullTag(trimmed, 'sentra-tools');
+  if (first) {
+    try {
+      logger.warn(tRuntimeFormat('log_trim_to_first_tools_block'));
+    } catch { }
+    return { ok: true, normalized: first, changed: true, reason: 'trim_to_first_sentra_tools' };
+  }
+
+  return {
+    ok: false,
+    normalized: null,
+    changed: false,
+    reason: tRuntimeFormat('guard_missing_sentra_tools')
+  };
+}
+
+export function guardAndNormalizeSentraToolsOrResponse(raw: unknown, opts: { enabled?: boolean } = {}): GuardResult {
+  const enabled = opts.enabled ?? getEnvBool('ENABLE_LOCAL_FORMAT_GUARD', true);
+  if (!enabled) {
+    const response = typeof raw === 'string' ? raw : String(raw ?? '');
+    return { ok: true, normalized: response, changed: false };
+  }
+
+  const response = typeof raw === 'string' ? raw : String(raw ?? '');
+  const trimmed = response.trim();
+  if (!trimmed) {
+    return { ok: false, normalized: null, changed: false, reason: tRuntimeFormat('guard_empty') };
+  }
+
+  const toolsOnly = extractOnlySentraToolsBlock(trimmed);
+  if (toolsOnly && !toolsOnly.includes('<sentra-message')) {
+    return { ok: true, normalized: toolsOnly, changed: false };
+  }
+
+  const guardedResp = guardAndNormalizeSentraMessage(trimmed, { enabled: true });
+  if (guardedResp && guardedResp.ok && guardedResp.normalized) {
+    return guardedResp;
+  }
+
+  const firstTools = extractFirstFullTag(trimmed, 'sentra-tools');
+  if (firstTools) {
+    try {
+      logger.warn(tRuntimeFormat('log_trim_to_first_tools_block_tools_or_message'));
+    } catch { }
+    return { ok: true, normalized: firstTools, changed: true, reason: 'trim_to_first_sentra_tools' };
+  }
+
+  return {
+    ok: false,
+    normalized: null,
+    changed: false,
+    reason: tRuntimeFormat('guard_missing_sentra_tools_or_message')
+  };
+}
+
+export function guardAndNormalizeSentraMessage(rawResponse: unknown, opts: { enabled?: boolean } = {}): GuardResult {
   const enabled = opts.enabled ?? getEnvBool('ENABLE_LOCAL_FORMAT_GUARD', true);
   if (!enabled) {
     const response = typeof rawResponse === 'string' ? rawResponse : String(rawResponse ?? '');
@@ -120,84 +282,94 @@ export function guardAndNormalizeSentraResponse(rawResponse: unknown, opts: { en
   const response = typeof rawResponse === 'string' ? rawResponse : String(rawResponse ?? '');
   const trimmed = response.trim();
   if (!trimmed) {
-    return { ok: false, normalized: null, changed: false, reason: '响应为空' };
+    return { ok: false, normalized: null, changed: false, reason: tRuntimeFormat('guard_empty') };
   }
 
-  // If already a pure block, keep it.
-  if (trimmed.startsWith('<sentra-response') && trimmed.endsWith('</sentra-response>') && isLikelySentraResponseBlock(trimmed)) {
+  if (trimmed.startsWith('<sentra-message') && trimmed.endsWith('</sentra-message>') && isLikelySentraMessageBlock(trimmed)) {
+    const segCheck = validateSentraMessageSegments(trimmed);
+    if (!segCheck.ok) {
+      return {
+        ok: false,
+        normalized: null,
+        changed: false,
+        reason: segCheck.reason || tRuntimeFormat('invalid_sentra_message_segments')
+      };
+    }
     return { ok: true, normalized: trimmed, changed: false };
   }
 
-  // Prefer: extract the first full <sentra-response>...</sentra-response> block and drop the rest.
-  const first = extractFirstFullTag(trimmed, 'sentra-response');
-  if (first && isLikelySentraResponseBlock(first)) {
+  const first = extractFirstFullTag(trimmed, 'sentra-message');
+  if (first && isLikelySentraMessageBlock(first)) {
+    const segCheck = validateSentraMessageSegments(first);
+    if (!segCheck.ok) {
+      return {
+        ok: false,
+        normalized: null,
+        changed: false,
+        reason: segCheck.reason || tRuntimeFormat('invalid_sentra_message_segments')
+      };
+    }
     try {
-      logger.warn('检测到 sentra-response 外存在额外内容，已本地截取第一段 sentra-response 放行');
+      logger.warn(tRuntimeFormat('log_trim_to_first_message_block'));
     } catch { }
-    return { ok: true, normalized: first, changed: true, reason: 'trim_to_first_sentra_response' };
+    return { ok: true, normalized: first, changed: true, reason: 'trim_to_first_sentra_message' };
   }
 
   return {
     ok: false,
     normalized: null,
     changed: false,
-    reason: '缺少或无法解析 <sentra-response> 标签'
+    reason: tRuntimeFormat('guard_missing_sentra_message')
   };
 }
 
-export function shouldAttemptModelFormatFix({ expectedOutput, lastErrorReason, alreadyTried }: {
-  expectedOutput?: ExpectedOutput;
-  lastErrorReason?: string;
-  alreadyTried?: boolean;
-} = {}): boolean {
+export function shouldAttemptModelFormatFix(
+  {
+    expectedOutput,
+    alreadyTried
+  }: {
+    expectedOutput?: ExpectedOutput;
+    lastErrorReason?: string;
+    alreadyTried?: boolean;
+  } = {}
+): boolean {
   if (alreadyTried) return false;
   const enabled = getEnvBool('ENABLE_MODEL_FORMAT_FIX', true);
   if (!enabled) return false;
-  const eo = String(expectedOutput || 'sentra_response');
-  if (eo !== 'sentra_response' && eo !== 'sentra_tools' && eo !== 'sentra_tools_or_response') return false;
-  const reason = String(lastErrorReason || '').trim();
-  if (!reason) return true;
+  const eo = String(expectedOutput || 'sentra_message');
+  if (
+    eo !== 'sentra_message' &&
+    eo !== 'sentra_tools' &&
+    eo !== 'sentra_tools_or_message' &&
+    eo !== 'reply_gate_decision_tools' &&
+    eo !== 'override_intent_decision_tools'
+  ) return false;
   return true;
 }
 
-export function buildSentraResponseFormatFixRootDirectiveXml({
+export function buildSentraMessageFormatFixRootDirectiveXml({
   lastErrorReason,
   candidateOutput,
   scope = 'single_turn'
 }: {
-  lastErrorReason?: string | undefined;
-  candidateOutput?: string | undefined;
-  scope?: string | undefined;
+  lastErrorReason?: string;
+  candidateOutput?: string;
+  scope?: string;
 } = {}) {
-  const reason = String(lastErrorReason || '').trim();
-  const candidate = String(candidateOutput || '').trim();
-  return [
-    '<sentra-root-directive>',
-    `  <id>format_fix_${randomUUID()}</id>`,
-    '  <type>format_fix</type>',
-    `  <scope>${scope}</scope>`,
-    '  <phase>FormatFix</phase>',
-    '  <objective>你的任务是：修复 candidate_output 的格式，使其符合 Sentra 协议。你必须保留原意与资源信息（如有），但最终输出必须严格合规。</objective>',
-    '  <allow_tools>false</allow_tools>',
-    (reason
-      ? `  <last_error>${escapeXml(reason)}</last_error>`
-      : ''),
-    (candidate
-      ? [
-        '  <candidate_output>',
-        `    ${escapeXml(candidate)}`,
-        '  </candidate_output>'
-      ].join('\n')
-      : ''),
-    '  <constraints>',
-    '    <item>你必须且只能输出一个顶层块：<sentra-response>...</sentra-response>；除此之外不要输出任何字符、解释、前后缀。</item>',
-    '    <item>禁止输出 <sentra-tools>、<sentra-result>、<sentra-user-question> 等任何只读标签。</item>',
-    '    <item>如果 candidate_output 缺少必需字段，请以最小改动补齐：至少包含一个非空 <text1>，并包含 <resources></resources>（若无资源）。</item>',
-    '  </constraints>',
-    '</sentra-root-directive>'
-  ]
-    .filter((x) => x !== '')
-    .join('\n');
+  const args: {
+    expectedOutput: 'sentra_message';
+    lastErrorReason?: string;
+    candidateOutput?: string;
+    scope?: string;
+  } = { expectedOutput: 'sentra_message' };
+  if (typeof lastErrorReason === 'string') args.lastErrorReason = lastErrorReason;
+  if (typeof candidateOutput === 'string') args.candidateOutput = candidateOutput;
+  if (typeof scope === 'string') args.scope = scope;
+  const doc = buildFormatFixRootDirectiveFromContract(args);
+  return doc.replace(
+    '<id>format_fix_contract_driven</id>',
+    `<id>format_fix_${randomUUID()}</id>`
+  );
 }
 
 export function buildSentraToolsFormatFixRootDirectiveXml({
@@ -205,76 +377,56 @@ export function buildSentraToolsFormatFixRootDirectiveXml({
   candidateOutput,
   scope = 'single_turn'
 }: {
-  lastErrorReason?: string | undefined;
-  candidateOutput?: string | undefined;
-  scope?: string | undefined;
+  lastErrorReason?: string;
+  candidateOutput?: string;
+  scope?: string;
 } = {}) {
-  const reason = String(lastErrorReason || '').trim();
-  const candidate = String(candidateOutput || '').trim();
-  return [
-    '<sentra-root-directive>',
-    `  <id>format_fix_${randomUUID()}</id>`,
-    '  <type>format_fix</type>',
-    `  <scope>${scope}</scope>`,
-    '  <phase>FormatFix</phase>',
-    '  <objective>你的任务是：修复 candidate_output 的格式，使其符合 Sentra 协议。你必须保留原意与参数信息（如有），但最终输出必须严格合规。</objective>',
-    '  <allow_tools>true</allow_tools>',
-    (reason ? `  <last_error>${escapeXml(reason)}</last_error>` : ''),
-    (candidate
-      ? [
-        '  <candidate_output>',
-        `    ${escapeXml(candidate)}`,
-        '  </candidate_output>'
-      ].join('\n')
-      : ''),
-    '  <constraints>',
-    '    <item>你必须且只能输出一个顶层块：<sentra-tools>...</sentra-tools>；除此之外不要输出任何字符、解释、前后缀。</item>',
-    '    <item>禁止输出 <sentra-response>、<sentra-result>、<sentra-user-question> 等任何只读或用户可见标签。</item>',
-    '    <item><sentra-tools> 内必须是合法 XML，只能包含 <invoke name="..."> 与其子 <parameter name="...">...。</item>',
-    '  </constraints>',
-    '</sentra-root-directive>'
-  ]
-    .filter((x) => x !== '')
-    .join('\n');
+  const args: {
+    expectedOutput: 'sentra_tools';
+    lastErrorReason?: string;
+    candidateOutput?: string;
+    scope?: string;
+  } = { expectedOutput: 'sentra_tools' };
+  if (typeof lastErrorReason === 'string') args.lastErrorReason = lastErrorReason;
+  if (typeof candidateOutput === 'string') args.candidateOutput = candidateOutput;
+  if (typeof scope === 'string') args.scope = scope;
+  const doc = buildFormatFixRootDirectiveFromContract(args);
+  return doc.replace(
+    '<id>format_fix_contract_driven</id>',
+    `<id>format_fix_${randomUUID()}</id>`
+  );
 }
 
-export function buildSentraToolsOrResponseFormatFixRootDirectiveXml({
+export function buildSentraToolsOrMessageFormatFixRootDirectiveXml({
   lastErrorReason,
   candidateOutput,
   scope = 'single_turn'
 }: {
-  lastErrorReason?: string | undefined;
-  candidateOutput?: string | undefined;
-  scope?: string | undefined;
+  lastErrorReason?: string;
+  candidateOutput?: string;
+  scope?: string;
 } = {}) {
-  const reason = String(lastErrorReason || '').trim();
-  const candidate = String(candidateOutput || '').trim();
-  return [
-    '<sentra-root-directive>',
-    `  <id>format_fix_${randomUUID()}</id>`,
-    '  <type>format_fix</type>',
-    `  <scope>${scope}</scope>`,
-    '  <phase>FormatFix</phase>',
-    '  <objective>你的任务是：修复 candidate_output 的格式，使其符合 Sentra 协议。你必须保留原意，但最终输出必须严格合规。</objective>',
-    '  <allow_tools>true</allow_tools>',
-    (reason ? `  <last_error>${escapeXml(reason)}</last_error>` : ''),
-    (candidate
-      ? [
-        '  <candidate_output>',
-        `    ${escapeXml(candidate)}`,
-        '  </candidate_output>'
-      ].join('\n')
-      : ''),
-    '  <constraints>',
-    '    <item>你必须且只能输出一个顶层块，除此之外不能输出任何额外文本。</item>',
-    '    <item>本轮必须且只能输出二选一：<sentra-tools>...</sentra-tools> 或 <sentra-response>...</sentra-response>。</item>',
-    '    <item>若输出 <sentra-tools>：禁止输出 <sentra-response>/<sentra-result>/<sentra-user-question>。</item>',
-    '    <item>若输出 <sentra-response>：禁止输出 <sentra-tools>/<sentra-result>/<sentra-user-question>。</item>',
-    '  </constraints>',
-    '</sentra-root-directive>'
-  ]
-    .filter((x) => x !== '')
-    .join('\n');
+  const args: {
+    expectedOutput: 'sentra_tools_or_message';
+    lastErrorReason?: string;
+    candidateOutput?: string;
+    scope?: string;
+  } = { expectedOutput: 'sentra_tools_or_message' };
+  if (typeof lastErrorReason === 'string') args.lastErrorReason = lastErrorReason;
+  if (typeof candidateOutput === 'string') args.candidateOutput = candidateOutput;
+  if (typeof scope === 'string') args.scope = scope;
+  const doc = buildFormatFixRootDirectiveFromContract(args);
+  return doc.replace(
+    '<id>format_fix_contract_driven</id>',
+    `<id>format_fix_${randomUUID()}</id>`
+  );
+}
+
+function buildFormatFixSkillHints(expectedOutput: string, lastErrorReason = ''): string {
+  return buildFormatFixSkillHintsFromContract({
+    expectedOutput,
+    lastErrorReason
+  });
 }
 
 export async function attemptModelFormatFixWithAgent({
@@ -283,27 +435,40 @@ export async function attemptModelFormatFixWithAgent({
   model,
   timeout,
   groupId,
-  expectedOutput = 'sentra_response',
+  expectedOutput = 'sentra_message',
   lastErrorReason,
   candidateOutput
 }: ModelFormatFixParams = {}) {
   if (!agent || typeof agent.chat !== 'function') return null;
   const conv = Array.isArray(conversations) ? conversations : [];
-  const eo = String(expectedOutput || 'sentra_response');
+  const eo = String(expectedOutput || 'sentra_message');
   const fixArgs: { lastErrorReason?: string; candidateOutput?: string; scope?: string } = { scope: 'single_turn' };
   if (typeof lastErrorReason === 'string') fixArgs.lastErrorReason = lastErrorReason;
   if (typeof candidateOutput === 'string') fixArgs.candidateOutput = candidateOutput;
+
   const rootXml =
-    eo === 'sentra_tools'
+    isToolsOnlyExpectedOutput(eo)
       ? buildSentraToolsFormatFixRootDirectiveXml(fixArgs)
-      : eo === 'sentra_tools_or_response'
-        ? buildSentraToolsOrResponseFormatFixRootDirectiveXml(fixArgs)
-        : buildSentraResponseFormatFixRootDirectiveXml(fixArgs);
+      : isToolsOrMessageExpectedOutput(eo)
+        ? buildSentraToolsOrMessageFormatFixRootDirectiveXml(fixArgs)
+        : buildSentraMessageFormatFixRootDirectiveXml(fixArgs);
+  const skillHints = buildFormatFixSkillHints(eo, fixArgs.lastErrorReason || '');
 
-  // 复用原上下文，追加一次“格式修复 root 指令”作为 user turn
-  const fixConversations: ChatMessage[] = [...conv, { role: 'user', content: rootXml }];
+  const fixConversations: ChatMessage[] = [
+    ...conv,
+    { role: 'system', content: skillHints },
+    { role: 'user', content: rootXml }
+  ];
 
-  let out;
+  try {
+    logger.info('format-fix model attempt start', {
+      expectedOutput: eo,
+      hasReason: !!String(lastErrorReason || '').trim(),
+      group: groupId || 'format_fix'
+    });
+  } catch { }
+
+  let out: unknown;
   try {
     out = await agent.chat(fixConversations, {
       model,
@@ -313,23 +478,38 @@ export async function attemptModelFormatFixWithAgent({
     });
   } catch (e) {
     try {
-      logger.warn(`[${groupId || 'format_fix'}] 模型格式修复调用失败`, { err: String(e) });
+      logger.warn(
+        tRuntimeFormat('log_format_fix_agent_failed', {
+          group: groupId || 'format_fix',
+          err: String(e)
+        })
+      );
     } catch { }
     return null;
   }
 
   const raw = typeof out === 'string' ? out : String(out ?? '');
   const guarded =
-    eo === 'sentra_tools'
+    isToolsOnlyExpectedOutput(eo)
       ? guardAndNormalizeSentraTools(raw)
-      : eo === 'sentra_tools_or_response'
+      : isToolsOrMessageExpectedOutput(eo)
         ? guardAndNormalizeSentraToolsOrResponse(raw)
-        : guardAndNormalizeSentraResponse(raw);
+        : guardAndNormalizeSentraMessage(raw);
   if (guarded && guarded.ok && guarded.normalized) return guarded.normalized;
+  try {
+    logger.warn('format-fix model attempt returned invalid output', {
+      expectedOutput: eo,
+      reason: guarded?.reason || 'unknown'
+    });
+  } catch { }
   return null;
 }
 
-export async function repairSentraResponseWithLLM({ rawText, agent, model }: {
+export async function repairSentraMessageWithLLM({
+  rawText,
+  agent,
+  model
+}: {
   rawText?: string;
   agent?: ModelFormatFixParams['agent'];
   model?: string;
@@ -343,7 +523,7 @@ export async function repairSentraResponseWithLLM({ rawText, agent, model }: {
       ...(agent ? { agent } : {}),
       ...(model ? { model } : {})
     });
-    const guarded = guardAndNormalizeSentraResponse(fixed);
+    const guarded = guardAndNormalizeSentraMessage(fixed);
     if (guarded && guarded.ok && guarded.normalized) {
       return guarded.normalized;
     }
@@ -359,27 +539,32 @@ export async function runSentraFormatFixPipeline({
   model,
   timeout,
   groupId,
-  expectedOutput = 'sentra_response',
+  expectedOutput = 'sentra_message',
   lastErrorReason,
   candidateOutput
 }: ModelFormatFixParams = {}) {
-  const eo = String(expectedOutput || 'sentra_response');
-  if (eo !== 'sentra_response' && eo !== 'sentra_tools' && eo !== 'sentra_tools_or_response') return null;
+  const eo = String(expectedOutput || 'sentra_message');
+  if (
+    eo !== 'sentra_message' &&
+    eo !== 'sentra_tools' &&
+    eo !== 'sentra_tools_or_message' &&
+    eo !== 'reply_gate_decision_tools' &&
+    eo !== 'override_intent_decision_tools'
+  ) return null;
+
   const candidate = typeof candidateOutput === 'string' ? candidateOutput : String(candidateOutput ?? '');
   if (!candidate.trim()) return null;
 
-  // 1) local guard (extract first block)
   const guarded =
-    eo === 'sentra_tools'
+    isToolsOnlyExpectedOutput(eo)
       ? guardAndNormalizeSentraTools(candidate)
-      : eo === 'sentra_tools_or_response'
+      : isToolsOrMessageExpectedOutput(eo)
         ? guardAndNormalizeSentraToolsOrResponse(candidate)
-        : guardAndNormalizeSentraResponse(candidate);
+        : guardAndNormalizeSentraMessage(candidate);
   if (guarded && guarded.ok && guarded.normalized) {
     return guarded.normalized;
   }
 
-  // 2) model format_fix (root directive)
   const fixParams: ModelFormatFixParams = {
     expectedOutput: eo,
     candidateOutput: candidate
@@ -390,17 +575,17 @@ export async function runSentraFormatFixPipeline({
   if (typeof timeout === 'number') fixParams.timeout = timeout;
   if (typeof groupId === 'string') fixParams.groupId = groupId;
   if (typeof lastErrorReason === 'string') fixParams.lastErrorReason = lastErrorReason;
+
   const fixedByModel = await attemptModelFormatFixWithAgent(fixParams);
   if (fixedByModel && typeof fixedByModel === 'string' && fixedByModel.trim()) {
     return fixedByModel;
   }
 
-  // 3) LLM repair tool (sentra_response only)
-  if (eo === 'sentra_response') {
+  if (eo === 'sentra_message') {
     const repairArgs: { rawText: string; agent?: ModelFormatFixParams['agent']; model?: string } = { rawText: candidate };
     if (agent) repairArgs.agent = agent;
     if (typeof model === 'string') repairArgs.model = model;
-    const fixedByRepair = await repairSentraResponseWithLLM(repairArgs);
+    const fixedByRepair = await repairSentraMessageWithLLM(repairArgs);
     if (fixedByRepair && typeof fixedByRepair === 'string' && fixedByRepair.trim()) {
       return fixedByRepair;
     }
@@ -409,6 +594,6 @@ export async function runSentraFormatFixPipeline({
   return null;
 }
 
-export async function runSentraResponseFixPipeline(args: ModelFormatFixParams = {}) {
-  return await runSentraFormatFixPipeline({ ...args, expectedOutput: 'sentra_response' });
+export async function runSentraMessageFixPipeline(args: ModelFormatFixParams = {}) {
+  return await runSentraFormatFixPipeline({ ...args, expectedOutput: 'sentra_message' });
 }

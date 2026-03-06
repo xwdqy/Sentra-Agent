@@ -11,13 +11,23 @@
 
 ## When to use
 
-- 用户明确要求改群名，并提供新群名。
+- 目标与工具能力一致：QQ平台：设置群名称
+- 可提供必需入参：`group_id`、`name`。
+- 目标路由已明确：`group_id`。
+- 你明确接受该操作可能产生的副作用（发送/修改/写入/生成）。
 
-## When NOT to use
+## When not to use
 
-- 群号不明确或新群名不明确。
-- 机器人无群管理权限。
+- 缺少必需入参时不要调用：`group_id`、`name`。
+- 路由不明确时不要调用（需明确 `group_id`）。
+- 仅希望查询信息、且不希望产生副作用时，不要调用。
 
+## Success Criteria
+
+- Must have `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be non-empty, `data.request.requestId` must be present, and `data.request.args` must match this call (`group_id, name`).
+- `data.response` must be present (non-null object/string), proving RPC was sent and acknowledged.
+- Retry guidance: timeout/network may retry once with same args; input/schema errors should regenerate args; business rejection should replan.
 ## Input
 
 - Required:

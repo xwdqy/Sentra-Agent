@@ -5,17 +5,9 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('AgentPresetInitializer');
 
-/**
- * 初始化 Agent 预设，并返回统一的快照结构，便于在 Main.ts 或其它入口复用。
- *
- * - 优先使用 JSON 形式的预设（例如 .json 文件或文本以 { / [ 开头且可被 JSON.parse）。
- * - 如果是 .txt/.md 等纯文本，则调用 convertPresetTextToJson 通过轻量模型转换为 JSON。
- * - 始终补齐 meta/parameters/rules 等字段，返回标准化后的 JSON。
- * - 同时派生 XML 与纯文本视图，供下游 MCP / Prompt 组合使用。
- */
 export async function initAgentPresetCore(_agent: unknown) {
   let rawText = '';
-  let presetJson = null;
+  let presetJson: Record<string, unknown> | null = null;
   let presetXml = '';
   let presetPlainText = '';
   let sourcePath = '';
@@ -27,29 +19,32 @@ export async function initAgentPresetCore(_agent: unknown) {
     sourceFileName = loaded.fileName || '';
     rawText = loaded.text || '';
 
+    // json: normalize -> xml/plainText
     if (loaded.parsedJson) {
       presetJson = normalizePresetJsonForRuntime(loaded.parsedJson, {
         rawText,
         fileName: loaded.fileName
-      });
+      }) as Record<string, unknown>;
     }
 
     if (presetJson) {
       presetXml = buildAgentPresetXml(presetJson) || '';
       presetPlainText = formatPresetJsonAsPlainText(presetJson) || '';
     } else {
+      // txt/md: direct system plain text
       presetXml = '';
       presetPlainText = rawText || '';
     }
 
-    logger.info('Agent 预设初始化完成', {
+    logger.info('agent preset initialized', {
       hasJson: !!presetJson,
       hasXml: !!presetXml,
       rawLength: rawText.length,
-      plainTextLength: presetPlainText.length
+      plainTextLength: presetPlainText.length,
+      sourceFileName
     });
   } catch (e) {
-    logger.warn('Agent 预设初始化失败，将不使用结构化人设', { err: String(e) });
+    logger.warn('agent preset init failed', { err: String(e) });
     rawText = '';
     presetJson = null;
     presetXml = '';

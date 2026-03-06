@@ -2,21 +2,18 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "need_tools": { 
+    "need_tools": {
       "type": "boolean",
-      "description": "Whether external tools are needed to complete the task. IMPORTANT: Set to TRUE if the objective contains: (1) Local file paths (images, documents, etc.) - tools CAN read them; (2) Real-time information queries (latest news, current events, recent updates); (3) External resource access (web search, API calls, database queries); (4) Content generation (image creation, file operations); (5) Interactive operations (sending messages, executing commands). Set to FALSE only for simple conversations, general knowledge questions (not time-sensitive), or basic explanations."
-    },
-    "summary": { 
-      "type": "string",
-      "description": "Brief 1-2 sentence summary of the user's request and key information. Identify the main intent and any critical details (file paths, search queries, specific requirements)."
+      "description": "Optional compatibility field. Usually omitted in tool-gate mode."
     },
     "tool_names": {
       "type": "array",
-      "description": "Selected tool names (aiName) that should be invoked to complete the task. IMPORTANT: Only choose from the provided tool catalog. Do NOT generate or guess tool parameters in Judge. If need_tools=false, output an empty array []. NOTE: At runtime, this schema will be injected with an enum whitelist derived from the current tool catalog, so you can only pick allowed MCP tools.",
+      "description": "Compact shortlist of selected tool aiNames. Output only names from the provided catalog. Do not generate arguments here.",
       "uniqueItems": true,
       "items": {
         "type": "string"
       },
+      "maxItems": 12,
       "examples": [
         ["local__read_file"],
         ["local__search_web", "local__read_url_content"],
@@ -24,6 +21,6 @@
       ]
     }
   },
-  "required": ["need_tools", "tool_names"],
+  "required": ["tool_names"],
   "additionalProperties": true
 }

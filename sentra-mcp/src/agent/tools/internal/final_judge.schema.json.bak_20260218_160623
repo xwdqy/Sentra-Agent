@@ -1,0 +1,68 @@
+{
+  "type": "object",
+  "properties": {
+    "success": {
+      "type": "boolean",
+      "description": "Whether executed steps are successful."
+    },
+    "incomplete": {
+      "type": "boolean",
+      "description": "Whether the user objective is still incomplete."
+    },
+    "nextAction": {
+      "type": "string",
+      "enum": ["perfect", "supplement", "replan"],
+      "description": "Decision for next orchestration action."
+    },
+    "completionLevel": {
+      "type": "string",
+      "enum": ["perfect", "partial", "poor"],
+      "description": "Overall completion quality."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence score for this evaluation."
+    },
+    "failedSteps": {
+      "type": "array",
+      "description": "Failed steps list. If success=false, this should usually be non-empty.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "displayIndex": {
+            "type": "integer",
+            "description": "Human-readable step index starting from 1."
+          },
+          "stepId": {
+            "type": "string",
+            "description": "Stable step ID in the plan."
+          },
+          "aiName": {
+            "type": "string",
+            "description": "Tool name that failed."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Concrete reason for failure."
+          }
+        },
+        "required": ["stepId", "reason"]
+      }
+    },
+    "missingGoals": {
+      "type": "array",
+      "description": "Missing deliverables from user perspective.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "summary": {
+      "type": "string",
+      "description": "Concise summary of what is done, missing, and why."
+    }
+  },
+  "required": ["success", "incomplete"],
+  "additionalProperties": true
+}

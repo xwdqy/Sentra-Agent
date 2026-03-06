@@ -1,8 +1,10 @@
 ﻿import { getRedis } from './redisClient.js';
 import { createLogger } from './logger.js';
-import { getEnv, getEnvInt } from './envHotReloader.js';
+import { getEnvInt } from './envHotReloader.js';
 
 const logger = createLogger('ConversationUtils');
+const CONV_PRIVATE_PREFIX = 'sentra_conv_private_';
+const CONV_GROUP_PREFIX = 'sentra_conv_group_';
 
 /**
  * 对话历史管理模块
@@ -35,15 +37,16 @@ type ConversationHistoryRecentOptions = {
 const conversationHistory = new Map<string, ConversationHistory>();
 
 function getConversationRedisRuntimeConfig() {
-  const convMaxMessagesRaw = getEnv('REDIS_CONV_MAX_MESSAGES', '0') || '0';
-  const convMaxMessagesParsed = parseInt(convMaxMessagesRaw, 10);
-  const maxMessages = Number.isNaN(convMaxMessagesParsed) ? 0 : convMaxMessagesParsed;
+  const convMaxMessages = getEnvInt('REDIS_CONV_MAX_MESSAGES', 0);
+  const maxMessages = typeof convMaxMessages === 'number' && Number.isFinite(convMaxMessages)
+    ? Math.max(0, Math.floor(convMaxMessages))
+    : 0;
 
   const ttlRaw = getEnvInt('REDIS_CONV_TTL_SECONDS', 86400);
   const ttlSeconds = typeof ttlRaw === 'number' && Number.isFinite(ttlRaw) ? ttlRaw : 86400;
   return {
-    privatePrefix: getEnv('REDIS_CONV_PRIVATE_PREFIX', 'sentra:conv:private:') || 'sentra:conv:private:',
-    groupPrefix: getEnv('REDIS_CONV_GROUP_PREFIX', 'sentra:conv:group:') || 'sentra:conv:group:',
+    privatePrefix: CONV_PRIVATE_PREFIX,
+    groupPrefix: CONV_GROUP_PREFIX,
     ttlSeconds,
     maxMessages
   };

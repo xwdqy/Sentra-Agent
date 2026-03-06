@@ -1,45 +1,108 @@
 {
   "type": "object",
   "properties": {
-    "success": { 
+    "success": {
       "type": "boolean",
-      "description": "已执行的步骤是否成功：true=所有已执行步骤成功，false=有步骤失败。注意：这不代表任务是否完整。"
+      "description": "Whether executed steps are successful."
     },
-    "incomplete": { 
+    "incomplete": {
       "type": "boolean",
-      "description": "任务是否不完整（有遗漏步骤）：true=有计划中的步骤未执行或用户目标未完全达成，false=任务已完整执行所有必要步骤。这个字段独立于 success 判断。"
+      "description": "Whether the user objective is still incomplete."
+    },
+    "nextAction": {
+      "type": "string",
+      "enum": ["perfect", "supplement", "replan"],
+      "description": "Decision for next orchestration action."
+    },
+    "completionLevel": {
+      "type": "string",
+      "enum": ["perfect", "partial", "poor"],
+      "description": "Overall completion quality."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence score for this evaluation."
     },
     "failedSteps": {
       "type": "array",
-      "description": "失败步骤列表。**关键：当 success=false 时，此字段绝对不能为空数组！必须详细列出所有 res.success=false 的步骤。**当 success=true 时，为空数组 []。",
+      "description": "Failed steps list. If success=false, this should usually be non-empty.",
       "items": {
         "type": "object",
         "properties": {
           "displayIndex": {
             "type": "integer",
-            "description": "展示用步骤序号（从 1 开始，仅用于人类/模型阅读）"
+            "description": "Human-readable step index starting from 1."
           },
           "stepId": {
             "type": "string",
-            "description": "稳定步骤ID（唯一身份标识，用于依赖/引用/补计划 patch）。格式示例：s_01J..."
+            "description": "Stable step ID in the plan."
           },
-          "aiName": { 
+          "aiName": {
             "type": "string",
-            "description": "失败的工具名称（如 mindmap_gen, web_render_image）"
+            "description": "Tool name that failed."
           },
-          "reason": { 
+          "reason": {
             "type": "string",
-            "description": "具体失败原因（如“超时”、“文件不存在”、“API 错误”），不要简单写“失败”"
+            "description": "Concrete reason for failure."
           }
         },
         "required": ["stepId", "reason"]
       }
     },
-    "summary": { 
+    "missingGoals": {
+      "type": "array",
+      "description": "Missing deliverables from user perspective.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "feedbackUsedCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many assistant feedback messages are used as evidence."
+    },
+    "feedbackEvidence": {
+      "type": "array",
+      "description": "Evidence list from assistant feedback, each item must include phase and excerpt.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "properties": {
+          "phase": { "type": "string" },
+          "excerpt": { "type": "string", "minLength": 1 },
+          "ts": { "type": "number" }
+        },
+        "required": ["phase", "excerpt"],
+        "additionalProperties": true
+      }
+    },
+    "summary": {
       "type": "string",
-      "description": "总结：已完成的内容 + 失败原因（如有） + 剩余步骤（如 incomplete=true）"
+      "minLength": 1,
+      "description": "Concise summary of what is done, missing, and why."
     }
   },
-  "required": ["success", "incomplete"],
+  "required": ["success", "incomplete", "feedbackUsedCount", "feedbackEvidence", "summary"],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "success": { "const": false }
+        },
+        "required": ["success"]
+      },
+      "then": {
+        "required": ["failedSteps"],
+        "properties": {
+          "failedSteps": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
   "additionalProperties": true
 }

@@ -1,0 +1,726 @@
+import { createLogger } from '../utils/logger.js';
+import { getEnvBool } from '../utils/envHotReloader.js';
+import type { ChatMessage } from '../src/types.js';
+
+const logger = createLogger('DelayJobWorker');
+
+type BaseMessage = {
+  type?: string;
+  group_id?: string | number | null;
+  sender_id?: string | number | null;
+  text?: string;
+  summary?: string;
+  message_id?: string | number | null;
+};
+
+type DelayReplayToolResultEvent = {
+  type?: string;
+  aiName?: string;
+  stepId?: string | undefined;
+  plannedStepIndex?: number | string | undefined;
+  stepIndex?: number | string | undefined;
+  executionIndex?: number | string | undefined;
+  resultStatus?: string | undefined;
+  reason?: string | undefined;
+  args?: Record<string, unknown> | undefined;
+  result?: Record<string, unknown> | null | undefined;
+  ts?: number | string | undefined;
+  [key: string]: unknown;
+};
+
+type DelayJob = {
+  kind?: string;
+  aiName?: string;
+  jobId?: string | number;
+  runId?: string;
+  plannedStepIndex?: number;
+  type?: string;
+  groupId?: string | number | null;
+  userId?: string | number | null;
+  reason?: string;
+  args?: Record<string, unknown>;
+  delayMs?: number;
+  contextForLlmCompletion?: string;
+  deferredResponseXml?: string;
+  deferredToolResultEvents?: DelayReplayToolResultEvent[];
+  hasTool?: boolean;
+  delayWhenText?: string;
+  delayTargetISO?: string;
+  fireAt?: number;
+};
+
+type HistoryEntry = {
+  type?: string;
+  aiName?: string;
+  plannedStepIndex?: number | string;
+  stepIndex?: number | string;
+  executionIndex?: number | string;
+  stepId?: string;
+  resultStatus?: string;
+  reason?: string;
+  ts?: number | string;
+  args?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
+  [key: string]: unknown;
+};
+
+type ToolCallResult = {
+  success?: boolean;
+  code?: string;
+  error?: string;
+  data?: unknown;
+  provider?: string;
+};
+
+type ChatWithRetryResult = {
+  success: boolean;
+  response?: string | null;
+  noReply?: boolean;
+  reason?: string;
+  retries?: number;
+};
+
+type ChatWithRetryFn = (
+  conversations: ChatMessage[],
+  options: string | { model?: string; __sentraExpectedOutput?: string },
+  groupId?: string
+) => Promise<ChatWithRetryResult>;
+
+type SendAndWaitResultFn = (payload: Record<string, unknown>) => Promise<unknown>;
+type SdkSendAndWaitResultFn = {
+  (payload: Record<string, unknown>): Promise<unknown>;
+  (baseMsg: BaseMessage, reply: string, allowReply: boolean, options?: Record<string, unknown>): Promise<unknown>;
+};
+
+type HistoryStoreLike = {
+  list: (runId: string, start: number, end: number) => Promise<unknown>;
+};
+
+type HistoryManagerLike = {
+  getPendingMessagesContext: (groupIdKey: string, senderId?: string | null) => string;
+  startAssistantMessage: (groupIdKey: string) => Promise<string | number>;
+  cancelConversationPairById: (groupIdKey: string, pairId: string | number) => Promise<void>;
+  appendToAssistantMessage: (groupIdKey: string, reply: string, pairId: string | number) => Promise<void>;
+  finishConversationPair: (groupIdKey: string, pairId: string | number, userContent: string) => Promise<unknown>;
+  promoteScopedConversationsToShared: (groupIdKey: string, senderId: string) => Promise<void>;
+};
+
+type SdkLike = {
+  callTool: (params: { aiName: string; args?: Record<string, unknown>; context?: Record<string, unknown> }) => Promise<unknown>;
+  sendAndWaitResult?: SdkSendAndWaitResultFn;
+  stream?: (params: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>;
+};
+
+type DelayJobContext = {
+  HistoryStore: HistoryStoreLike;
+  loadMessageCache: (runId: string) => Promise<{ message?: BaseMessage } | null>;
+  sdk: SdkLike;
+  historyManager: HistoryManagerLike;
+  buildSentraResultBlock: (ev: Record<string, unknown>) => string;
+  buildSentraInputBlock: (args: {
+    currentMessage?: BaseMessage | Record<string, unknown> | null;
+    pendingMessagesXml?: string;
+    historyMessagesXml?: string;
+    toolResultsXml?: string;
+  }) => string;
+  getDailyContextMemoryXml: (groupIdKey: string) => Promise<string>;
+  personaManager?: { formatPersonaForContext: (senderId: string) => string };
+  emo?: { userAnalytics: (senderId: string, options: { days: number }) => Promise<unknown> };
+  buildSentraEmoSection: (ua: unknown) => string;
+  WORLDBOOK_XML?: string;
+  AGENT_PRESET_XML?: string;
+  baseSystem?: string | ((requiredOutput: string) => Promise<unknown> | unknown);
+  CONTEXT_MEMORY_ENABLED?: boolean | (() => boolean);
+  MAIN_AI_MODEL?: string | (() => string);
+  triggerContextSummarizationIfNeeded: (payload: { groupId: string; chatType: string; userId: string }) => Promise<unknown>;
+  triggerPresetTeachingIfNeeded: (payload: {
+    groupId: string;
+    chatType: string;
+    userId: string;
+    userContent: string;
+    assistantContent: string;
+  }) => Promise<unknown>;
+  chatWithRetry: ChatWithRetryFn;
+  smartSend?: (
+    baseMsg: BaseMessage,
+    reply: string,
+    sendAndWaitResult: SendAndWaitResultFn,
+    allowReply: boolean,
+    options?: { hasTool?: boolean }
+  ) => Promise<unknown>;
+  sendAndWaitResult?: SendAndWaitResultFn;
+  randomUUID: () => string;
+  getActiveTaskCount?: (senderId?: string) => number;
+  triggerTaskCompletionAnalysis?: (payload: Record<string, unknown>) => Promise<unknown>;
+  agent?: unknown;
+  socialContextManager?: { getXml: () => Promise<string> } | null;
+};
+
+function normalizeReplyText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value == null) return '';
+  return String(value);
+}
+
+export function createDelayJobRunJob(ctx: DelayJobContext) {
+  const {
+    HistoryStore,
+    loadMessageCache,
+    sdk,
+    historyManager,
+    buildSentraResultBlock,
+    buildSentraInputBlock,
+    getDailyContextMemoryXml,
+    personaManager,
+    emo,
+    buildSentraEmoSection,
+    WORLDBOOK_XML,
+    AGENT_PRESET_XML,
+    baseSystem,
+    CONTEXT_MEMORY_ENABLED,
+    MAIN_AI_MODEL,
+    triggerContextSummarizationIfNeeded,
+    triggerPresetTeachingIfNeeded,
+    chatWithRetry,
+    smartSend,
+    sendAndWaitResult,
+    randomUUID,
+    triggerTaskCompletionAnalysis
+  } = ctx;
+
+  const resolveBaseSystem = async (requiredOutput: string): Promise<string> => {
+    try {
+      if (typeof baseSystem === 'function') {
+        const v = await baseSystem(requiredOutput);
+        return typeof v === 'string' ? v : String(v ?? '');
+      }
+      return typeof baseSystem === 'string' ? baseSystem : String(baseSystem ?? '');
+    } catch {
+      return '';
+    }
+  };
+
+  function getContextMemoryEnabled() {
+    try {
+      return typeof CONTEXT_MEMORY_ENABLED === 'function'
+        ? !!CONTEXT_MEMORY_ENABLED()
+        : !!CONTEXT_MEMORY_ENABLED;
+    } catch {
+      return false;
+    }
+  }
+
+  function getMainAiModel() {
+    try {
+      const v = typeof MAIN_AI_MODEL === 'function' ? MAIN_AI_MODEL() : MAIN_AI_MODEL;
+      return typeof v === 'string' && v.trim() ? v.trim() : 'gpt-3.5-turbo';
+    } catch {
+      return 'gpt-3.5-turbo';
+    }
+  }
+
+  async function buildDelaySystemContent(groupIdKey: string, senderId: string): Promise<string> {
+    let personaXml = '';
+    if (personaManager && senderId) {
+      try {
+        personaXml = personaManager.formatPersonaForContext(senderId);
+      } catch { }
+    }
+    let emoXml = '';
+    try {
+      const emoEnabled = getEnvBool('SENTRA_EMO_ENABLED', false);
+      if (emoEnabled && emo && senderId) {
+        const ua = await emo.userAnalytics(senderId, { days: 7 });
+        emoXml = buildSentraEmoSection(ua);
+      }
+    } catch { }
+    let memoryXml = '';
+    if (getContextMemoryEnabled()) {
+      try {
+        memoryXml = await getDailyContextMemoryXml(groupIdKey);
+      } catch { }
+    }
+    const worldbookXml = WORLDBOOK_XML || '';
+    const agentPresetXml = AGENT_PRESET_XML || '';
+
+    const baseSystemText = await resolveBaseSystem('must_be_sentra_message');
+
+    let socialXml = '';
+    try {
+      if (ctx && ctx.socialContextManager && typeof ctx.socialContextManager.getXml === 'function') {
+        socialXml = await ctx.socialContextManager.getXml();
+      }
+    } catch { }
+
+    const parts = [baseSystemText, personaXml, emoXml, memoryXml, socialXml, worldbookXml, agentPresetXml].filter(Boolean);
+    return parts.join('\n\n');
+  }
+
+  async function sendDelayedReply(baseMsg: BaseMessage, reply: string, hasToolFlag = true): Promise<void> {
+    if (!reply) return;
+    try {
+      if (typeof smartSend === 'function' && typeof sendAndWaitResult === 'function') {
+        const allowReply = true;
+        await smartSend(baseMsg, reply, sendAndWaitResult, allowReply, { hasTool: hasToolFlag });
+      } else {
+        logger.warn('DelayJobWorker: 缺少 smartSend/sendAndWaitResult，无法发送延迟任务回复', {
+          type: baseMsg?.type,
+          group_id: baseMsg?.group_id ?? undefined,
+          sender_id: baseMsg?.sender_id ?? undefined
+        });
+      }
+    } catch (e) {
+      const gk = baseMsg?.group_id ? `G:${baseMsg.group_id}` : `U:${baseMsg?.sender_id || ''}`;
+      logger.warn('DelayJobWorker: 发送延迟任务回复失败', { err: String(e), groupId: gk });
+    }
+  }
+
+  function buildConversationId(baseMsg: BaseMessage, senderId: string): string | null {
+    const uid = String(senderId || baseMsg?.sender_id || '').trim();
+    if (!uid) return null;
+    const gid = baseMsg?.group_id != null ? String(baseMsg.group_id).trim() : '';
+    if (gid) return `group_${gid}_sender_${uid}`;
+    return `private_${uid}`;
+  }
+
+  function triggerCompletionAnalysisSafe(payload: Record<string, unknown>): void {
+    try {
+      if (typeof triggerTaskCompletionAnalysis !== 'function') return;
+      triggerTaskCompletionAnalysis(payload).catch((e) => {
+        logger.debug('DelayJobWorker: TaskCompletionAnalysis failed', { err: String(e) });
+      });
+    } catch (e) {
+      logger.debug('DelayJobWorker: TaskCompletionAnalysis error', { err: String(e) });
+    }
+  }
+
+  function toFiniteNumber(value: unknown, fallback = 0): number {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function normalizeDeferredToolEvents(raw: unknown): DelayReplayToolResultEvent[] {
+    if (!Array.isArray(raw) || raw.length === 0) return [];
+    const out: DelayReplayToolResultEvent[] = [];
+    for (const item of raw) {
+      if (!item || typeof item !== 'object') continue;
+      const src = item as Record<string, unknown>;
+      const normalized: DelayReplayToolResultEvent = {
+        type: typeof src.type === 'string' ? src.type : 'tool_result',
+        aiName: typeof src.aiName === 'string' ? src.aiName : '',
+        stepId: typeof src.stepId === 'string' ? src.stepId : undefined,
+        plannedStepIndex: src.plannedStepIndex as number | string | undefined,
+        stepIndex: src.stepIndex as number | string | undefined,
+        executionIndex: src.executionIndex as number | string | undefined,
+        resultStatus: typeof src.resultStatus === 'string' ? src.resultStatus : 'final',
+        reason: typeof src.reason === 'string' ? src.reason : '',
+        args: src.args && typeof src.args === 'object' ? (src.args as Record<string, unknown>) : undefined,
+        result: src.result && typeof src.result === 'object' ? (src.result as Record<string, unknown>) : null,
+        ts: src.ts as number | string | undefined
+      };
+      out.push(normalized);
+    }
+    return out;
+  }
+
+  function sortDeferredToolEvents(events: DelayReplayToolResultEvent[]): DelayReplayToolResultEvent[] {
+    if (!Array.isArray(events) || events.length <= 1) return Array.isArray(events) ? events : [];
+    return events.sort((a, b) => {
+      const ap = toFiniteNumber(a?.plannedStepIndex, 999999);
+      const bp = toFiniteNumber(b?.plannedStepIndex, 999999);
+      if (ap !== bp) return ap - bp;
+      const as = toFiniteNumber(a?.stepIndex, 999999);
+      const bs = toFiniteNumber(b?.stepIndex, 999999);
+      if (as !== bs) return as - bs;
+      const ae = toFiniteNumber(a?.executionIndex, 999999);
+      const be = toFiniteNumber(b?.executionIndex, 999999);
+      if (ae !== be) return ae - be;
+      const at = toFiniteNumber(a?.ts, 0);
+      const bt = toFiniteNumber(b?.ts, 0);
+      if (at !== bt) return at - bt;
+      return 0;
+    });
+  }
+
+  function collectDeferredToolEventsFromHistory(history: HistoryEntry[]): DelayReplayToolResultEvent[] {
+    if (!Array.isArray(history) || history.length === 0) return [];
+    const out: DelayReplayToolResultEvent[] = [];
+    for (const item of history) {
+      if (!item || item.type !== 'tool_result') continue;
+      out.push({
+        type: 'tool_result',
+        aiName: typeof item.aiName === 'string' ? item.aiName : '',
+        stepId: typeof item.stepId === 'string' ? item.stepId : undefined,
+        plannedStepIndex: item.plannedStepIndex,
+        stepIndex: item.stepIndex,
+        executionIndex: item.executionIndex,
+        resultStatus: typeof item.resultStatus === 'string' ? item.resultStatus : 'final',
+        reason: typeof item.reason === 'string' ? item.reason : '',
+        args: item.args && typeof item.args === 'object' ? item.args : undefined,
+        result: item.result && typeof item.result === 'object' ? item.result : null,
+        ts: item.ts
+      });
+    }
+    return sortDeferredToolEvents(out);
+  }
+
+  function buildDelayResultRoot(mode: 'single' | 'group'): string {
+    if (mode === 'group') {
+      return '<root>This round contains sentra-result-group; output sentra-message only; consume result items by <step_group_id>/<order_step_ids> order.</root>';
+    }
+    return '<root>This round contains sentra-result; output sentra-message only; answer incrementally from current result evidence.</root>';
+  }
+
+  function buildDelayResultUserContent(resultXml: string, mode: 'single' | 'group', baseUserContent: string): string {
+    const resultPart = String(resultXml || '').trim();
+    const basePart = String(baseUserContent || '').trim();
+    const merged = resultPart && basePart ? (basePart + '\n\n' + resultPart) : (basePart || resultPart);
+    const root = buildDelayResultRoot(mode);
+    if (!merged) return root;
+    if (merged.includes(root)) return merged;
+    return merged + '\n\n' + root;
+  }
+  return async function runJob(job: DelayJob): Promise<void> {
+    try {
+      const aiName = job && job.aiName;
+      if (!aiName) {
+        logger.warn('DelayJobWorker: job 缺少 aiName，跳过', { jobId: job && job.jobId });
+        return;
+      }
+
+      const runId = job && job.runId;
+      const plannedStepIndex = Number.isFinite(job && job.plannedStepIndex)
+        ? Number(job.plannedStepIndex)
+        : 0;
+
+      let cacheMsg: BaseMessage | null = null;
+      if (runId) {
+        try {
+          const cache = await loadMessageCache(runId);
+          cacheMsg = cache && cache.message ? cache.message : null;
+        } catch (e) {
+          logger.debug('DelayJobWorker: 读取消息缓存失败', { runId, err: String(e) });
+        }
+      }
+
+      const fallbackSenderId = job && job.userId ? String(job.userId) : '';
+      const fallbackMsg: BaseMessage = {
+        type: (job && job.type) || 'private',
+        sender_id: fallbackSenderId,
+        text: (job && job.reason) || '',
+        summary: (job && job.reason) || ''
+      };
+      if (job && job.groupId) {
+        fallbackMsg.group_id = job.groupId;
+      }
+      const baseMsg: BaseMessage = cacheMsg || fallbackMsg;
+
+      const senderId = String(baseMsg.sender_id || fallbackSenderId || '');
+      const groupIdKey = baseMsg.group_id ? `G:${baseMsg.group_id}` : `U:${senderId}`;
+      const systemContent = await buildDelaySystemContent(groupIdKey, senderId);
+      const contextXml = historyManager.getPendingMessagesContext(groupIdKey, senderId);
+      const contextForLlmCompletion = job && typeof job.contextForLlmCompletion === 'string' ? job.contextForLlmCompletion : '';
+      const chatType = baseMsg.group_id ? 'group' : 'private';
+      const userIdForMemory = senderId || '';
+      const conversationId = buildConversationId(baseMsg, senderId);
+
+      const replayKind = typeof job?.kind === 'string' ? String(job.kind).trim().toLowerCase() : '';
+      const isReplyActionDelayReplay = replayKind === 'reply_action_delay_replay';
+
+      if (isReplyActionDelayReplay) {
+        let history: HistoryEntry[] = [];
+        if (runId) {
+          try {
+            const list = await HistoryStore.list(runId, 0, -1);
+            if (Array.isArray(list)) history = list as HistoryEntry[];
+          } catch (e) {
+            logger.debug('DelayJobWorker: delay replay read history failed', { runId, err: String(e) });
+          }
+        }
+
+        let deferredReplyXml = job && typeof job.deferredResponseXml === 'string'
+          ? job.deferredResponseXml
+          : '';
+        let deferredEvents = sortDeferredToolEvents(normalizeDeferredToolEvents(job?.deferredToolResultEvents));
+        if (deferredEvents.length === 0 && history.length > 0) {
+          deferredEvents = collectDeferredToolEventsFromHistory(history);
+        }
+
+        const completionInputXml = buildSentraInputBlock({
+          currentMessage: baseMsg,
+          pendingMessagesXml: ''
+        });
+        const completionContext = contextForLlmCompletion
+          ? contextForLlmCompletion
+          : completionInputXml;
+
+        if (!String(deferredReplyXml || '').trim() && deferredEvents.length > 0) {
+          try {
+            let resultXml = '';
+            let mode: 'single' | 'group' = 'single';
+            if (deferredEvents.length === 1) {
+              const singleEvent = {
+                ...deferredEvents[0],
+                type: 'tool_result',
+                resultStatus: 'final'
+              };
+              resultXml = buildSentraResultBlock(singleEvent as Record<string, unknown>);
+            } else {
+              mode = 'group';
+              const orderStepIds = deferredEvents.map((item, i) => {
+                const sid = typeof item.stepId === 'string' ? item.stepId.trim() : '';
+                if (sid) return sid;
+                const planned = toFiniteNumber(item.plannedStepIndex, i);
+                return 'step_' + String(planned);
+              });
+              const groupEvent = {
+                type: 'tool_result_group',
+                groupId: 'tool_turn',
+                groupSize: deferredEvents.length,
+                orderStepIds,
+                resultStatus: 'final',
+                events: deferredEvents.map((item) => ({
+                  ...item,
+                  type: 'tool_result',
+                  resultStatus: 'final'
+                }))
+              };
+              resultXml = buildSentraResultBlock(groupEvent as Record<string, unknown>);
+            }
+
+            const fullUserContent = buildDelayResultUserContent(resultXml, mode, completionContext);
+            const conversations: ChatMessage[] = [
+              { role: 'system', content: systemContent },
+              { role: 'user', content: fullUserContent }
+            ];
+
+            const llmRes = await chatWithRetry(
+              conversations,
+              { model: getMainAiModel(), __sentraExpectedOutput: 'sentra_message' },
+              groupIdKey
+            );
+            if (llmRes && llmRes.success) {
+              deferredReplyXml = normalizeReplyText(llmRes.response);
+            } else {
+              logger.warn('DelayJobWorker: delay replay final generation failed', {
+                groupId: groupIdKey,
+                reason: llmRes && llmRes.reason,
+                retries: llmRes && llmRes.retries
+              });
+            }
+          } catch (e) {
+            logger.warn('DelayJobWorker: delay replay build response failed', { err: String(e), groupId: groupIdKey });
+          }
+        }
+
+        deferredReplyXml = normalizeReplyText(deferredReplyXml).trim();
+        if (!deferredReplyXml) {
+          logger.warn('DelayJobWorker: delay replay has empty response, skip send', { groupId: groupIdKey, runId });
+          return;
+        }
+
+        const hasToolFlag = (job && job.hasTool === true) || deferredEvents.length > 0;
+        const pairId = await historyManager.startAssistantMessage(groupIdKey);
+        await historyManager.appendToAssistantMessage(groupIdKey, deferredReplyXml, pairId);
+
+        const savedPair = await historyManager.finishConversationPair(
+          groupIdKey,
+          pairId,
+          completionContext
+        );
+        if (savedPair) {
+          if (String(groupIdKey || '').startsWith('G:') && senderId) {
+            try {
+              await historyManager.promoteScopedConversationsToShared(groupIdKey, senderId);
+            } catch { }
+          }
+          triggerContextSummarizationIfNeeded({
+            groupId: groupIdKey,
+            chatType,
+            userId: userIdForMemory
+          }).catch((e) => {
+            logger.debug('ContextMemory: delayed replay summary failed', { err: String(e), groupId: groupIdKey });
+          });
+          triggerPresetTeachingIfNeeded({
+            groupId: groupIdKey,
+            chatType,
+            userId: userIdForMemory,
+            userContent: completionContext,
+            assistantContent: deferredReplyXml
+          }).catch((e) => {
+            logger.debug('PresetTeaching: delayed replay teaching failed', { err: String(e), groupId: groupIdKey });
+          });
+        }
+
+        await sendDelayedReply(baseMsg, deferredReplyXml, hasToolFlag);
+        triggerCompletionAnalysisSafe({
+          agent: ctx?.agent || ctx?.sdk,
+          groupId: groupIdKey,
+          conversationId,
+          userId: senderId,
+          userObjective: (job && job.reason) || '',
+          toolInvocations: deferredEvents.map((item) => ({
+            aiName: item.aiName || '',
+            args: item.args && typeof item.args === 'object' ? item.args : {}
+          })),
+          toolResultEvents: deferredEvents,
+          finalResponse: deferredReplyXml,
+          hasToolCalled: hasToolFlag
+        });
+        return;
+      }
+
+      const toolArgs = job && job.args && typeof job.args === 'object' ? job.args : {};
+      const startedAt = Date.now();
+      let toolRes: ToolCallResult;
+      try {
+        const contextForTool = {
+          source: 'delay_queue',
+          runId: job && job.runId ? String(job.runId) : undefined,
+        };
+        toolRes = (await sdk.callTool({ aiName, args: toolArgs, context: contextForTool })) as ToolCallResult;
+      } catch (e) {
+        toolRes = { success: false, code: 'ERROR', error: String(e), data: null };
+      }
+      const elapsedMs = Date.now() - startedAt;
+
+      const ev = {
+        type: 'tool_result',
+        aiName,
+        plannedStepIndex,
+        resultStatus: 'final',
+        executionIndex: -1,
+        reason: (job && job.reason) || '延迟任务到期自动执行',
+        nextStep: '',
+        args: toolArgs,
+        result: toolRes,
+        completion: {
+          state: 'completed',
+          mustAnswerFromResult: true,
+          instruction: 'Tool execution has finished for this step. Answer the user based on the tool result and extracted files/resources.'
+        },
+        elapsedMs,
+        dependsOn: [],
+        dependedBy: [],
+        groupId: null,
+        groupSize: 1,
+        toolMeta: { provider: (toolRes && toolRes.provider) || 'delay_queue' }
+      };
+
+      let resultXml;
+      try {
+        resultXml = buildSentraResultBlock(ev);
+      } catch (e) {
+        logger.warn('DelayJobWorker: 构建 <sentra-result> 失败，回退 JSON', { err: String(e) });
+        resultXml = JSON.stringify(ev);
+      }
+
+      // 到点执行完成：只注入最终 <sentra-result>，避免再次注入 pending/user-question 误导模型重复“承诺/计划”。
+      const completionInputXml = buildSentraInputBlock({
+          currentMessage: baseMsg,
+          pendingMessagesXml: contextXml || ''
+        });
+        const completionContext = contextForLlmCompletion
+          ? contextForLlmCompletion
+          : completionInputXml;
+        const fullUserContent = completionContext
+          ? (resultXml + '\n\n' + completionContext)
+          : resultXml;
+
+      const conversations: ChatMessage[] = [
+        { role: 'system', content: systemContent },
+        { role: 'user', content: fullUserContent }
+      ];
+
+      const pairId = await historyManager.startAssistantMessage(groupIdKey);
+
+      const llmRes = await chatWithRetry(
+        conversations,
+        { model: getMainAiModel(), __sentraExpectedOutput: 'sentra_message' },
+        groupIdKey
+      );
+
+      if (!llmRes || !llmRes.success) {
+        logger.error('DelayJobWorker: AI 生成延迟任务回复失败', {
+          groupId: groupIdKey,
+          reason: llmRes && llmRes.reason,
+          retries: llmRes && llmRes.retries
+        });
+        try {
+          await historyManager.cancelConversationPairById(groupIdKey, pairId);
+        } catch (e) {
+          logger.debug('DelayJobWorker: 取消延迟任务对话对失败', {
+            groupId: groupIdKey,
+            err: String(e)
+          });
+        }
+        return;
+      }
+
+      const reply = normalizeReplyText(llmRes.response);
+      const noReply = !!llmRes.noReply;
+
+      await historyManager.appendToAssistantMessage(groupIdKey, reply, pairId);
+
+      const savedPair = await historyManager.finishConversationPair(
+        groupIdKey,
+        pairId,
+        fullUserContent
+      );
+      if (!savedPair) {
+        logger.warn(
+          `保存延迟任务对话对失败: ${groupIdKey} pairId ${String(pairId).substring(0, 8)}`
+        );
+      } else {
+        if (String(groupIdKey || '').startsWith('G:') && senderId) {
+          try {
+            await historyManager.promoteScopedConversationsToShared(groupIdKey, senderId);
+          } catch { }
+        }
+        triggerContextSummarizationIfNeeded({
+          groupId: groupIdKey,
+          chatType,
+          userId: userIdForMemory
+        }).catch((e) => {
+          logger.debug(`ContextMemory: 异步摘要触发失败 ${groupIdKey}`, {
+            err: String(e)
+          });
+        });
+        triggerPresetTeachingIfNeeded({
+          groupId: groupIdKey,
+          chatType,
+          userId: userIdForMemory,
+          userContent: fullUserContent,
+          assistantContent: reply
+        }).catch((e) => {
+          logger.debug(`PresetTeaching: 异步教导触发失败 ${groupIdKey}`, {
+            err: String(e)
+          });
+        });
+      }
+
+      if (noReply) {
+        logger.info('DelayJobWorker: 模型选择对延迟任务保持沉默', { groupId: groupIdKey });
+        return;
+      }
+
+      await sendDelayedReply(baseMsg, reply, true);
+      triggerCompletionAnalysisSafe({
+        agent: ctx?.agent || ctx?.sdk,
+        groupId: groupIdKey,
+        conversationId,
+        userId: senderId,
+        userObjective: (job && job.reason) || '',
+        toolInvocations: [{ aiName, args: toolArgs }],
+        toolResultEvents: [ev],
+        finalResponse: reply,
+        hasToolCalled: true
+      });
+      return;
+    } catch (e) {
+      logger.warn('DelayJobWorker: 处理延迟任务异常', { err: String(e) });
+    }
+  };
+}
+
+

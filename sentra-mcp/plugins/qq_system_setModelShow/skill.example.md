@@ -11,13 +11,21 @@
 
 ## When to use
 
-- 用户明确要求修改“设备展示/机型文案”。
-- 需要把 `model`（标识）与 `model_show`（展示文案）设置为指定值。
+- 目标与工具能力一致：设置当前 QQ 账号的设备展示信息。
+- 可提供必需入参：`model`、`model_show`。
+- 你明确接受该操作可能产生的副作用（发送/修改/写入/生成）。
 
-## When NOT to use
+## When not to use
 
-- 用户没有给出要设置的 `model/model_show`（不要猜）。
+- 缺少必需入参时不要调用：`model`、`model_show`。
+- 仅希望查询信息、且不希望产生副作用时，不要调用。
 
+## Success Criteria
+
+- Must have `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be non-empty, `data.request.requestId` must be present, and `data.request.args` must match this call (`model, model_show (+optional fields)`).
+- `data.response` must be present (non-null object/string), proving RPC was sent and acknowledged.
+- Retry guidance: timeout/network may retry once with same args; input/schema errors should regenerate args; business rejection should replan.
 ## Input
 
 - Required:

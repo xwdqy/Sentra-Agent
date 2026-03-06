@@ -16,7 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { extractXMLTag, extractAllXMLTags } from './xmlUtils.js';
+import { extractAllFullXMLTags, extractAllXMLTags, extractXMLTag, tryParseXmlFragment } from './xmlUtils.js';
 import { escapeXml, escapeXmlAttr, unescapeXml } from './xmlUtils.js';
 import { createLogger } from './logger.js';
 import { getEnv, getEnvInt, getEnvBool, getEnvTimeoutMs, onEnvReload } from './envHotReloader.js';
@@ -640,15 +640,7 @@ class UserPersonaManager {
   async _parsePersonaResponse(content: string, senderId: SenderId): Promise<any | null> {
     try {
       // 提取 <sentra-persona> 块
-      let personaXML = extractXMLTag(content, 'sentra-persona');
-
-      if (!personaXML) {
-        // 尝试从 markdown 代码块中提取
-        const xmlMatch = content.match(/```xml\s*([\s\S]*?)\s*```/);
-        if (xmlMatch && xmlMatch[1]) {
-          personaXML = extractXMLTag(xmlMatch[1], 'sentra-persona');
-        }
-      }
+      const personaXML = extractXMLTag(content, 'sentra-persona');
 
       if (!personaXML) {
         logger.error('解析画像失败：未找到 <sentra-persona> 标签');
@@ -753,26 +745,50 @@ class UserPersonaManager {
   /**
    * 提取带属性的 XML 标签
    */
+  _extractXmlAttributesFromFullTag(fullTagXml: string): Record<string, unknown> {
+    const attrs: Record<string, unknown> = {};
+    if (!fullTagXml) return attrs;
+    const openStart = fullTagXml.indexOf('<');
+    if (openStart < 0) return attrs;
+    let quote: '"' | '\'' | '' = '';
+    let openEnd = -1;
+    for (let i = openStart; i < fullTagXml.length; i++) {
+      const ch = fullTagXml[i];
+      if (quote) {
+        if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === '"' || ch === '\'') {
+        quote = ch;
+        continue;
+      }
+      if (ch === '>') {
+        openEnd = i;
+        break;
+      }
+    }
+    if (openEnd < 0) return attrs;
+    const openTag = fullTagXml.slice(openStart, openEnd + 1);
+    const parsed = tryParseXmlFragment(openTag, 'root_tag');
+    if (!parsed || typeof parsed !== 'object') return attrs;
+    const parsedObj = parsed as Record<string, unknown>;
+    const firstKey = Object.keys(parsedObj).find((k) => k !== '#text');
+    if (!firstKey) return attrs;
+    const node = parsedObj[firstKey];
+    if (!node || typeof node !== 'object') return attrs;
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      if (k === '#text') continue;
+      attrs[k] = v == null ? '' : String(v);
+    }
+    return attrs;
+  }
+
   _extractTagsWithAttributes(xmlBlock: string, tagName: string): PersonaListItem[] {
     const results: PersonaListItem[] = [];
-    const regex = new RegExp(`<${tagName}([^>]*)>([\\s\\S]*?)<\\/${tagName}>`, 'g');
-    let match: RegExpExecArray | null;
-
-    while ((match = regex.exec(xmlBlock)) !== null) {
-      const attributesStr = match[1] || '';
-      const content = (match[2] || '').trim();
-
-      // 解析属性
-      const attributes: Record<string, unknown> = {};
-      const attrRegex = /(\w+)="([^"]*)"/g;
-      let attrMatch: RegExpExecArray | null;
-      while ((attrMatch = attrRegex.exec(attributesStr)) !== null) {
-        const k = attrMatch[1];
-        const v = attrMatch[2];
-        if (!k) continue;
-        attributes[k] = v ?? '';
-      }
-
+    const fullTags = extractAllFullXMLTags(xmlBlock || '', tagName);
+    for (const fullTag of fullTags) {
+      const content = (extractXMLTag(fullTag, tagName, { trimResult: true, removeCodeBlock: false }) || '').trim();
+      const attributes = this._extractXmlAttributesFromFullTag(fullTag);
       results.push({
         content,
         attributes

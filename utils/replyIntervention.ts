@@ -10,10 +10,18 @@ if (!loadPrompt) {
 }
 import SentraPromptsSDK from 'sentra-prompts';
 import { chatWithRetry as chatWithRetryCore } from '../components/ChatWithRetry.js';
-import { parseReplyGateDecisionFromSentraTools, parseSentraResponse } from './protocolUtils.js';
+import { parseSentraMessage, parseSentraToolsInvocations } from './protocolUtils.js';
+import { extractXMLTag } from './xmlUtils.js';
 import fs from 'fs/promises';
 import path from 'path';
 import type { ChatMessage } from '../src/types.js';
+import { tReplyIntervention } from './i18n/replyInterventionCatalog.js';
+import {
+  buildSentraContractPolicyText,
+  buildSentraRootDirectiveFromContract,
+  getSentraContractRequiredInvokeName,
+  getSentraContractOutputInstruction,
+} from './sentraToolsContractEngine.js';
 
 const logger = createLogger('ReplyIntervention');
 
@@ -172,6 +180,20 @@ let presetInitPromiseForDecision: Promise<string> | null = null;
 const REPLY_DECISION_PROMPT_NAME = 'reply_decision';
 const REPLY_FUSION_PROMPT_NAME = 'reply_fusion';
 const REPLY_OVERRIDE_PROMPT_NAME = 'reply_override';
+const REPLY_GATE_CONTRACT_ID = 'reply_gate_decision';
+const OVERRIDE_CONTRACT_ID = 'override_intent_decision';
+
+const REPLY_GATE_INVOKE_NAME =
+  getSentraContractRequiredInvokeName(REPLY_GATE_CONTRACT_ID, 'reply_gate_decision') ||
+  'reply_gate_decision';
+const REPLY_GATE_OUTPUT_INSTRUCTION = getSentraContractOutputInstruction(REPLY_GATE_CONTRACT_ID);
+const REPLY_GATE_POLICY_TEXT = buildSentraContractPolicyText(REPLY_GATE_CONTRACT_ID);
+
+const OVERRIDE_INVOKE_NAME =
+  getSentraContractRequiredInvokeName(OVERRIDE_CONTRACT_ID, 'override_intent_decision') ||
+  'override_intent_decision';
+const OVERRIDE_OUTPUT_INSTRUCTION = getSentraContractOutputInstruction(OVERRIDE_CONTRACT_ID);
+const OVERRIDE_POLICY_TEXT = buildSentraContractPolicyText(OVERRIDE_CONTRACT_ID);
 
 let cachedReplyDecisionSystemPrompt: string | null = null;
 let cachedReplyFusionSystemPrompt: string | null = null;
@@ -180,6 +202,49 @@ let cachedReplyOverrideSystemPrompt: string | null = null;
 const PROMPTS_CONFIG_PATH = path.resolve('./sentra-prompts/sentra.config.json');
 let cachedDecisionToolsBaseSystem: string | null = null;
 let cachedReplyFusionBaseSystem: string | null = null;
+const REPLY_INTERVENTION_PROMPT_DIR = path.resolve('.', 'prompts', 'reply-intervention');
+const REPLY_INTERVENTION_DEFAULT_LOCALE = 'zh-CN';
+
+type ReplyGateRuleResource = {
+  objective_lines?: string[];
+  constraints?: string[];
+  meta_note?: string;
+};
+
+type ReplyGateFewShotResource = {
+  examples?: Array<{
+    user?: FewShotUserInput;
+    assistant?: FewShotAssistantInput;
+  }>;
+};
+
+type OverrideRuleResource = {
+  objective_lines?: string[];
+  constraints?: string[];
+  guidance_lines?: string[];
+};
+
+const replyGateRuleCache = new Map<string, ReplyGateRuleResource>();
+const replyGateFewShotCache = new Map<string, ReplyGateFewShotResource>();
+const overrideRuleCache = new Map<string, OverrideRuleResource>();
+
+function resolveInterventionLocale(): string {
+  const raw = String(getEnv('SENTRA_LOCALE', getEnv('LOCALE', REPLY_INTERVENTION_DEFAULT_LOCALE)) || '').trim();
+  if (!raw) return REPLY_INTERVENTION_DEFAULT_LOCALE;
+  return raw;
+}
+
+async function tryReadJsonResource<T extends Record<string, unknown>>(filePath: string): Promise<T | null> {
+  try {
+    const raw = await fs.readFile(filePath, 'utf-8');
+    if (!raw || !raw.trim()) return null;
+    const parsed = JSON.parse(raw) as T;
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 async function getDecisionToolsBaseSystem() {
   if (cachedDecisionToolsBaseSystem) return cachedDecisionToolsBaseSystem;
@@ -233,147 +298,62 @@ function takeLast<T>(items: T[], count: number): T[] {
   return out;
 }
 
-function parseEnterMainFlowDecision(rawText: unknown): boolean | null {
-  const t = typeof rawText === 'string' ? rawText : String(rawText ?? '');
-  if (!t) return null;
-  const m = t.match(/<enter_main_flow>\s*(true|false)\s*<\/enter_main_flow>/i);
-  if (!m) return null;
-  if (typeof m[1] !== 'string') return null;
-  return m[1].toLowerCase() === 'true';
-}
-
 function parseOverrideDecisionFromSentraTools(rawText: unknown): { decision: string; confidence: number | null; reason: string } | null {
   const raw = typeof rawText === 'string' ? rawText : String(rawText ?? '');
   if (!raw) return null;
-  const toolsMatch = raw.match(/<sentra-tools[\s\S]*?<\/sentra-tools>/i);
-  const xml = toolsMatch ? toolsMatch[0] : raw;
-  const invokeMatch = xml.match(/<invoke[^>]*name=["']override_intent_decision["'][^>]*>([\s\S]*?)<\/invoke>/i);
-  if (!invokeMatch) return null;
-  const body = typeof invokeMatch[1] === 'string' ? invokeMatch[1] : '';
-  if (!body) return null;
   let decision = '';
-  let confidence = null;
+  let confidence: number | null = null;
   let reason = '';
 
-  const decisionMatch = body.match(/<parameter[^>]*name=["']decision["'][^>]*>[\s\S]*?<string>([\s\S]*?)<\/string>[\s\S]*?<\/parameter>/i);
-  if (decisionMatch) {
-    const val = typeof decisionMatch[1] === 'string' ? decisionMatch[1] : '';
-    decision = val.trim().toLowerCase();
-  } else {
-    const decisionBareMatch = body.match(/<parameter[^>]*name=["']decision["'][^>]*>([\s\S]*?)<\/parameter>/i);
-    if (decisionBareMatch) {
-      const val = typeof decisionBareMatch[1] === 'string' ? decisionBareMatch[1] : '';
-      decision = val.trim().toLowerCase();
-    } else {
-      const decisionTagMatch = body.match(/<decision>([\s\S]*?)<\/decision>/i);
-      if (decisionTagMatch) {
-        const val = typeof decisionTagMatch[1] === 'string' ? decisionTagMatch[1] : '';
-        decision = val.trim().toLowerCase();
-      }
+  const invokes = parseSentraToolsInvocations(raw);
+  const override = invokes.find((it) => String(it?.aiName || '').trim() === OVERRIDE_INVOKE_NAME);
+  if (override) {
+    decision = String(override?.args?.decision ?? '').trim().toLowerCase();
+    const confRaw = override?.args?.confidence;
+    if (confRaw != null && String(confRaw).trim()) {
+      const confNum = Number.parseFloat(String(confRaw).trim());
+      confidence = Number.isFinite(confNum) ? confNum : null;
     }
-  }
-
-  const confMatch = body.match(/<parameter[^>]*name=["']confidence["'][^>]*>[\s\S]*?<number>([\s\S]*?)<\/number>[\s\S]*?<\/parameter>/i);
-  if (confMatch) {
-    const val = typeof confMatch[1] === 'string' ? confMatch[1] : '';
-    confidence = parseFloat(val.trim());
+    reason = String(override?.args?.reason ?? '').trim();
   } else {
-    const confBareMatch = body.match(/<parameter[^>]*name=["']confidence["'][^>]*>([\s\S]*?)<\/parameter>/i);
-    if (confBareMatch) {
-      const val = typeof confBareMatch[1] === 'string' ? confBareMatch[1] : '';
-      confidence = parseFloat(val.trim());
-    } else {
-      const confTagMatch = body.match(/<confidence>([\s\S]*?)<\/confidence>/i);
-      if (confTagMatch) {
-        const val = typeof confTagMatch[1] === 'string' ? confTagMatch[1] : '';
-        confidence = parseFloat(val.trim());
-      }
+    decision = String(extractXMLTag(raw, 'decision') || '').trim().toLowerCase();
+    const confText = String(extractXMLTag(raw, 'confidence') || '').trim();
+    if (confText) {
+      const confNum = Number.parseFloat(confText);
+      confidence = Number.isFinite(confNum) ? confNum : null;
     }
-  }
-
-  const reasonMatch = body.match(/<parameter[^>]*name=["']reason["'][^>]*>[\s\S]*?<string>([\s\S]*?)<\/string>[\s\S]*?<\/parameter>/i);
-  if (reasonMatch) {
-    const val = typeof reasonMatch[1] === 'string' ? reasonMatch[1] : '';
-    reason = val.trim();
-  } else {
-    const reasonBareMatch = body.match(/<parameter[^>]*name=["']reason["'][^>]*>([\s\S]*?)<\/parameter>/i);
-    if (reasonBareMatch) {
-      const val = typeof reasonBareMatch[1] === 'string' ? reasonBareMatch[1] : '';
-      reason = val.trim();
-    } else {
-      const reasonTagMatch = body.match(/<reason>([\s\S]*?)<\/reason>/i);
-      if (reasonTagMatch) {
-        const val = typeof reasonTagMatch[1] === 'string' ? reasonTagMatch[1] : '';
-        reason = val.trim();
-      }
-    }
+    reason = String(extractXMLTag(raw, 'reason') || '').trim();
   }
   if (!decision) return null;
   return { decision, confidence, reason };
 }
 
-function buildTaskDirName(groupIdKey: unknown): string {
-  const raw = typeof groupIdKey === 'string' ? groupIdKey.trim() : '';
-  if (!raw) return '';
-  return raw.replace(/[^a-zA-Z0-9_-]/g, '_');
+function parseReplyGateDecisionByContract(rawText: unknown): { enter: boolean; action: string; delayWhen: string; reason: string } | null {
+  const raw = typeof rawText === 'string' ? rawText : String(rawText ?? '');
+  if (!raw) return null;
+  const invokes = parseSentraToolsInvocations(raw);
+  const gate = invokes.find((it) => String(it?.aiName || '').trim() === REPLY_GATE_INVOKE_NAME);
+  if (!gate || !gate.args || typeof gate.args !== 'object') return null;
+  const args = gate.args as Record<string, unknown>;
+  const enterRaw = args.enter;
+  const enter =
+    typeof enterRaw === 'boolean'
+      ? enterRaw
+      : String(enterRaw ?? '').trim().toLowerCase() === 'true'
+        ? true
+        : String(enterRaw ?? '').trim().toLowerCase() === 'false'
+          ? false
+          : null;
+  if (typeof enter !== 'boolean') return null;
+  const action = String(args.action ?? (enter ? 'action' : 'silent')).trim().toLowerCase();
+  const delayWhen = String(args.delay_when ?? '').trim();
+  const reason = String(args.reason ?? '').trim();
+  return { enter, action, delayWhen, reason };
 }
 
 async function loadLatestTaskSnapshot({ groupIdKey, userId }: { groupIdKey?: string; userId?: string } = {}): Promise<TaskSnapshot | null> {
-  try {
-    const dirName = buildTaskDirName(groupIdKey);
-    if (!dirName) return null;
-    const baseDir = path.join('.', 'taskData', dirName);
-    let entries = [];
-    try {
-      entries = await fs.readdir(baseDir);
-    } catch {
-      return null;
-    }
-    const jsonFiles = entries.filter((f) => String(f).toLowerCase().endsWith('.json'));
-    if (jsonFiles.length === 0) return null;
-
-    const candidates = [];
-    for (const file of jsonFiles) {
-      const full = path.join(baseDir, file);
-      let stat;
-      try {
-        stat = await fs.stat(full);
-      } catch {
-        continue;
-      }
-      candidates.push({ full, mtimeMs: stat.mtimeMs || 0 });
-    }
-    if (candidates.length === 0) return null;
-    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-    const uid = userId != null ? String(userId) : '';
-    for (const item of takeFirst(candidates, 10)) {
-      try {
-        const raw = await fs.readFile(item.full, 'utf-8');
-        const data = JSON.parse(raw) as Record<string, unknown>;
-        if (!data || typeof data !== 'object') continue;
-        if (uid && data.userId != null && String(data.userId) !== uid) {
-          continue;
-        }
-        const snapshot: TaskSnapshot = {
-          promises: Array.isArray(data.promises) ? (data.promises as TaskPromise[]) : [],
-          toolCalls: Array.isArray(data.toolCalls) ? (data.toolCalls as TaskToolCall[]) : []
-        };
-        const taskId = typeof data.taskId === 'string' ? data.taskId : (data.taskId != null ? String(data.taskId) : '');
-        if (taskId) snapshot.taskId = taskId;
-        const status = typeof data.status === 'string' ? data.status : (data.status != null ? String(data.status) : '');
-        if (status) snapshot.status = status;
-        if (typeof data.isComplete === 'boolean') snapshot.isComplete = data.isComplete;
-        const summary = typeof data.summary === 'string' ? data.summary : (data.summary != null ? String(data.summary) : '');
-        if (summary) snapshot.summary = summary;
-        const reason = typeof data.reason === 'string' ? data.reason : (data.reason != null ? String(data.reason) : '');
-        if (reason) snapshot.reason = reason;
-        return snapshot;
-      } catch {
-        continue;
-      }
-    }
-  } catch { }
+  void groupIdKey;
+  void userId;
   return null;
 }
 
@@ -465,11 +445,11 @@ export async function decideSendFusionBatch(payload: SendFusionPayload | null | 
     rdLines.push('  </objective>');
 
     rdLines.push('  <constraints>');
-    rdLines.push('    <item>你必须且只能输出一个顶层块：<sentra-response>...</sentra-response>；除此之外不要输出任何字符、解释、前后缀。</item>');
+    rdLines.push('    <item>你必须且只能输出一个顶层块：<sentra-message>...</sentra-message>；除此之外不要输出任何字符、解释、前后缀。</item>');
     rdLines.push('    <item>融合后的回复要自然像聊天，不要提“候选/融合/工具/系统”等词。</item>');
     rdLines.push('    <item>禁止使用模板化旁白：不要写“根据你的请求…/工具调用…/系统提示…/工作流…”。</item>');
     rdLines.push('    <item>去重冗余，但保留不同候选里重要的事实、步骤、提醒、结论与约束。</item>');
-    rdLines.push('    <item><sentra-response> 内建议仅输出 text1/text2/text3（尽量短），并包含 <resources></resources>（保持为空即可）。</item>');
+    rdLines.push('    <item><sentra-message> 内仅使用 message/segment 结构，建议 1-3 个 text segment（尽量短）。</item>');
     rdLines.push('  </constraints>');
 
     rdLines.push('  <send_fusion_input>');
@@ -506,7 +486,7 @@ export async function decideSendFusionBatch(payload: SendFusionPayload | null | 
     const result = await chatWithRetryCore(
       agent,
       conversations,
-      { model, maxTokens, __sentraExpectedOutput: 'sentra_response' },
+      { model, maxTokens, __sentraExpectedOutput: 'sentra_message' },
       groupId || 'send_fusion'
     );
 
@@ -524,7 +504,7 @@ export async function decideSendFusionBatch(payload: SendFusionPayload | null | 
 
     let parsed = null;
     try {
-      parsed = parseSentraResponse(rawText);
+      parsed = parseSentraMessage(rawText);
     } catch {
       parsed = null;
     }
@@ -534,7 +514,7 @@ export async function decideSendFusionBatch(payload: SendFusionPayload | null | 
       : [];
 
     if (segments.length === 0) {
-      logger.warn('SendFusion: 解析 sentra-response 失败或无文本，将回退为本地规则', {
+      logger.warn('SendFusion: 解析 sentra-message 失败或无文本，将回退为本地规则', {
         snippet: takePrefix(rawText, 400)
       });
       return null;
@@ -741,6 +721,106 @@ function escapeXmlText(text: unknown): string {
     .replace(/>/g, '&gt;');
 }
 
+function buildReplyGateRootDirectiveXml({
+  scene,
+  groupId,
+  senderId,
+  objectiveLines,
+  metaNote,
+  decisionInputXml
+}: {
+  scene?: string;
+  groupId?: string;
+  senderId?: string;
+  objectiveLines?: string[];
+  metaNote?: string;
+  decisionInputXml?: string;
+}): string {
+  const targetLines: string[] = [
+    '  <target>',
+    `    <chat_type>${escapeXmlText(scene || '')}</chat_type>`
+  ];
+  if (groupId) targetLines.push(`    <group_id>${escapeXmlText(groupId)}</group_id>`);
+  if (senderId) targetLines.push(`    <user_id>${escapeXmlText(senderId)}</user_id>`);
+  targetLines.push('  </target>');
+
+  const objectiveText = Array.isArray(objectiveLines)
+    ? objectiveLines.map((x) => String(x || '').trim()).filter(Boolean).join(' ')
+    : '';
+
+  const extraBlocks: string[] = [targetLines.join('\n')];
+  const note = String(metaNote || '').trim();
+  if (note) {
+    extraBlocks.push(
+      '  <meta>',
+      `    <note>${escapeXmlText(note)}</note>`,
+      '  </meta>'
+    );
+  }
+  const inputXml = String(decisionInputXml || '').trim();
+  if (inputXml) {
+    const indentedInput = inputXml
+      .split('\n')
+      .map((line) => (line ? `  ${line}` : ''))
+      .join('\n');
+    extraBlocks.push(indentedInput);
+  }
+
+  return buildSentraRootDirectiveFromContract({
+    contractId: REPLY_GATE_CONTRACT_ID,
+    idPrefix: 'reply_gate',
+    scope: 'conversation',
+    phaseOverride: 'ReplyIntervention',
+    ...(objectiveText ? { objectiveOverride: objectiveText } : {}),
+    extraBlocks
+  });
+}
+
+function buildOverrideRootDirectiveXml({
+  scene,
+  groupId,
+  senderId,
+  objectiveLines,
+  overrideDecisionInputXml
+}: {
+  scene?: string;
+  groupId?: string;
+  senderId?: string;
+  objectiveLines?: string[];
+  overrideDecisionInputXml?: string;
+}): string {
+  const targetLines: string[] = [
+    '  <target>',
+    `    <chat_type>${escapeXmlText(scene || '')}</chat_type>`
+  ];
+  if (groupId) targetLines.push(`    <group_id>${escapeXmlText(groupId)}</group_id>`);
+  if (senderId) targetLines.push(`    <user_id>${escapeXmlText(senderId)}</user_id>`);
+  targetLines.push('  </target>');
+
+  const objectiveText = Array.isArray(objectiveLines)
+    ? objectiveLines.map((x) => String(x || '').trim()).filter(Boolean).join(' ')
+    : '';
+
+  const inputXml = String(overrideDecisionInputXml || '').trim();
+  const extraBlocks: string[] = [targetLines.join('\n')];
+  if (inputXml) {
+    const indentedInput = inputXml
+      .split('\n')
+      .map((line) => (line ? `  ${line}` : ''))
+      .join('\n');
+    extraBlocks.push(indentedInput);
+  }
+
+  return buildSentraRootDirectiveFromContract({
+    contractId: OVERRIDE_CONTRACT_ID,
+    idPrefix: 'override_intent',
+    scope: 'conversation',
+    phaseOverride: 'ReplyIntervention',
+    ...(objectiveText ? { objectiveOverride: objectiveText } : {}),
+    extraBlocks
+  });
+}
+
 type FewShotUserInput = {
   id?: string;
   objectiveLine?: string;
@@ -750,11 +830,229 @@ type FewShotUserInput = {
   followup?: boolean;
   note?: string;
 };
-type FewShotAssistantInput = { enter: boolean; reason?: string };
+type FewShotAssistantInput = {
+  enter: boolean;
+  action?: 'silent' | 'action' | 'short' | 'delay';
+  delayWhen?: string;
+  reason?: string;
+};
 
-function buildReplyGateFewShotMessages(
+const DEFAULT_REPLY_GATE_RULES: Required<ReplyGateRuleResource> = Object.freeze({
+  objective_lines: [
+    '你只需做门禁动作判断：silent|action|short|delay。',
+    `你必须输出且只能输出 1 个 <sentra-tools> 块，且其中必须包含 1 个 <invoke name="${REPLY_GATE_INVOKE_NAME}">。`,
+    '该 invoke 必须包含 action(string)、enter(boolean)、reason(string)；当 action=delay 时必须额外提供 delay_when(string) 并使用可解析时间格式。'
+  ],
+  constraints: [
+    'Detailed gate rules are defined in the system prompt (reply_decision). Treat this <constraints> block as a minimal placeholder.'
+  ],
+  meta_note: '下面的 <decision_input> 是一个结构化的辅助输入，其中已经包含了本条消息、群/用户的疲劳度、是否被 @ 以及最近对话的摘要等信号，你可以将其视为只读背景数据，用于支撑你的价值判断。'
+});
+
+function buildDefaultReplyGateFewShotExamples(primaryBotName: string): Array<{ user: FewShotUserInput; assistant: FewShotAssistantInput }> {
+  return [
+    {
+      user: {
+        id: 'fs_1',
+        objectiveLine: 'Decide whether to enter main flow.',
+        summary: `The user explicitly @${primaryBotName} and asked the bot to help solve an error.`,
+        mentionedByAt: true,
+        mentionedByName: true,
+        followup: false,
+        note: 'Few-shot example 1: explicit @ and actionable request'
+      },
+      assistant: {
+        enter: true,
+        action: 'action',
+        reason: 'Explicitly addressed to the bot with a clear actionable request.'
+      }
+    },
+    {
+      user: {
+        id: 'fs_2',
+        objectiveLine: 'Decide whether to enter main flow.',
+        summary: `The user directly called the bot name (${primaryBotName}) and requested a concrete task (write a simple script to compare two texts).`,
+        mentionedByAt: false,
+        mentionedByName: true,
+        followup: false,
+        note: 'Few-shot example 2: called by bot name and asked to do a task'
+      },
+      assistant: {
+        enter: true,
+        action: 'action',
+        reason: 'The user directly called the bot by name and requested a task.'
+      }
+    },
+    {
+      user: {
+        id: 'fs_3',
+        objectiveLine: 'Decide whether to enter main flow.',
+        summary: `Group chat praise/third-person mention about ${primaryBotName} with no actionable request; likely just casual chatter.`,
+        mentionedByAt: false,
+        mentionedByName: true,
+        followup: false,
+        note: 'Few-shot example 3: third-person mention/praise without a request'
+      },
+      assistant: {
+        enter: false,
+        action: 'silent',
+        reason: 'No actionable request; replying may be unnecessary noise in group chat.'
+      }
+    },
+    {
+      user: {
+        id: 'fs_4',
+        objectiveLine: 'Decide whether to enter main flow.',
+        summary: 'The message is clearly addressed to another member (not the bot) and asks the group for opinions.',
+        mentionedByAt: false,
+        mentionedByName: false,
+        followup: false,
+        note: 'Few-shot example 4: conversation is clearly between other members'
+      },
+      assistant: {
+        enter: false,
+        action: 'silent',
+        reason: 'The message is addressed to someone else and not requesting the bot.'
+      }
+    },
+    {
+      user: {
+        id: 'fs_5',
+        objectiveLine: 'Decide whether to enter main flow.',
+        summary: 'The user gives an explicit future-timed command: "过4分钟之后戳我2下".',
+        mentionedByAt: true,
+        mentionedByName: true,
+        followup: false,
+        note: 'Few-shot example 5: explicit delay intent should output action=delay + delay_when'
+      },
+      assistant: {
+        enter: true,
+        action: 'delay',
+        delayWhen: '4分钟后',
+        reason: 'Explicit future-timed request; defer user-facing reply and provide parseable delay_when.'
+      }
+    }
+  ];
+}
+
+async function loadReplyGateRulesResource(locale: string): Promise<Required<ReplyGateRuleResource>> {
+  const normalized = String(locale || '').trim() || REPLY_INTERVENTION_DEFAULT_LOCALE;
+  const cached = replyGateRuleCache.get(normalized);
+  if (cached && Array.isArray(cached.objective_lines) && Array.isArray(cached.constraints)) {
+    return {
+      objective_lines: cached.objective_lines,
+      constraints: cached.constraints,
+      meta_note: typeof cached.meta_note === 'string' ? cached.meta_note : DEFAULT_REPLY_GATE_RULES.meta_note
+    };
+  }
+
+  const candidates = [normalized, REPLY_INTERVENTION_DEFAULT_LOCALE];
+  for (const name of candidates) {
+    const file = path.join(REPLY_INTERVENTION_PROMPT_DIR, name, 'reply_gate_rules.json');
+    const parsed = await tryReadJsonResource<ReplyGateRuleResource>(file);
+    if (!parsed) continue;
+    const objective_lines = Array.isArray(parsed.objective_lines)
+      ? parsed.objective_lines.map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    const constraints = Array.isArray(parsed.constraints)
+      ? parsed.constraints.map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    const meta_note = typeof parsed.meta_note === 'string' ? parsed.meta_note.trim() : '';
+    if (objective_lines.length > 0 && constraints.length > 0) {
+      const value: Required<ReplyGateRuleResource> = {
+        objective_lines,
+        constraints,
+        meta_note: meta_note || DEFAULT_REPLY_GATE_RULES.meta_note
+      };
+      replyGateRuleCache.set(normalized, value);
+      return value;
+    }
+  }
+
+  replyGateRuleCache.set(normalized, DEFAULT_REPLY_GATE_RULES);
+  return DEFAULT_REPLY_GATE_RULES;
+}
+
+async function loadReplyGateFewShotResource(locale: string): Promise<ReplyGateFewShotResource> {
+  const normalized = String(locale || '').trim() || REPLY_INTERVENTION_DEFAULT_LOCALE;
+  const cached = replyGateFewShotCache.get(normalized);
+  if (cached && Array.isArray(cached.examples)) return cached;
+
+  const candidates = [normalized, REPLY_INTERVENTION_DEFAULT_LOCALE];
+  for (const name of candidates) {
+    const file = path.join(REPLY_INTERVENTION_PROMPT_DIR, name, 'reply_gate_fewshot.json');
+    const parsed = await tryReadJsonResource<ReplyGateFewShotResource>(file);
+    if (!parsed || !Array.isArray(parsed.examples) || parsed.examples.length === 0) continue;
+    replyGateFewShotCache.set(normalized, parsed);
+    return parsed;
+  }
+
+  const empty: ReplyGateFewShotResource = { examples: [] };
+  replyGateFewShotCache.set(normalized, empty);
+  return empty;
+}
+
+const DEFAULT_OVERRIDE_RULES: Required<OverrideRuleResource> = Object.freeze({
+  objective_lines: [
+    `输出 ${OVERRIDE_INVOKE_NAME} 决策（reply|pending|cancel_and_restart|cancel_only）。`
+  ],
+  constraints: [
+    'Detailed rules are defined in the system prompt (reply_override). This is a minimal placeholder.'
+  ],
+  guidance_lines: [
+    'Task: decide follow-up handling when a previous task may still be running.',
+    'Input: prefer <summary> fields; <text> may be empty/noisy.',
+    'Decision mapping:',
+    '- cancel_only: user cancels previous task without new/changed request.',
+    '- cancel_and_restart: user replaces the request OR adds clarifications/supplements to the same task (always).',
+    '- reply: worth replying but does NOT require canceling the old task.',
+    '- pending: hold and do not reply now.'
+  ]
+});
+
+async function loadOverrideRuleResource(locale: string): Promise<Required<OverrideRuleResource>> {
+  const normalized = String(locale || '').trim() || REPLY_INTERVENTION_DEFAULT_LOCALE;
+  const cached = overrideRuleCache.get(normalized);
+  if (cached && Array.isArray(cached.objective_lines) && Array.isArray(cached.constraints) && Array.isArray(cached.guidance_lines)) {
+    return {
+      objective_lines: cached.objective_lines,
+      constraints: cached.constraints,
+      guidance_lines: cached.guidance_lines
+    };
+  }
+
+  const candidates = [normalized, REPLY_INTERVENTION_DEFAULT_LOCALE];
+  for (const name of candidates) {
+    const file = path.join(REPLY_INTERVENTION_PROMPT_DIR, name, 'override_rules.json');
+    const parsed = await tryReadJsonResource<OverrideRuleResource>(file);
+    if (!parsed) continue;
+    const objective_lines = Array.isArray(parsed.objective_lines)
+      ? parsed.objective_lines.map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    const constraints = Array.isArray(parsed.constraints)
+      ? parsed.constraints.map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    const guidance_lines = Array.isArray(parsed.guidance_lines)
+      ? parsed.guidance_lines.map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    if (objective_lines.length > 0 && constraints.length > 0 && guidance_lines.length > 0) {
+      const value: Required<OverrideRuleResource> = {
+        objective_lines,
+        constraints,
+        guidance_lines
+      };
+      overrideRuleCache.set(normalized, value);
+      return value;
+    }
+  }
+
+  overrideRuleCache.set(normalized, DEFAULT_OVERRIDE_RULES);
+  return DEFAULT_OVERRIDE_RULES;
+}
+
+async function buildReplyGateFewShotMessages(
   { scene, groupId, senderId, botNamesText }: { scene?: string; groupId?: string | number; senderId?: string | number; botNamesText?: string } = {}
-): ChatMessage[] {
+): Promise<ChatMessage[]> {
   const safeScene = typeof scene === 'string' && scene ? scene : 'group';
   const safeGroupId = groupId != null ? String(groupId) : '';
   const safeSenderId = senderId != null ? String(senderId) : '';
@@ -762,153 +1060,91 @@ function buildReplyGateFewShotMessages(
   const primaryBotName = botNameList.split(',').map((x) => x.trim()).filter(Boolean)[0] || '你';
 
   const mkUser = ({ objectiveLine, summary, mentionedByAt, mentionedByName, followup, note }: FewShotUserInput) => {
-    const rd = [];
-    rd.push('<sentra-root-directive>');
-    rd.push('  <id>reply_gate_v1</id>');
-    rd.push('  <type>reply_gate</type>');
-    rd.push('  <scope>conversation</scope>');
-    rd.push('  <target>');
-    rd.push(`    <chat_type>${escapeXmlText(safeScene)}</chat_type>`);
-    if (safeGroupId) rd.push(`    <group_id>${escapeXmlText(safeGroupId)}</group_id>`);
-    if (safeSenderId) rd.push(`    <user_id>${escapeXmlText(safeSenderId)}</user_id>`);
-    rd.push('  </target>');
-    rd.push('  <objective>');
-    rd.push(`    ${escapeXmlText(objectiveLine || 'Decide whether to enter main flow for this message.')}`);
-    rd.push('  </objective>');
-    if (note) {
-      rd.push('  <meta>');
-      rd.push(`    <note>${escapeXmlText(note)}</note>`);
-      rd.push('  </meta>');
-    }
-    rd.push('  <decision_input>');
-    rd.push(`    <scene>${escapeXmlText(safeScene)}</scene>`);
-    rd.push('    <bot>');
-    rd.push('      <self_id></self_id>');
-    rd.push(`      <bot_names>${escapeXmlText(botNameList)}</bot_names>`);
-    rd.push('    </bot>');
-    rd.push('    <message>');
-    rd.push('      <text></text>');
-    rd.push(`      <summary>${escapeXmlText(summary || '')}</summary>`);
-    rd.push('    </message>');
-    rd.push('    <signals>');
-    rd.push(`      <is_group>${safeScene === 'group' ? 'true' : 'false'}</is_group>`);
-    rd.push(`      <is_private>${safeScene === 'private' ? 'true' : 'false'}</is_private>`);
-    rd.push(`      <mentioned_by_at>${mentionedByAt ? 'true' : 'false'}</mentioned_by_at>`);
-    rd.push(`      <mentioned_by_name>${mentionedByName ? 'true' : 'false'}</mentioned_by_name>`);
-    rd.push('      <mentioned_names></mentioned_names>');
-    rd.push(`      <mentioned_name_hit_count>${mentionedByName ? '1' : '0'}</mentioned_name_hit_count>`);
-    rd.push('      <mentioned_name_hits_in_text>false</mentioned_name_hits_in_text>');
-    rd.push('      <mentioned_name_hits_in_summary>false</mentioned_name_hits_in_summary>');
-    rd.push('      <senderReplyCountWindow>0</senderReplyCountWindow>');
-    rd.push('      <groupReplyCountWindow>0</groupReplyCountWindow>');
-    rd.push('      <senderFatigue>0</senderFatigue>');
-    rd.push('      <groupFatigue>0</groupFatigue>');
-    rd.push('      <senderLastReplyAgeSec></senderLastReplyAgeSec>');
-    rd.push('      <groupLastReplyAgeSec></groupLastReplyAgeSec>');
-    rd.push(`      <is_followup_after_bot_reply>${followup ? 'true' : 'false'}</is_followup_after_bot_reply>`);
-    rd.push('      <activeTaskCount>0</activeTaskCount>');
-    rd.push('    </signals>');
-    rd.push('  </decision_input>');
-    rd.push('</sentra-root-directive>');
-    return rd.join('\n');
+    const decisionInputLines = [];
+    decisionInputLines.push('<decision_input>');
+    decisionInputLines.push(`  <scene>${escapeXmlText(safeScene)}</scene>`);
+    decisionInputLines.push('  <bot>');
+    decisionInputLines.push('    <self_id></self_id>');
+    decisionInputLines.push(`    <bot_names>${escapeXmlText(botNameList)}</bot_names>`);
+    decisionInputLines.push('  </bot>');
+    decisionInputLines.push('  <message>');
+    decisionInputLines.push('    <text></text>');
+    decisionInputLines.push(`    <summary>${escapeXmlText(summary || '')}</summary>`);
+    decisionInputLines.push('  </message>');
+    decisionInputLines.push('  <signals>');
+    decisionInputLines.push(`    <is_group>${safeScene === 'group' ? 'true' : 'false'}</is_group>`);
+    decisionInputLines.push(`    <is_private>${safeScene === 'private' ? 'true' : 'false'}</is_private>`);
+    decisionInputLines.push(`    <mentioned_by_at>${mentionedByAt ? 'true' : 'false'}</mentioned_by_at>`);
+    decisionInputLines.push(`    <mentioned_by_name>${mentionedByName ? 'true' : 'false'}</mentioned_by_name>`);
+    decisionInputLines.push('    <mentioned_names></mentioned_names>');
+    decisionInputLines.push(`    <mentioned_name_hit_count>${mentionedByName ? '1' : '0'}</mentioned_name_hit_count>`);
+    decisionInputLines.push('    <mentioned_name_hits_in_text>false</mentioned_name_hits_in_text>');
+    decisionInputLines.push('    <mentioned_name_hits_in_summary>false</mentioned_name_hits_in_summary>');
+    decisionInputLines.push('    <senderReplyCountWindow>0</senderReplyCountWindow>');
+    decisionInputLines.push('    <groupReplyCountWindow>0</groupReplyCountWindow>');
+    decisionInputLines.push('    <senderFatigue>0</senderFatigue>');
+    decisionInputLines.push('    <groupFatigue>0</groupFatigue>');
+    decisionInputLines.push('    <senderLastReplyAgeSec></senderLastReplyAgeSec>');
+    decisionInputLines.push('    <groupLastReplyAgeSec></groupLastReplyAgeSec>');
+    decisionInputLines.push(`    <is_followup_after_bot_reply>${followup ? 'true' : 'false'}</is_followup_after_bot_reply>`);
+    decisionInputLines.push('    <activeTaskCount>0</activeTaskCount>');
+    decisionInputLines.push('  </signals>');
+    decisionInputLines.push('</decision_input>');
+    return buildReplyGateRootDirectiveXml({
+      scene: safeScene,
+      groupId: safeGroupId,
+      senderId: safeSenderId,
+      objectiveLines: [objectiveLine || 'Decide whether to enter main flow for this message.'],
+      metaNote: note || '',
+      decisionInputXml: decisionInputLines.join('\n')
+    });
   };
 
-  const mkAssistant = ({ enter, reason }: FewShotAssistantInput) => {
-    return [
+  const mkAssistant = ({ enter, action, delayWhen, reason }: FewShotAssistantInput) => {
+    const resolvedAction = String(action || (enter ? 'action' : 'silent')).trim().toLowerCase();
+    const lines = [
       '<sentra-tools>',
-      '  <invoke name="reply_gate_decision">',
+      `  <invoke name="${REPLY_GATE_INVOKE_NAME}">`,
+      `    <parameter name="action"><string>${escapeXmlText(resolvedAction)}</string></parameter>`,
       `    <parameter name="enter"><boolean>${enter ? 'true' : 'false'}</boolean></parameter>`,
+      ...(resolvedAction === 'delay' && String(delayWhen || '').trim()
+        ? [`    <parameter name="delay_when"><string>${escapeXmlText(String(delayWhen).trim())}</string></parameter>`]
+        : []),
       `    <parameter name="reason"><string>${escapeXmlText(reason || '')}</string></parameter>`,
       '  </invoke>',
       '</sentra-tools>'
-    ].join('\n');
+    ];
+    return lines.join('\n');
   };
 
+  const locale = resolveInterventionLocale();
+  const fewShotResource = await loadReplyGateFewShotResource(locale);
+  const configuredPairs = Array.isArray(fewShotResource.examples) ? fewShotResource.examples : [];
+  const defaultPairs = buildDefaultReplyGateFewShotExamples(primaryBotName);
+  const pairs = configuredPairs.length > 0
+    ? configuredPairs
+        .map((item) => {
+          const user = item && item.user && typeof item.user === 'object' ? item.user : null;
+          const assistant = item && item.assistant && typeof item.assistant === 'object' ? item.assistant : null;
+          if (!user || !assistant || typeof (assistant as FewShotAssistantInput).enter !== 'boolean') {
+            return null;
+          }
+          return { user: user as FewShotUserInput, assistant: assistant as FewShotAssistantInput };
+        })
+        .filter((x): x is { user: FewShotUserInput; assistant: FewShotAssistantInput } => !!x)
+    : defaultPairs;
+
   const examples: ChatMessage[] = [];
-
-  // 1) Explicit @ + clear request -> enter
-  examples.push({
-    role: 'user',
-    content: mkUser({
-      id: 'fs_1',
-      objectiveLine: 'Decide whether to enter main flow.',
-      summary: `The user explicitly @${primaryBotName} and asked the bot to help solve an error.`,
-      mentionedByAt: true,
-      mentionedByName: true,
-      followup: false,
-      note: 'Few-shot example 1: explicit @ and actionable request'
-    })
-  });
-  examples.push({
-    role: 'assistant',
-    content: mkAssistant({
-      enter: true,
-      reason: 'Explicitly addressed to the bot with a clear actionable request.'
-    })
-  });
-
-  // 2) Name call (BOT_NAMES) + request -> enter
-  examples.push({
-    role: 'user',
-    content: mkUser({
-      id: 'fs_2',
-      objectiveLine: 'Decide whether to enter main flow.',
-      summary: `The user directly called the bot name (${primaryBotName}) and requested a concrete task (write a simple script to compare two texts).`,
-      mentionedByAt: false,
-      mentionedByName: true,
-      followup: false,
-      note: 'Few-shot example 2: called by bot name and asked to do a task'
-    })
-  });
-  examples.push({
-    role: 'assistant',
-    content: mkAssistant({
-      enter: true,
-      reason: 'The user directly called the bot by name and requested a task.'
-    })
-  });
-
-  // 3) Third-person mention / praise, no request -> silent
-  examples.push({
-    role: 'user',
-    content: mkUser({
-      id: 'fs_3',
-      objectiveLine: 'Decide whether to enter main flow.',
-      summary: `Group chat praise/third-person mention about ${primaryBotName} with no actionable request; likely just casual chatter.`,
-      mentionedByAt: false,
-      mentionedByName: true,
-      followup: false,
-      note: 'Few-shot example 3: third-person mention/praise without a request'
-    })
-  });
-  examples.push({
-    role: 'assistant',
-    content: mkAssistant({
-      enter: false,
-      reason: 'No actionable request; replying may be unnecessary noise in group chat.'
-    })
-  });
-
-  // 4) Group chatter to others -> silent
-  examples.push({
-    role: 'user',
-    content: mkUser({
-      id: 'fs_4',
-      objectiveLine: 'Decide whether to enter main flow.',
-      summary: 'The message is clearly addressed to another member (not the bot) and asks the group for opinions.',
-      mentionedByAt: false,
-      mentionedByName: false,
-      followup: false,
-      note: 'Few-shot example 4: conversation is clearly between other members'
-    })
-  });
-  examples.push({
-    role: 'assistant',
-    content: mkAssistant({
-      enter: false,
-      reason: 'The message is addressed to someone else and not requesting the bot.'
-    })
-  });
+  for (const item of pairs) {
+    examples.push({
+      role: 'user',
+      content: mkUser(item.user)
+    });
+    examples.push({
+      role: 'assistant',
+      content: mkAssistant(item.assistant)
+    });
+  }
 
   return examples;
 }
@@ -920,7 +1156,12 @@ function buildUserPayload(
   botInfo: BotInfo | null = null
 ): string {
   const scene = msg?.type || 'unknown';
-  const summary = typeof msg?.summary === 'string' ? msg.summary : '';
+  const summary = (
+    (typeof msg?.text === 'string' ? msg.text : '') ||
+    (typeof (msg as any)?.summary_text === 'string' ? (msg as any).summary_text : '') ||
+    (typeof (msg as any)?.objective_text === 'string' ? (msg as any).objective_text : '') ||
+    ''
+  );
 
   const resolvedBotInfo: BotInfo = botInfo && typeof botInfo === 'object' ? botInfo : {};
   const botSelfIdRaw = resolvedBotInfo.self_id ?? msg?.self_id ?? '';
@@ -1121,7 +1362,7 @@ function buildUserPayload(
  * @param {Object} msg - 原始消息对象
  * @param {Object} options - 附加信号（由上层解析）
  * @param {Object} options.signals - 结构化信号，例如 { mentionedByAt, mentionedByName, mentionedNames }
- * @returns {Promise<{ shouldReply: boolean, confidence: number, reason: string, priority: string, shouldQuote: boolean, raw?: any }|null>}
+ * @returns {Promise<{ shouldReply: boolean, confidence: number, reason: string, priority: string, shouldQuote: boolean, action?: string, delayWhen?: string, raw?: any }|null>}
  */
 export async function planGroupReplyDecision(msg: MessageLike, options: PlanGroupOptions = {}) {
   if (!isReplyInterventionEnabled()) {
@@ -1167,46 +1408,16 @@ export async function planGroupReplyDecision(msg: MessageLike, options: PlanGrou
     options.policy || null,
     options.bot || null
   );
-
-  const rdLines = [];
-  rdLines.push('<sentra-root-directive>');
-  rdLines.push('  <id>reply_gate_v1</id>');
-  rdLines.push('  <type>reply_gate</type>');
-  rdLines.push('  <scope>conversation</scope>');
-  rdLines.push('  <target>');
-  rdLines.push(`    <chat_type>${escapeXmlText(scene)}</chat_type>`);
-  if (safeGroupId) {
-    rdLines.push(`    <group_id>${escapeXmlText(safeGroupId)}</group_id>`);
-  }
-  if (safeSenderId) {
-    rdLines.push(`    <user_id>${escapeXmlText(safeSenderId)}</user_id>`);
-  }
-  rdLines.push('  </target>');
-
-  rdLines.push('  <objective>');
-  rdLines.push('    你只需做门禁判断：本轮是否进入主对话/MCP 流程（enter=true/false）。');
-  rdLines.push('    你必须输出且只能输出 1 个 <sentra-tools> 块，且其中必须包含 1 个 <invoke name="reply_gate_decision">。');
-  rdLines.push('    该 invoke 必须包含 enter(boolean) 与 reason(string)，reason 用 1-2 句解释原因（内部用，不展示给用户）。');
-  rdLines.push('  </objective>');
-
-  rdLines.push('  <allow_tools>true</allow_tools>');
-
-  rdLines.push('  <constraints>');
-  rdLines.push('    <item>Detailed gate rules are defined in the system prompt (reply_decision). Treat this <constraints> block as a minimal placeholder.</item>');
-  rdLines.push('  </constraints>');
-
-  rdLines.push('  <meta>');
-  rdLines.push('    <note>下面的 <decision_input> 是一个结构化的辅助输入，其中已经包含了本条消息、群/用户的疲劳度、是否被 @ 以及最近对话的摘要等信号，你可以将其视为只读背景数据，用于支撑你的价值判断。</note>');
-  rdLines.push('  </meta>');
-
-  const indentedDecision = decisionInputXml
-    .split('\n')
-    .map((line) => (line ? `  ${line}` : ''))
-    .join('\n');
-  rdLines.push(indentedDecision);
-  rdLines.push('</sentra-root-directive>');
-
-  const userContent = rdLines.join('\n');
+  const locale = resolveInterventionLocale();
+  const gateRules = await loadReplyGateRulesResource(locale);
+  const userContent = buildReplyGateRootDirectiveXml({
+    scene,
+    groupId: safeGroupId,
+    senderId: safeSenderId,
+    objectiveLines: gateRules.objective_lines,
+    metaNote: gateRules.meta_note,
+    decisionInputXml
+  });
 
   try {
     const { model, maxTokens } = getDecisionConfig();
@@ -1216,16 +1427,15 @@ export async function planGroupReplyDecision(msg: MessageLike, options: PlanGrou
 
     const toolDecisionConstraint = [
       '<sentra-protocol>',
-      'You MUST output exactly one <sentra-tools> block containing exactly one invoke:',
-      '<invoke name="reply_gate_decision"> with parameters enter(boolean) and reason(string).',
-      'Do NOT output any user-facing <sentra-response> in this decision task.',
+      REPLY_GATE_OUTPUT_INSTRUCTION,
+      REPLY_GATE_POLICY_TEXT,
       '</sentra-protocol>'
     ].join('\n');
 
     const systemContent = [baseSystem, toolDecisionConstraint, systemPrompt, presetContext].filter(Boolean).join('\n\n');
 
     const botNamesText = botNames.length ? botNames.join(',') : '';
-    const fewShotMessages = buildReplyGateFewShotMessages({
+    const fewShotMessages = await buildReplyGateFewShotMessages({
       scene,
       groupId: safeGroupId,
       senderId: safeSenderId,
@@ -1247,7 +1457,9 @@ export async function planGroupReplyDecision(msg: MessageLike, options: PlanGrou
     );
 
     if (!result || !result.success || !result.response) {
-      const reason = `chatWithRetry failed: ${result?.reason || 'unknown'}`;
+      const reason = tReplyIntervention('reply_gate_chat_retry_failed', {
+        detail: result?.reason || 'unknown'
+      });
       logger.warn('ReplyIntervention: chatWithRetry 返回失败结果，将默认判定为无需回复', {
         reason
       });
@@ -1255,6 +1467,7 @@ export async function planGroupReplyDecision(msg: MessageLike, options: PlanGrou
         shouldReply: false,
         confidence: 0.0,
         reason,
+        action: 'silent',
         priority: 'normal',
         shouldQuote: false,
         raw: result || null
@@ -1266,22 +1479,26 @@ export async function planGroupReplyDecision(msg: MessageLike, options: PlanGrou
         ? result.response
         : String(result.response ?? '');
 
-    const toolDecision = parseReplyGateDecisionFromSentraTools(rawText);
+    const toolDecision = parseReplyGateDecisionByContract(rawText);
     if (toolDecision && typeof toolDecision.enter === 'boolean') {
       const shouldReply = toolDecision.enter;
+      const action = String(toolDecision.action || (shouldReply ? 'action' : 'silent')).trim().toLowerCase();
+      const delayWhen = typeof toolDecision.delayWhen === 'string' ? toolDecision.delayWhen.trim() : '';
       const confidence = shouldReply ? 1.0 : 0.0;
       const reasonText = toolDecision.reason
         ? `ReplyGate(sentra-tools): ${toolDecision.reason}`
         : (shouldReply ? 'ReplyGate(sentra-tools): enter main flow' : 'ReplyGate(sentra-tools): stay silent');
 
       logger.info(
-        `ReplyIntervention 判定: shouldReply=${shouldReply}, tool=reply_gate_decision, reason=${reasonText}`
+        `ReplyIntervention 判定: shouldReply=${shouldReply}, tool=${REPLY_GATE_INVOKE_NAME}, reason=${reasonText}`
       );
 
       return {
         shouldReply,
         confidence,
         reason: reasonText,
+        action,
+        delayWhen,
         priority: 'normal',
         shouldQuote: false,
         raw: {
@@ -1291,67 +1508,26 @@ export async function planGroupReplyDecision(msg: MessageLike, options: PlanGrou
       };
     }
 
-    // Backward-compatible fallback (legacy output)
-    let parsed;
-    try {
-      parsed = parseSentraResponse(rawText);
-    } catch (e) {
-      logger.warn('ReplyIntervention: 解析 sentra 输出失败，将默认判定为无需回复', {
-        err: String(e),
-        snippet: takePrefix(rawText, 500)
-      });
-      return {
-        shouldReply: false,
-        confidence: 0.0,
-        reason: 'parse sentra output failed',
-        priority: 'normal',
-        shouldQuote: false,
-        raw: { error: String(e), snippet: takePrefix(rawText, 200) }
-      };
-    }
-
-    const shouldSkip = !!parsed.shouldSkip;
-    const explicitDecision = parseEnterMainFlowDecision(rawText);
-
-    let shouldReply = false;
-    if (typeof explicitDecision === 'boolean') {
-      shouldReply = explicitDecision;
-    } else if (shouldSkip) {
-      shouldReply = false;
-    } else {
-      shouldReply = false;
-      logger.warn('ReplyIntervention: 缺失 reply_gate_decision 且缺失 <enter_main_flow>，保守默认不进入主对话流程', {
-        replyMode: parsed.replyMode || 'none'
-      });
-    }
-
-    const confidence = shouldReply ? 1.0 : 0.0;
-    const reasonText = shouldReply
-      ? 'ReplyGate(legacy): enter main flow'
-      : 'ReplyGate(legacy): stay silent';
-
-    logger.info(
-      `ReplyIntervention 判定(legacy): shouldReply=${shouldReply}, shouldSkip=${shouldSkip}, explicitDecision=${explicitDecision}, replyMode=${parsed.replyMode || 'none'}, reason=${reasonText}`
-    );
+    logger.warn(`ReplyIntervention: missing valid ${REPLY_GATE_INVOKE_NAME} invoke; default no reply`, {
+      snippet: takePrefix(rawText, 500)
+    });
 
     return {
-      shouldReply,
-      confidence,
-      reason: reasonText,
+      shouldReply: false,
+      confidence: 0.0,
+      reason: tReplyIntervention('reply_gate_invalid_output'),
+      action: 'silent',
       priority: 'normal',
       shouldQuote: false,
-      raw: {
-        text: rawText,
-        explicitDecision,
-        shouldSkip
-      }
+      raw: { text: rawText }
     };
   } catch (e) {
     logger.warn('ReplyIntervention: 调用 LLM 决策失败，将默认判定为无需回复', { err: String(e) });
     return {
       shouldReply: false,
       confidence: 0.0,
-      reason: 'LLM decision failed (timeout or API error), default no reply',
+      reason: tReplyIntervention('reply_gate_llm_failed', { detail: String(e) }),
+      action: 'silent',
       priority: 'normal',
       shouldQuote: false,
       raw: { error: String(e) }
@@ -1391,7 +1567,6 @@ export async function decideOverrideIntent(payload: OverrideDecisionPayload | nu
     const nmSummary = nm.summary || nm.text || '';
     const mentionedByAt = !!safePayload.signals?.mentioned_by_at;
     const mentionedByName = !!safePayload.signals?.mentioned_by_name;
-    const explicitCancel = /(?:取消|不用了|算了|停下|停止|别做|不要了|撤销|先不用|先别|改成|换成)/.test(nmSummary);
 
     const taskCtx = await loadLatestTaskSnapshot({
       groupIdKey: safePayload.taskGroupId || safePayload.groupId,
@@ -1406,7 +1581,6 @@ export async function decideOverrideIntent(payload: OverrideDecisionPayload | nu
     lines.push('<signals>');
     lines.push(`<mentioned_by_at>${mentionedByAt ? 'true' : 'false'}</mentioned_by_at>`);
     lines.push(`<mentioned_by_name>${mentionedByName ? 'true' : 'false'}</mentioned_by_name>`);
-    lines.push(`<explicit_cancel>${explicitCancel ? 'true' : 'false'}</explicit_cancel>`);
     lines.push('</signals>');
     if (taskCtx) {
       lines.push(buildTaskContextXml(taskCtx));
@@ -1433,63 +1607,34 @@ export async function decideOverrideIntent(payload: OverrideDecisionPayload | nu
     lines.push('</override_decision_input>');
 
     const { model, maxTokens } = getDecisionConfig();
+    const locale = resolveInterventionLocale();
+    const overrideRules = await loadOverrideRuleResource(locale);
     const systemPrompt = await getReplyOverrideSystemPrompt();
     const baseSystem = await getDecisionToolsBaseSystem();
 
     const toolDecisionConstraint = [
       '<sentra-protocol>',
-      'You MUST output exactly one <sentra-tools> block containing exactly one invoke:',
-      '<invoke name="override_intent_decision"> with parameters decision(string), confidence(number optional), reason(string optional).',
-      'Do NOT output any user-facing <sentra-response> in this decision task.',
+      OVERRIDE_OUTPUT_INSTRUCTION,
+      OVERRIDE_POLICY_TEXT,
       '</sentra-protocol>'
     ].join('\n');
 
     const overrideGuidance = [
       '<override-guidance>',
-      'Task: decide follow-up handling when a previous task may still be running.',
-      'Input: prefer <summary> fields; <text> may be empty/noisy.',
-      'Decision mapping:',
-      '- cancel_only: user cancels previous task without new/changed request.',
-      '- cancel_and_restart: user replaces the request OR adds clarifications/supplements to the same task (always).',
-      '- reply: worth replying but does NOT require canceling the old task.',
-      '- pending: hold and do not reply now.',
+      ...overrideRules.guidance_lines,
       '</override-guidance>'
     ].join('\n');
 
     const systemContent = [baseSystem, toolDecisionConstraint, systemPrompt, overrideGuidance]
       .filter(Boolean)
       .join('\n\n');
-
-    const rdLines = [];
-    rdLines.push('<sentra-root-directive>');
-    rdLines.push('  <id>override_intent_v3</id>');
-    rdLines.push('  <type>override_intent</type>');
-    rdLines.push('  <scope>conversation</scope>');
-    rdLines.push('  <target>');
-    rdLines.push(`    <chat_type>${escapeXmlText(safePayload.scene)}</chat_type>`);
-    if (safePayload.groupId) {
-      rdLines.push(`    <group_id>${escapeXmlText(safePayload.groupId)}</group_id>`);
-    }
-    if (safePayload.senderId) {
-      rdLines.push(`    <user_id>${escapeXmlText(safePayload.senderId)}</user_id>`);
-    }
-    rdLines.push('  </target>');
-    rdLines.push('  <objective>');
-    rdLines.push('    输出 override_intent_decision 决策（reply|pending|cancel_and_restart|cancel_only）。');
-    rdLines.push('  </objective>');
-    rdLines.push('  <constraints>');
-    rdLines.push('    <item>Detailed rules are defined in the system prompt (reply_override). This is a minimal placeholder.</item>');
-    rdLines.push('  </constraints>');
-
-    const indentedInput = lines
-      .join('\n')
-      .split('\n')
-      .map((line) => (line ? `  ${line}` : ''))
-      .join('\n');
-    rdLines.push(indentedInput);
-    rdLines.push('</sentra-root-directive>');
-
-    const userContent = rdLines.join('\n');
+    const userContent = buildOverrideRootDirectiveXml({
+      scene: safePayload.scene,
+      groupId: safePayload.groupId || '',
+      senderId: safePayload.senderId || '',
+      objectiveLines: overrideRules.objective_lines,
+      overrideDecisionInputXml: lines.join('\n')
+    });
 
     const conversations: ChatMessage[] = [
       { role: 'system', content: systemContent },
@@ -1510,7 +1655,9 @@ export async function decideOverrideIntent(payload: OverrideDecisionPayload | nu
     );
 
     if (!result || !result.success || !result.response) {
-      const reason = `chatWithRetry failed: ${result?.reason || 'unknown'}`;
+      const reason = tReplyIntervention('override_chat_retry_failed', {
+        detail: result?.reason || 'unknown'
+      });
       logger.warn('OverrideIntervention: chatWithRetry 返回失败，默认不取消', { reason });
       return null;
     }
@@ -1546,11 +1693,15 @@ export async function decideOverrideIntent(payload: OverrideDecisionPayload | nu
     }
 
     logger.warn('OverrideIntervention: tools parse failed, default to no-cancel', {
+      reason: tReplyIntervention('override_parse_failed'),
       snippet: takePrefix(rawText, 500)
     });
     return null;
   } catch (e) {
-    logger.warn('OverrideIntervention: 调用 LLM 决策失败，默认不取消', { err: String(e) });
+    logger.warn('OverrideIntervention: 调用 LLM 决策失败，默认不取消', {
+      err: String(e),
+      reason: tReplyIntervention('override_llm_failed', { detail: String(e) })
+    });
     return null;
   }
 }

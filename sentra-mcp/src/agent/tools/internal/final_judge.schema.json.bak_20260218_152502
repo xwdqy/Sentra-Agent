@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "properties": {
+    "success": { 
+      "type": "boolean",
+      "description": "已执行的步骤是否成功：true=所有已执行步骤成功，false=有步骤失败。注意：这不代表任务是否完整。"
+    },
+    "incomplete": { 
+      "type": "boolean",
+      "description": "任务是否不完整（有遗漏步骤）：true=有计划中的步骤未执行或用户目标未完全达成，false=任务已完整执行所有必要步骤。这个字段独立于 success 判断。"
+    },
+    "failedSteps": {
+      "type": "array",
+      "description": "失败步骤列表。**关键：当 success=false 时，此字段绝对不能为空数组！必须详细列出所有 res.success=false 的步骤。**当 success=true 时，为空数组 []。",
+      "items": {
+        "type": "object",
+        "properties": {
+          "displayIndex": {
+            "type": "integer",
+            "description": "展示用步骤序号（从 1 开始，仅用于人类/模型阅读）"
+          },
+          "stepId": {
+            "type": "string",
+            "description": "稳定步骤ID（唯一身份标识，用于依赖/引用/补计划 patch）。格式示例：s_01J..."
+          },
+          "aiName": { 
+            "type": "string",
+            "description": "失败的工具名称（如 mindmap_gen, web_render_image）"
+          },
+          "reason": { 
+            "type": "string",
+            "description": "具体失败原因（如“超时”、“文件不存在”、“API 错误”），不要简单写“失败”"
+          }
+        },
+        "required": ["stepId", "reason"]
+      }
+    },
+    "summary": { 
+      "type": "string",
+      "description": "总结：已完成的内容 + 失败原因（如有） + 剩余步骤（如 incomplete=true）"
+    }
+  },
+  "required": ["success", "incomplete"],
+  "additionalProperties": true
+}

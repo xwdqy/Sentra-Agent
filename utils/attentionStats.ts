@@ -27,7 +27,7 @@ const localCache = new Map<string, AttentionStats>();
 function makeKey(groupId: string | number | null | undefined, senderId: string | number | null | undefined): string {
   const g = groupId != null ? String(groupId) : '';
   const s = senderId != null ? String(senderId) : '';
-  return `att_stats:${g}:${s}`;
+  return `att_stats_${g}_${s}`;
 }
 
 function clamp01(x: number): number {

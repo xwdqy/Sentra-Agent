@@ -1,0 +1,40 @@
+{
+  "id": "read_only_context",
+  "uuid": "1d3b6b2b-0d10-4b1e-a74c-06f9e0f5df42",
+  "title": "Read-Only Context Policy",
+  "summary": "Defines how to consume sentra-input and result blocks as evidence without echoing internals.",
+  "selection": "auto",
+  "when": [
+    "full",
+    "response_only",
+    "tools_only",
+    "router"
+  ],
+  "priority": 110,
+  "deps": [
+    "route_resolution"
+  ],
+  "tags": [
+    "protocol",
+    "read_only",
+    "context"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "sentra-input",
+      "context",
+      "history",
+      "evidence",
+      "read-only",
+      "上下文",
+      "历史",
+      "证据",
+      "只读",
+      "参考"
+    ],
+    "regex": [
+      "/(sentra-input|history|context|evidence|read[- ]?only|上下文|历史|证据|只读|参考)/i"
+    ]
+  }
+}

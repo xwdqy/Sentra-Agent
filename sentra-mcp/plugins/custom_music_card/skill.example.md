@@ -1,42 +1,48 @@
 # custom_music_card
 
-## 功能
+## Capability
 
-- 发送自定义伪装音乐卡片到 QQ 群聊或私聊
-- 支持 MP3/MP4 等在线链接
+- Send a custom music-card payload through WS send endpoints.
 
-## 实际影响
+## Real-world impact
 
-- 发送消息：音乐卡片发送到指定群/私聊
-- 不写本地文件
+- Sends outbound WS messages to QQ targets.
 
-## 使用场景
+## When to use
 
-- 用户要"发音乐卡片/伪装分享"
-- 能拿到 media_url（在线链接）和 title
+- User wants to send a custom media card.
+- Required media url and title are available.
 
-## 禁止场景
+## When not to use
 
-- 缺少必填参数（media_url/title）
-- 链接无法访问
+- Missing required media/title fields.
+- Task is read-only.
 
-## 输入
+## Input
 
-- 必填：
-  - `media_url`：音频或视频的在线链接
-  - `title`：卡片标题
-- 可选：
-  - `jump_url`：点击卡片跳转的链接（默认 media_url）
-  - `cover_url`：封面图片链接
-  - `user_id` / `group_id`：发送目标
+- Required:
+  - `media_url`
+  - `title`
+- Optional:
+  - `jump_url`
+  - `cover_url`
+  - `user_id` / `group_id`
 
-## 输出
+## Output
 
-- 发送结果：`{ success, card_type, message }`
+- Result object with action, segments, send response, and timestamp.
 
-## 失败模式
+## Failure modes
 
-- `INVALID`：缺必填参数
-- `INVALID_URL`：链接格式无效
-- `FETCH_FAILED`：链接无法访问
-- `SEND_FAILED`：卡片发送失败
+- `INVALID_MEDIA_URL`
+- `INVALID_TITLE`
+- `SEND_FAILED`
+- `ERR`
+
+## Success Criteria
+
+- Success requires `result.success === true`, `result.code === "OK"`, and `data.action === "custom_music_card"`.
+- Must include non-empty `data.segments` array.
+- Must include non-empty `data.response`.
+- Must include send-path evidence and `data.timestamp`.
+- Missing `segments/response/timestamp` means incomplete.

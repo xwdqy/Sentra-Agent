@@ -42,6 +42,19 @@ interface RedisPrefixes {
   desireUserFatigue: string;
 }
 
+const FIXED_REDIS_PREFIXES: RedisPrefixes = {
+  convPrivate: 'sentra_conv_private_',
+  convGroup: 'sentra_conv_group_',
+  groupHistory: 'sentra_group_',
+  contextMemory: 'sentra_memory_',
+  presetTeachingExamples: 'sentra_preset_teaching_examples_',
+  mcpMetrics: 'sentra_mcp_metrics',
+  mcpContext: 'sentra_mcp_ctx',
+  mcpMem: 'sentra_mcp_mem',
+  desire: 'sentra_desire_',
+  desireUserFatigue: 'sentra_desire_fatigue_',
+};
+
 interface ScanOptions {
   count?: number;
 }
@@ -261,18 +274,7 @@ export class RedisAdmin {
       ...(password !== undefined ? { password } : {}),
     };
 
-    this.prefixes = {
-      convPrivate: getEnvFrom(this._envMap, 'REDIS_CONV_PRIVATE_PREFIX', 'sentra:conv:private:', this.strictEnv),
-      convGroup: getEnvFrom(this._envMap, 'REDIS_CONV_GROUP_PREFIX', 'sentra:conv:group:', this.strictEnv),
-      groupHistory: getEnvFrom(this._envMap, 'REDIS_GROUP_HISTORY_PREFIX', 'sentra:group:', this.strictEnv),
-      contextMemory: getEnvFrom(this._envMap, 'REDIS_CONTEXT_MEMORY_PREFIX', 'sentra:memory:', this.strictEnv),
-      desire: getEnvFrom(this._envMap, 'REDIS_DESIRE_PREFIX', 'sentra:desire:', this.strictEnv),
-      desireUserFatigue: getEnvFrom(this._envMap, 'REDIS_DESIRE_USER_FATIGUE_PREFIX', 'sentra:desire:fatigue:', this.strictEnv),
-      presetTeachingExamples: 'sentra:preset:teaching:examples:',
-      mcpMetrics: getEnvFrom(this._envMap, 'REDIS_METRICS_PREFIX', 'sentra:mcp:metrics', this.strictEnv),
-      mcpContext: getEnvFrom(this._envMap, 'REDIS_CONTEXT_PREFIX', 'sentra:mcp:ctx', this.strictEnv),
-      mcpMem: getEnvFrom(this._envMap, 'MEM_PREFIX', 'sentra:mcp:mem', this.strictEnv),
-    };
+    this.prefixes = { ...FIXED_REDIS_PREFIXES };
 
     const redisOptions: RedisOptions = {
       host: this.redisConfig.host,
@@ -317,8 +319,8 @@ export class RedisAdmin {
       mcp_metrics: ensureTrailingStar(p.mcpMetrics),
       mcp_context: ensureTrailingStar(p.mcpContext),
       mcp_memory: ensureTrailingStar(p.mcpMem),
-      mcp_tool_cache: ensureTrailingStar(`${p.mcpMetrics}:cache:tool:`),
-      mcp_argcache: ensureTrailingStar(`${p.mcpMem}:argcache:`),
+      mcp_tool_cache: ensureTrailingStar(`${p.mcpMetrics}_cache_tool_`),
+      mcp_argcache: ensureTrailingStar(`${p.mcpMem}_argcache_`),
     };
   }
 
@@ -344,8 +346,8 @@ export class RedisAdmin {
   buildDesireKey(kind: 'group' | 'private', id: unknown): string | null {
     const raw = String(id ?? '').trim();
     if (!raw) return null;
-    if (kind === 'group') return `${this.prefixes.desire}G:${raw}`;
-    if (kind === 'private') return `${this.prefixes.desire}U:${raw}`;
+    if (kind === 'group') return `${this.prefixes.desire}G_${raw}`;
+    if (kind === 'private') return `${this.prefixes.desire}U_${raw}`;
     return null;
   }
 
@@ -359,13 +361,20 @@ export class RedisAdmin {
     const gid = String(groupId ?? '').trim();
     const dateStr = String(ymd ?? '').trim();
     if (!gid || !dateStr) return null;
-    return `${this.prefixes.contextMemory}${gid}:${dateStr}`;
+    return `${this.prefixes.contextMemory}${gid}_${dateStr}`;
+  }
+
+  buildContextMemoryDailySummaryKey(groupId: unknown, ymd: unknown): string | null {
+    const gid = String(groupId ?? '').trim();
+    const dateStr = String(ymd ?? '').trim();
+    if (!gid || !dateStr) return null;
+    return `${this.prefixes.contextMemory}${gid}_summary_${dateStr}`;
   }
 
   buildContextMemoryCursorKey(groupId: unknown): string | null {
     const gid = String(groupId ?? '').trim();
     if (!gid) return null;
-    return `${this.prefixes.contextMemory}${gid}:cursor`;
+    return `${this.prefixes.contextMemory}${gid}_cursor`;
   }
 
   async scanKeys(pattern: string, opts: ScanOptions = {}): Promise<string[]> {
@@ -592,6 +601,8 @@ export class RedisAdmin {
       const ymd = `${y}-${m}-${d}`;
       const k = this.buildContextMemoryDailyKey(gid, ymd);
       if (k) keys.push(k);
+      const ks = this.buildContextMemoryDailySummaryKey(gid, ymd);
+      if (ks) keys.push(ks);
     }
 
     if (toBool(opts.includeCursor)) {
@@ -603,13 +614,13 @@ export class RedisAdmin {
   }
 
   _extractMcpDocTs(key: unknown, kind: 'mem_doc' | 'argcache_doc'): number | null {
-    const p = String(this.prefixes.mcpMem || 'sentra:mcp:mem');
+    const p = String(this.prefixes.mcpMem || 'sentra_mcp_mem');
     const pp = escapeRegex(p);
     let re;
     if (kind === 'mem_doc') {
-      re = new RegExp(`^${pp}:doc:[^:]+:(\\d{10,13}):`);
+      re = new RegExp(`^${pp}_doc_[^_]+_(\\d{10,13})_`);
     } else if (kind === 'argcache_doc') {
-      re = new RegExp(`^${pp}:argcache:doc:[^:]+:(\\d{10,13}):`);
+      re = new RegExp(`^${pp}_argcache_doc_.+_(\\d{10,13})_`);
     } else {
       return null;
     }
@@ -620,25 +631,25 @@ export class RedisAdmin {
   }
 
   _extractMcpArgcacheAiName(key: unknown): string | null {
-    const p = String(this.prefixes.mcpMem || 'sentra:mcp:mem');
+    const p = String(this.prefixes.mcpMem || 'sentra_mcp_mem');
     const pp = escapeRegex(p);
-    const re = new RegExp(`^${pp}:argcache:doc:([^:]+):(\\d{10,13}):`);
+    const re = new RegExp(`^${pp}_argcache_doc_(.+)_(\\d{10,13})_`);
     const m = String(key || '').match(re);
     if (!m) return null;
     return String(m[1] || '').trim() || null;
   }
 
   _extractMcpMemDocId(key: unknown): string | null {
-    const p = String(this.prefixes.mcpMem || 'sentra:mcp:mem');
-    const prefix = `${p}:doc:`;
+    const p = String(this.prefixes.mcpMem || 'sentra_mcp_mem');
+    const prefix = `${p}_doc_`;
     const s = String(key || '');
     if (!s.startsWith(prefix)) return null;
     return s.substring(prefix.length);
   }
 
   async deleteMcpMemDocsByRange(startMs: number, endMs: number, opts: DeleteOptions = {}) {
-    const memPrefix = String(this.prefixes.mcpMem || 'sentra:mcp:mem');
-    const pattern = `${memPrefix}:doc:`;
+    const memPrefix = String(this.prefixes.mcpMem || 'sentra_mcp_mem');
+    const pattern = `${memPrefix}_doc_`;
     const keys = await this.scanKeys(pattern, { count: opts.count || 800 });
 
     const filtered: string[] = [];
@@ -669,9 +680,9 @@ export class RedisAdmin {
             const type = payload[0] ? String(payload[0]) : '';
             const aiName = payload[1] ? String(payload[1]) : '';
             if (type === 'plan') {
-              rmPipe.zrem(`${memPrefix}:index:plan`, id);
+              rmPipe.zrem(`${memPrefix}_index_plan`, id);
             } else if (type === 'tool' && aiName) {
-              rmPipe.zrem(`${memPrefix}:index:tool:${aiName}`, id);
+              rmPipe.zrem(`${memPrefix}_index_tool_${aiName}`, id);
             }
           }
           await rmPipe.exec();
@@ -683,8 +694,8 @@ export class RedisAdmin {
   }
 
   async deleteMcpArgcacheDocsByRange(startMs: number, endMs: number, opts: DeleteOptions = {}) {
-    const memPrefix = String(this.prefixes.mcpMem || 'sentra:mcp:mem');
-    const pattern = `${memPrefix}:argcache:doc:`;
+    const memPrefix = String(this.prefixes.mcpMem || 'sentra_mcp_mem');
+    const pattern = `${memPrefix}_argcache_doc_`;
     const keys = await this.scanKeys(pattern, { count: opts.count || 800 });
 
     const filtered: string[] = [];
@@ -707,7 +718,7 @@ export class RedisAdmin {
           const key = filtered[i];
           const ai = aiNames[i];
           if (!key || !ai) continue;
-          pipe.zrem(`${memPrefix}:argcache:index:${ai}`, key);
+          pipe.zrem(`${memPrefix}_argcache_index_${ai}`, key);
         }
         await pipe.exec();
       } catch {}
@@ -879,7 +890,7 @@ export class RedisAdmin {
       if (dk) out.keys.desire_state_group = [dk];
 
       // context memory uses date suffix; list via scan
-      const ptn = `${this.prefixes.contextMemory}${gid}:`;
+      const ptn = `${this.prefixes.contextMemory}${gid}_`;
       out.keys.context_memory = await this.scanKeys(ptn, { count: opts.count || 500 });
     }
 
@@ -887,10 +898,10 @@ export class RedisAdmin {
       const k = this.buildConversationGroupKey(gid, uid);
       if (k) out.keys.conversation_group = [k];
       // attention stats key (not configurable via env; defined in utils/attentionStats.js)
-      out.keys.attention_stats = [`att_stats:${gid}:${uid}`];
+      out.keys.attention_stats = [`att_stats_${gid}_${uid}`];
     } else if (gid && !uid) {
       // group-wide attention stats
-      const ptn = `att_stats:${gid}:`;
+      const ptn = `att_stats_${gid}_`;
       out.keys.attention_stats = await this.scanKeys(ptn, { count: opts.count || 500 });
     }
 
@@ -910,7 +921,7 @@ export class RedisAdmin {
     }
     // Additional hardcoded keys
     try {
-      const keys = await this.scanKeys('att_stats:', { count: opts.count || 500 });
+      const keys = await this.scanKeys('att_stats_', { count: opts.count || 500 });
       out.counts.attention_stats = keys.length;
     } catch {
       out.counts.attention_stats = null;

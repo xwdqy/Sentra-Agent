@@ -1,25 +1,25 @@
-/**
- * 流式聊天完成工具
- * 支持 OpenAI 格式的流式 API 请求
- */
-
 import logger from '../logger/index.js';
+import { getRuntimeSignal } from './runtime_context.js';
+import { mergeAbortSignals, makeAbortError } from './signal.js';
 
-/**
- * 流式请求 OpenAI 格式的 Chat Completions API
- * @param {Object} config - 请求配置
- * @param {string} config.apiBaseUrl - API 基础 URL
- * @param {string} config.apiKey - API 密钥
- * @param {string} config.model - 模型名称
- * @param {Array} config.messages - 消息数组
- * @param {number} [config.timeoutMs=180000] - 超时时间（毫秒）
- * @param {number} [config.temperature=0.7] - 温度参数
- * @param {number} [config.max_tokens] - 最大token数
- * @param {Object} [config.extra] - 额外参数
- * @param {Function} [onChunk] - 接收到数据块时的回调函数
- * @param {Function} [onProgress] - 进度回调 ({ totalChunks, totalChars })
- * @returns {Promise<string>} 完整响应文本
- */
+function buildTimeoutController(timeoutMs, model) {
+  const controller = new AbortController();
+  const ms = Math.max(1, Number(timeoutMs) || 180000);
+  const timer = setTimeout(() => {
+    logger.warn?.('stream_chat:timeout', { label: 'UTIL', timeoutMs: ms, model });
+    try {
+      controller.abort(makeAbortError(`Timeout after ${ms}ms`, 'TIMEOUT', { timeoutMs: ms }));
+    } catch {}
+  }, ms);
+  return { controller, timer, timeoutMs: ms };
+}
+
+function createRequestSignal({ signal, timeoutMs, model }) {
+  const { controller, timer, timeoutMs: ms } = buildTimeoutController(timeoutMs, model);
+  const merged = mergeAbortSignals([signal, getRuntimeSignal(), controller.signal]);
+  return { signal: merged || controller.signal, timer, timeoutMs: ms };
+}
+
 export async function streamChatCompletion(config, onChunk, onProgress) {
   const {
     apiBaseUrl,
@@ -29,24 +29,20 @@ export async function streamChatCompletion(config, onChunk, onProgress) {
     timeoutMs = 180000,
     temperature = 0.7,
     max_tokens,
-    extra = {}
+    extra = {},
+    signal,
   } = config;
 
   const url = `${apiBaseUrl.replace(/\/$/, '')}/chat/completions`;
-  
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    logger.warn?.('stream_chat:timeout', { label: 'UTIL', timeoutMs, model });
-    controller.abort();
-  }, timeoutMs);
-  
+  const { signal: requestSignal, timer, timeoutMs: finalTimeoutMs } = createRequestSignal({ signal, timeoutMs, model });
+
   try {
-    logger.info?.('stream_chat:request_start', { 
+    logger.info?.('stream_chat:request_start', {
       label: 'UTIL',
       url,
       model,
-      messagesCount: messages.length,
-      timeoutMs
+      messagesCount: Array.isArray(messages) ? messages.length : 0,
+      timeoutMs: finalTimeoutMs,
     });
 
     const requestBody = {
@@ -54,135 +50,90 @@ export async function streamChatCompletion(config, onChunk, onProgress) {
       messages,
       stream: true,
       temperature,
-      ...extra
+      ...extra,
     };
 
     if (typeof max_tokens !== 'undefined') {
       const mt = Number(max_tokens);
-      if (Number.isFinite(mt) && mt > 0) {
-        requestBody.max_tokens = mt;
-      }
+      if (Number.isFinite(mt) && mt > 0) requestBody.max_tokens = mt;
     }
 
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal: controller.signal
+      signal: requestSignal,
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
       throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
     }
-    
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
     let buffer = '';
     let chunkCount = 0;
     let charCount = 0;
-    
+
     logger.info?.('stream_chat:streaming_start', { label: 'UTIL', model });
-    
+
     while (true) {
       const { done, value } = await reader.read();
-      
       if (done) {
-        logger.info?.('stream_chat:streaming_done', { 
+        logger.info?.('stream_chat:streaming_done', {
           label: 'UTIL',
           totalChunks: chunkCount,
           totalChars: charCount,
-          fullTextLength: fullText.length
+          fullTextLength: fullText.length,
         });
         break;
       }
-      
+
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-      
+
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed === 'data: [DONE]') continue;
-        if (!trimmed.startsWith('data: ')) continue;
-        
+        if (!trimmed || trimmed === 'data: [DONE]' || !trimmed.startsWith('data: ')) continue;
+
         try {
-          const jsonStr = trimmed.slice(6);
-          const data = JSON.parse(jsonStr);
+          const data = JSON.parse(trimmed.slice(6));
           const content = data?.choices?.[0]?.delta?.content;
-          
-          if (content) {
-            fullText += content;
-            chunkCount++;
-            charCount += content.length;
-            
-            if (onChunk) {
-              try {
-                onChunk(content, { chunkIndex: chunkCount, totalChars: charCount });
-              } catch (e) {
-                logger.warn?.('stream_chat:onChunk_error', { 
-                  label: 'UTIL',
-                  error: String(e)
-                });
-              }
-            }
-            
-            if (onProgress && chunkCount % 10 === 0) {
-              try {
-                onProgress({ totalChunks: chunkCount, totalChars: charCount });
-              } catch (e) {
-                logger.warn?.('stream_chat:onProgress_error', { 
-                  label: 'UTIL',
-                  error: String(e)
-                });
-              }
-            }
+          if (!content) continue;
+
+          fullText += content;
+          chunkCount += 1;
+          charCount += content.length;
+
+          if (typeof onChunk === 'function') {
+            try { onChunk(content, { chunkIndex: chunkCount, totalChars: charCount }); } catch {}
+          }
+
+          if (typeof onProgress === 'function' && chunkCount % 10 === 0) {
+            try { onProgress({ totalChunks: chunkCount, totalChars: charCount }); } catch {}
           }
         } catch (e) {
-          logger.warn?.('stream_chat:parse_chunk_error', { 
+          logger.warn?.('stream_chat:parse_chunk_error', {
             label: 'UTIL',
             line: trimmed.slice(0, 100),
-            error: String(e?.message || e)
+            error: String(e?.message || e),
           });
         }
       }
     }
-    
-    clearTimeout(timeout);
-    
-    logger.info?.('stream_chat:complete', { 
-      label: 'UTIL',
-      model,
-      responseLength: fullText.length,
-      chunksProcessed: chunkCount
-    });
-    
+
     return fullText;
-    
-  } catch (e) {
-    clearTimeout(timeout);
-    
-    logger.error?.('stream_chat:error', { 
-      label: 'UTIL',
-      model,
-      error: String(e?.message || e),
-      errorName: e?.name
-    });
-    
-    throw e;
+  } finally {
+    try { clearTimeout(timer); } catch {}
   }
 }
 
-/**
- * 非流式请求（向后兼容）
- * @param {Object} config - 同 streamChatCompletion
- * @returns {Promise<string>} 完整响应文本
- */
 export async function chatCompletion(config) {
   const {
     apiBaseUrl,
@@ -192,54 +143,50 @@ export async function chatCompletion(config) {
     timeoutMs = 180000,
     temperature = 0.7,
     max_tokens,
-    extra = {}
+    extra = {},
+    signal,
   } = config;
 
   const url = `${apiBaseUrl.replace(/\/$/, '')}/chat/completions`;
-  
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  
+  const { signal: requestSignal, timer } = createRequestSignal({ signal, timeoutMs, model });
+
   try {
     const requestBody = {
       model,
       messages,
       stream: false,
       temperature,
-      ...extra
+      ...extra,
     };
 
-    if (max_tokens) {
-      requestBody.max_tokens = max_tokens;
+    if (typeof max_tokens !== 'undefined') {
+      const mt = Number(max_tokens);
+      if (Number.isFinite(mt) && mt > 0) requestBody.max_tokens = mt;
     }
 
     const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(requestBody),
-      signal: controller.signal
+      signal: requestSignal,
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
       throw new Error(`HTTP ${response.status}: ${errorText || response.statusText}`);
     }
-    
+
     const data = await response.json();
-    clearTimeout(timeout);
-    
     return data?.choices?.[0]?.message?.content || '';
-    
-  } catch (e) {
-    clearTimeout(timeout);
-    throw e;
+  } finally {
+    try { clearTimeout(timer); } catch {}
   }
 }
 
 export default {
   streamChatCompletion,
-  chatCompletion
+  chatCompletion,
 };
