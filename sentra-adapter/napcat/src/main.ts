@@ -40,8 +40,8 @@ async function main() {
     // 10 分钟缓存
     if (cached && now - cached.ts < 10 * 60 * 1000) return cached.name;
     try {
-      const resp: any = await (sdk as any).group?.info?.(groupId, true);
-      const name = resp?.data?.group_name;
+      const resp: any = await sdk.data('get_group_info', { group_id: groupId, no_cache: false });
+      const name = resp?.group_name;
       if (name && typeof name === 'string') {
         groupNameCache.set(groupId, { name, ts: now });
         return name;
@@ -132,8 +132,8 @@ async function main() {
                 const fileParam = seg.data?.file || seg.data?.url;
                 let detail: any;
                 try {
-                  const resp: any = await (sdk as any).call('get_image', { file: fileParam });
-                  detail = resp?.data;
+                  const resp: any = await sdk.data('get_image', { file: fileParam });
+                  detail = resp;
                 } catch {
                   detail = undefined;
                 }
@@ -180,8 +180,8 @@ async function main() {
           if (recordSegments.length > 0) {
             await Promise.all(recordSegments.map(async (seg: any) => {
               try {
-                const response: any = await (sdk as any).call('get_record', { file: seg.data?.file, out_format: 'mp3' });
-                const detail = response?.data;
+                const response: any = await sdk.data('get_record', { file: seg.data?.file, out_format: 'mp3' });
+                const detail = response;
                 if (detail) {
                   const localPath = await ensureLocalFile({
                     kind: 'record',
@@ -219,18 +219,18 @@ async function main() {
                 if (fileId) {
                   if (msg.message_type === 'group') {
                     // 群聊文件：使用 get_group_file_url
-                    const resp: any = await (sdk as any).call('get_group_file_url', {
-                      group_id: msg.group_id,
+                    const resp: any = await sdk.data('get_group_file_url', {
+                      group_id: msg.group_id!,
                       file_id: fileId,
                       busid: seg.data?.busid || 102,
                     });
-                    detail = resp?.data;
+                    detail = resp;
                   } else {
                     // 私聊文件：使用 get_file
-                    const resp: any = await (sdk as any).call('get_file', {
+                    const resp: any = await sdk.data('get_file', {
                       file_id: fileId,
                     });
-                    detail = resp?.data;
+                    detail = resp;
                   }
                 }
 

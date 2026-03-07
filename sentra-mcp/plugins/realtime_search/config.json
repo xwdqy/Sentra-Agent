@@ -4,6 +4,17 @@
   "inputSchema": {
     "type": "object",
     "properties": {
+      "provider": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "gemini",
+          "tavily",
+          "serper",
+          "model"
+        ],
+        "description": "Search provider mode/order. auto/gemini: Gemini native search -> Tavily -> Serper -> model; tavily: Tavily -> Serper -> model; serper: Serper -> model; model: model only."
+      },
       "query": {
         "type": "string",
         "description": "Search query (single). Please use Chinese usually. Use queries[] when you have multiple similar searches to run together."
