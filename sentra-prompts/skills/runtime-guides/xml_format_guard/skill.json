@@ -1,0 +1,41 @@
+{
+  "id": "xml_format_guard",
+  "uuid": "32d55f41-5c5d-4d3d-b536-d680ed9f7a57",
+  "title": "XML Format Guard",
+  "summary": "Enforces XML well-formedness, escaping, and exact top-level output discipline.",
+  "selection": "auto",
+  "when": [
+    "full",
+    "response_only",
+    "tools_only",
+    "router"
+  ],
+  "priority": 340,
+  "deps": [
+    "route_resolution"
+  ],
+  "tags": [
+    "protocol",
+    "xml_format",
+    "validation"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "xml",
+      "escape",
+      "well-formed",
+      "closing tag",
+      "format guard",
+      "XML",
+      "转义",
+      "闭合标签",
+      "格式",
+      "根节点",
+      "合法"
+    ],
+    "regex": [
+      "/(xml|escape|well-formed|closing\\s*tag|format\\s*guard|转义|闭合标签|格式|根节点|合法)/i"
+    ]
+  }
+}

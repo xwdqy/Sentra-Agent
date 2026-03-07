@@ -11,12 +11,24 @@
 
 ## When to use
 
-- 用户要查某个 QQ 是否在线，或需要批量检查多个账号状态。
+- 目标与工具能力一致：查询一个或多个 QQ 号的在线状态。
+- 可提供以下任一入参组合：(`user_id`) 或 (`user_ids`)。
+- 需要批量处理时，优先使用数组字段：`user_ids`。
+- 目标路由已明确：`user_id`。
 
-## When NOT to use
+## When not to use
 
-- 用户没有给出 QQ 号（不要猜 user_id）。
+- 无法满足任一入参组合时不要调用：(`user_id`) 或 (`user_ids`)。
+- 路由不明确时不要调用（需明确 `user_id`）。
+- 参数不满足约束时不要调用：`user_ids` 数量范围需在 1 到 inf。
+- 需要执行发送/修改/删除等动作时，不要调用。
 
+## Success Criteria
+
+- Single-call success: `result.success === true`, `result.code === "OK"`, and `data.request.path/requestId/args` + `data.response` are all present (`user_id`).
+- Batch-call success: `data.mode === "batch"` and `data.results` is non-empty.
+- In batch mode, each item must carry identifiers (`user_id`) plus per-item `success` and `data|error`; treat all-failed batch as incomplete.
+- Retry guidance: timeout/network may retry once for failed items; arg/schema errors regenerate args; persistent remote failure triggers replan.
 ## Input
 
 - Provide one of:

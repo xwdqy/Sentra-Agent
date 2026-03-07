@@ -1,58 +1,16 @@
 {
   "name": "qq_user_sendPoke",
-  "description": "QQ平台：发送戳一戳（私聊或群聊）",
+  "description": "Resolve poke delivery parameters for sentra-message poke segment output. This plugin does not send RPC messages.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "user_id": {
         "type": "string",
-        "description": "接收戳一戳的用户QQ号（必填）"
+        "description": "Target QQ user id to poke. Required."
       },
       "group_id": {
         "type": "string",
-        "description": "群号（可选，不填则为私聊戳一戳）"
-      },
-      "target_id": {
-        "type": "string",
-        "description": "戳一戳的目标对象QQ号（可选，默认戳 user_id）"
-      },
-      "times": {
-        "type": "integer",
-        "minimum": 1,
-        "maximum": 5,
-        "default": 1,
-        "description": "戳一戳的次数（1-5次，默认1次）"
-      },
-      "requestId": {
-        "type": "string",
-        "description": "请求ID（可选，用于追踪）"
-      },
-      "schedule": {
-        "type": "object",
-        "properties": {
-          "when": {
-            "type": "string",
-            "description": "时间表达：如 '5分钟后' / '30秒后' / '明天09:00' / '2025-12-16 21:30' / ISO 字符串。请使用清晰、可解析的时间表达，避免使用『稍后』『改天』『有空的时候』『尽快』『5分钟之后』等模糊说法。"
-          },
-          "language": {
-            "type": "string",
-            "description": "语言标识，例如 zh|en（默认 zh）"
-          },
-          "timezone": {
-            "type": "string",
-            "description": "IANA 时区名称，例如 Asia/Shanghai"
-          },
-          "targetISO": {
-            "type": "string",
-            "description": "预解析好的绝对时间（ISO 字符串），例如 '2025-12-16T21:30:00+08:00'；如提供，将被上游优先用作目标时间。"
-          }
-        },
-        "required": [
-          "when",
-          "targetISO"
-        ],
-        "additionalProperties": true,
-        "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
+        "description": "Group id for group poke. Optional; omit for private poke."
       }
     },
     "required": [
@@ -60,5 +18,17 @@
     ],
     "additionalProperties": true
   },
-  "timeoutMs": 20000
+  "timeoutMs": 10000,
+  "trigger_keywords": [
+    "戳一戳",
+    "poke",
+    "戳好友"
+  ],
+  "trigger_patterns": [
+    "(戳一戳|poke).{0,12}(戳好友)",
+    "(戳好友).{0,12}(戳一戳|poke)",
+    "(戳一戳|poke|戳好友)"
+  ],
+  "keyword_boost": 64,
+  "regex_boost": 89
 }

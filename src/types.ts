@@ -1,7 +1,7 @@
 export type ExpectedOutput =
-  | 'sentra_response'
+  | 'sentra_message'
   | 'sentra_tools'
-  | 'sentra_tools_or_response'
+  | 'sentra_tools_or_message'
   | 'reply_gate_decision_tools'
   | 'override_intent_decision_tools'
   | (string & {});

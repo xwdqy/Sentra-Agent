@@ -1,0 +1,99 @@
+import { httpRequestWithRetry } from './http.js';
+import logger from '../logger/index.js';
+
+export function resolvePluginTimeoutMs(pluginEnv, fallbackMs = 360000) {
+  const env = pluginEnv && typeof pluginEnv === 'object' ? pluginEnv : {};
+  const raw = env.PLUGIN_TIMEOUT_MS ?? process.env.PLUGIN_TIMEOUT_MS ?? fallbackMs;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallbackMs;
+  return Math.max(60000, Math.min(600000, Math.floor(n)));
+}
+
+export async function requestWithRetry(url, options = {}) {
+  const {
+    method = 'GET',
+    timeoutMs = resolvePluginTimeoutMs(null, 360000),
+    retries = 2,
+    retryBaseMs = 800,
+    retryMaxMs = 6000,
+    retryJitterMs = 200,
+    tag = 'plugin',
+    headers,
+    data,
+    body,
+    validateStatus = () => true,
+    validateResponse = (resp) => Number(resp?.status) >= 200 && Number(resp?.status) < 300,
+    responseType,
+    onRetry,
+    ...requestExtra
+  } = options || {};
+
+  return httpRequestWithRetry({
+    method,
+    url,
+    timeoutMs,
+    headers,
+    data: data ?? body,
+    responseType,
+    validateStatus,
+    ...requestExtra,
+  }, {
+    retries: Math.max(0, Number(retries)),
+    retryBaseMs,
+    retryMaxMs,
+    retryJitterMs,
+    validateResponse,
+    onRetry: typeof onRetry === 'function'
+      ? onRetry
+      : ({ attempt, delayMs, error }) => {
+          logger.warn?.(`${String(tag || 'plugin')}:request_retry`, {
+            label: 'PLUGIN',
+            attempt,
+            delayMs,
+            url: String(url || '').slice(0, 140),
+            error: String(error?.message || error),
+          });
+        },
+  });
+}
+
+export async function fetchBinaryWithRetry(url, options = {}) {
+  const {
+    timeoutMs = resolvePluginTimeoutMs(null, 360000),
+    retries = 2,
+    retryBaseMs = 800,
+    retryMaxMs = 6000,
+    retryJitterMs = 200,
+    tag = 'plugin',
+    headers,
+    validateStatus = () => true,
+    responseType = 'arraybuffer',
+  } = options || {};
+
+  return requestWithRetry(url, {
+    method: 'GET',
+    timeoutMs,
+    retries,
+    retryBaseMs,
+    retryMaxMs,
+    retryJitterMs,
+    tag,
+    headers,
+    responseType,
+    validateStatus,
+    validateResponse: (resp) => Number(resp?.status) >= 200 && Number(resp?.status) < 300,
+  });
+}
+
+export async function fetchJsonWithRetry(url, options = {}) {
+  const res = await requestWithRetry(url, options);
+  return res?.data;
+}
+
+export async function fetchTextWithRetry(url, options = {}) {
+  const res = await requestWithRetry(url, { ...options, responseType: 'text' });
+  const data = res?.data;
+  return typeof data === 'string' ? data : JSON.stringify(data ?? '');
+}
+
+export default { requestWithRetry, fetchBinaryWithRetry, fetchJsonWithRetry, fetchTextWithRetry, resolvePluginTimeoutMs };

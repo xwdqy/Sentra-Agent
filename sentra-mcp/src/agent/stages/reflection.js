@@ -10,44 +10,61 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+function logReflectionFcPreview({ attempt, provider, model, content, calls }) {
+  const count = Array.isArray(calls) ? calls.length : 0;
+  const providerInfo = { baseURL: provider?.baseURL, model };
+  if (count > 0) {
+    logger.info('Reflection parsed output', {
+      label: 'REFLECTION',
+      attempt,
+      provider: providerInfo,
+      count,
+      firstCallName: String(calls?.[0]?.name || ''),
+      firstCallPreview: clip(calls?.[0]),
+      length: String(content || '').length
+    });
+    return;
+  }
+  logger.warn('Reflection parse failed, fallback raw preview', {
+    label: 'REFLECTION',
+    attempt,
+    provider: providerInfo,
+    count: 0,
+    rawPreview: clip(String(content)),
+    length: String(content || '').length
+  });
+}
+
 /**
- * Reflection 阶段：检查任务完整性，识别遗漏的操作
- * 
- * 基于 LLM Agent Reflection 最佳实践：
- * - Global Reflection：分析整个任务历史
- * - Goal-Driven：基于目标判断完整性
- * - Adaptive：动态调整判断标准
- * 
+ * Reflection 完整性检查阶段。
+ * 使用 LLM Reflection 判断任务是否已经完整完成。
+ * - Global Reflection: 最终完整性判定
  * @param {string} runId - 运行 ID
- * @param {string} objective - 任务目标
+ * @param {string} objective - 当前目标
  * @param {Object} manifest - 可用工具清单
- * @param {Object} context - 上下文（promptOverlays 等）
- * @returns {Object} { isComplete: boolean, analysis: string, missings: string[], supplements: Array }
+ * @param {Object} context - 上下文（包含 promptOverlays 等）
+ * @returns {Object} { isComplete, analysis, missings, supplements }
  */
 export async function checkTaskCompleteness(runId, objective = '', manifest = {}, context = {}) {
   try {
-    // 读取执行历史
+    // 获取执行历史
     const history = await HistoryStore.list(runId, 0, -1);
     const plan = await HistoryStore.getPlan(runId);
     
-    // 过滤出工具执行结果
     const toolResults = history.filter(h => h.type === 'tool_result');
     
     if (toolResults.length === 0) {
-      // 没有执行任何工具，直接返回完整（避免不必要的补充）
-      logger.info('Reflection: 任务未执行任何工具，判定为完整', { label: 'REFLECTION', runId });
+      logger.info('Reflection: no tool execution, treat as complete', { label: 'REFLECTION', runId });
       return {
         isComplete: true,
-        analysis: '任务未执行任何工具，无需补充。',
+        analysis: 'No tool execution records found; treat objective as complete.',
         missings: [],
         supplements: []
       };
     }
-    
-    // 构建工具清单（XML，包含已使用和未使用的工具）
+    // 生成可用工具 XML，供反思阶段参考
     const availableTools = manifestToXmlToolsCatalog(Array.isArray(manifest) ? manifest : []);
     
-    // 构建工具执行历史（Sentra XML 格式）
     const stepsArr = Array.isArray(plan?.steps) ? plan.steps : [];
     const toolHistoryXML = toolResults.map((h, idx) => {
       const plannedIdx = Number.isFinite(Number(h.plannedStepIndex)) ? Number(h.plannedStepIndex) : idx;
@@ -65,24 +82,23 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
       });
     }).join('\n\n');
     
-    // 加载提示词
     const rfPrompt = await loadPrompt('reflection_fc');
     const overlays = (context?.promptOverlays || context?.overlays || {});
     const overlayGlobal = overlays.global?.system || overlays.global || '';
     const overlayReflection = overlays.reflection?.system || overlays.reflection || '';
     const sys = composeSystem(rfPrompt.system, [overlayGlobal, overlayReflection].filter(Boolean).join('\n\n'));
     
-    // 构建消息数组（使用 Sentra XML 格式传递工具历史）
+    // 构造符合 Sentra XML 协议的消息
     const baseMsgs = [
       { role: 'system', content: sys },
-      { role: 'user', content: renderTemplate(rfPrompt.user_objective, { objective: objective || '无明确目标' }) },
+      { role: 'user', content: renderTemplate(rfPrompt.user_objective, { objective: objective || '未提供目标' }) },
       { role: 'user', content: rfPrompt.user_history_intro },
       { role: 'assistant', content: toolHistoryXML },
       { role: 'user', content: renderTemplate(rfPrompt.user_available_tools, { availableTools }) },
       { role: 'user', content: rfPrompt.user_request }
     ];
     
-    // 读取 check_completeness schema
+    // 加载 check_completeness schema
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
     const schemaPath = path.resolve(__dirname, '../tools/internal/check_completeness.schema.json');
     let completenessSchema = {
@@ -98,7 +114,7 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
       const rawSchema = await fs.readFile(schemaPath, 'utf-8');
       completenessSchema = JSON.parse(rawSchema);
     } catch (e) {
-      logger.warn('Reflection: 无法读取 check_completeness schema，使用默认', { label: 'REFLECTION', error: String(e) });
+      logger.warn('Reflection: failed to load check_completeness schema, fallback to default', { label: 'REFLECTION', error: String(e) });
     }
     
     // 构建 FC 指令
@@ -106,10 +122,10 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
     const instr = await buildFunctionCallInstruction({
       name: 'check_completeness',
       parameters: completenessSchema,
-      locale: 'zh-CN'
+      locale: 'en'
     });
     
-    // 获取 Reflection 模型配置
+    // 反思阶段模型参数
     const fc = config.fcLlm || {};
     const reflectionModel = getStageModel('reflection');
     const temperature = Number.isFinite(fc.reflectionTemperature) 
@@ -123,10 +139,10 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
     let lastError = null;
     let lastContent = '';
     
-    // 尝试多次调用（处理解析失败）
+    // 重试 + 逐步强化约束
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       const reinforce = attempt > 1
-        ? '注意：如果 is_complete=false，missing_aspects 和 suggested_supplements 必须各至少包含 1 项。请严格输出所有 4 个字段。'
+        ? 'If is_complete is false, you must provide at least one missing_aspect and one suggested_supplement.'
         : '';
       const messages = [...baseMsgs, { role: 'user', content: [policy, instr, reinforce].filter(Boolean).join('\n\n') }];
       const provider = getStageProvider('reflection');
@@ -144,40 +160,31 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
       
       const content = res?.choices?.[0]?.message?.content || '';
       lastContent = content;
-      
-      logger.info('Reflection: 模型响应', {
-        label: 'REFLECTION',
-        attempt,
-        provider: { baseURL: provider.baseURL, model: reflectionModel },
-        contentPreview: clip(String(content))
-      });
-      
-      // 解析函数调用
       const calls = parseFunctionCalls(String(content), {});
-      
+      logReflectionFcPreview({ attempt, provider, model: reflectionModel, content, calls });
       if (calls.length === 0) {
-        lastError = `第 ${attempt} 次尝试：未能解析到工具调用`;
+        lastError = `第 ${attempt} 次：未解析到任何函数调用`;
         continue;
       }
       
       const call = calls.find((c) => String(c.name) === 'check_completeness') || calls[0];
       
       if (!call || call.name !== 'check_completeness') {
-        lastError = `第 ${attempt} 次尝试：调用了错误的工具 "${call?.name}"，期望 "check_completeness"`;
+        lastError = `第 ${attempt} 次：函数名 "${call?.name}" 非法，期望 "check_completeness"`;
         continue;
       }
       
       try {
         const args = call?.arguments || {};
         
-        // 验证必需字段
+        // 字段校验
         if (!Object.prototype.hasOwnProperty.call(args, 'is_complete')) {
-          lastError = `第 ${attempt} 次尝试：缺少 is_complete 字段`;
+          lastError = `第 ${attempt} 次：缺少必填字段 is_complete`;
           continue;
         }
         
         if (typeof args.completeness_analysis !== 'string' || !args.completeness_analysis.trim()) {
-          lastError = `第 ${attempt} 次尝试：completeness_analysis 字段为空或不是字符串`;
+          lastError = `第 ${attempt} 次：字段 completeness_analysis 不能为空`;
           continue;
         }
         
@@ -189,57 +196,54 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
           supplements: Array.isArray(args.suggested_supplements) ? args.suggested_supplements : []
         };
         
-        // 业务校验：若判定为不完整，但任一数组为空，则视为输出不合规，进入下一次重试
         if (
           result && result.isComplete === false &&
           Array.isArray(result.missings) && Array.isArray(result.supplements) &&
           (result.missings.length === 0 || result.supplements.length === 0)
         ) {
-          lastError = `第 ${attempt} 次尝试：is_complete=false 但 ${result.missings.length === 0 ? 'missing_aspects 为空' : ''}${result.missings.length === 0 && result.supplements.length === 0 ? ' 且 ' : ''}${result.supplements.length === 0 ? 'suggested_supplements 为空' : ''}`.trim();
+          lastError = `第 ${attempt} 次：is_complete=false 时 ${result.missings.length === 0 ? 'missing_aspects 缺失' : ''}${result.missings.length === 0 && result.supplements.length === 0 ? '，' : ''}${result.supplements.length === 0 ? 'suggested_supplements 缺失' : ''}`.trim();
           continue;
         }
         
         lastError = null;
         break;
       } catch (e) {
-        lastError = `第 ${attempt} 次尝试：解析参数失败 - ${String(e)}`;
+        lastError = `第 ${attempt} 次：参数解析异常 - ${String(e)}`;
       }
     }
     
-    // 返回结果
+    // 后处理
     if (result) {
-      // 兜底修正：若仍为不完整但任一数组为空，自动补全
       if (result.isComplete === false && Array.isArray(result.missings) && Array.isArray(result.supplements)) {
         try {
           const failed = toolResults.filter((tr) => Number(tr?.result?.success) !== 1);
           if (failed.length > 0) {
             if (result.missings.length === 0) {
-              result.missings = failed.map((tr, i) => `步骤${i}失败`);
+              result.missings = failed.map((tr, i) => `步骤${i + 1}失败`);
             }
             if (result.supplements.length === 0) {
               result.supplements = failed.map((tr, i) => ({
                 operation: `重试 ${String(tr.aiName || '工具')}`.trim(),
-                reason: `第${i}步 ${String(tr.aiName || '工具')} 调用失败：${String(tr.result?.error || tr.result?.message || '未知错误')}。需要重试以完成目标。`,
+                reason: `第 ${i + 1} 步 ${String(tr.aiName || '工具')} 调用失败：${String(tr.result?.error || tr.result?.message || '未知错误')}。需要重试以完成目标。`,
                 suggested_tools: [tr.aiName].filter(Boolean)
               }));
             }
           }
-          // 若没有失败步骤，但 missings 非空而 supplements 为空：基于 missings 生成通用补充建议
+          // 若 missings/supplements 其中之一为空，自动补齐
           if (result.supplements.length === 0 && result.missings.length > 0) {
             result.supplements = result.missings.map((m) => ({
               operation: String(m).slice(0, 50),
-              reason: `针对遗漏事项“${String(m)}”进行补充执行，以确保任务完整。`,
+              reason: `缺失项“${String(m)}”未提供补充步骤，已自动生成默认补充建议。`,
               suggested_tools: []
             }));
           }
-          // 若 supplements 非空但 missings 为空：由补充操作反推遗漏点
           if (result.missings.length === 0 && result.supplements.length > 0) {
-            result.missings = result.supplements.map((s) => String(s?.operation || '未完成的关键操作'));
+            result.missings = result.supplements.map((s) => String(s?.operation || '未命名补充步骤'));
           }
         } catch {}
       }
       
-      logger.info('Reflection: 完整性检查完成', {
+      logger.info('Reflection: completeness check done', {
         label: 'REFLECTION',
         runId,
         isComplete: result.isComplete,
@@ -250,8 +254,8 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
       
       return result;
     } else {
-      // 解析失败，默认判定为完整（避免错误补充）
-      logger.warn('Reflection: 解析失败，默认判定为完整', {
+      // 模型输出不合规时回退 complete，避免阻塞主流程
+      logger.warn('Reflection: parse failed, fallback to complete', {
         label: 'REFLECTION',
         runId,
         error: lastError,
@@ -260,19 +264,19 @@ export async function checkTaskCompleteness(runId, objective = '', manifest = {}
       
       return {
         isComplete: true,
-        analysis: '完整性检查失败，默认判定为完整。',
+        analysis: 'Reflection parse failed; fallback to complete.',
         missings: [],
         supplements: [],
         error: lastError
       };
     }
   } catch (e) {
-    logger.error('Reflection: 完整性检查异常', { label: 'REFLECTION', runId, error: String(e) });
+    logger.error('Reflection: completeness check error', { label: 'REFLECTION', runId, error: String(e) });
     
-    // 异常情况，默认判定为完整（避免错误补充）
+    // 异常保护：反思失败不阻断流程
     return {
       isComplete: true,
-      analysis: '完整性检查异常，默认判定为完整。',
+      analysis: 'Reflection stage failed unexpectedly; fallback to complete.',
       missings: [],
       supplements: [],
       error: String(e)

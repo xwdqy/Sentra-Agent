@@ -304,7 +304,7 @@ class Logger {
   /**
    * 分隔线
    */
-  divider(char: string = '─', length: number = 60): void {
+  divider(char: string = '-', length: number = 60): void {
     const minLevel = this._getMinLevel();
     if (minLevel > LogLevel.INFO) return;
     console.log(chalk.gray(char.repeat(length)));

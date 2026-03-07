@@ -1,0 +1,12 @@
+{
+  "objective_lines": [
+    "你只需做门禁动作判断：silent|action|short|delay。",
+    "你必须输出且只能输出 1 个 <sentra-tools> 块，且其中必须包含 1 个 <invoke name=\"reply_gate_decision\">。",
+    "该 invoke 必须包含 action(string)、enter(boolean)、reason(string)；当 action=delay 时必须额外提供 delay_when(string) 并使用可解析时间格式。"
+  ],
+  "constraints": [
+    "Detailed gate rules are defined in the system prompt (reply_decision). Treat this <constraints> block as a minimal placeholder."
+  ],
+  "meta_note": "下面的 <decision_input> 是一个结构化的辅助输入，其中已经包含了本条消息、群/用户的疲劳度、是否被 @ 以及最近对话的摘要等信号，你可以将其视为只读背景数据，用于支撑你的价值判断。"
+}
+

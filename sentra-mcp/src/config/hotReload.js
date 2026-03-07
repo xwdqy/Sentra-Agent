@@ -32,13 +32,13 @@ export function startHotReloadWatchers(core) {
   const mcpRootDir = path.resolve(__dirname, '../..');
   const envPath = path.join(mcpRootDir, '.env');
 
-  // Plugins can be loaded from multiple roots (see loadPlugins candidates). Watch them all.
+  // Plugins are resolved from MCP's own plugins dir by default.
+  // Optional extra root is allowed only when PLUGINS_DIR is explicitly configured.
   const pluginRootCandidates = [];
   pluginRootCandidates.push(path.join(mcpRootDir, 'plugins'));
   try {
     if (process.env.PLUGINS_DIR) pluginRootCandidates.push(path.resolve(process.env.PLUGINS_DIR));
   } catch {}
-  pluginRootCandidates.push(path.resolve(process.cwd(), 'plugins'));
   const pluginRoots = Array.from(new Set(pluginRootCandidates.map((p) => path.resolve(p))));
 
   const reloadConfigDebounced = createDebounced(() => {

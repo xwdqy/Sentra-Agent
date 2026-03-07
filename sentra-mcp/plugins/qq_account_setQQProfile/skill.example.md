@@ -11,13 +11,22 @@
 
 ## When to use
 
-- 用户明确要求修改昵称/签名/性别，并提供目标内容。
+- 目标与工具能力一致：修改当前 QQ 账号的个人资料，比如昵称、签名或性别。
+- 可提供以下任一入参组合：(`nickname`) 或 (`personal_note`) 或 (`sex`)。
+- 你明确接受该操作可能产生的副作用（发送/修改/写入/生成）。
 
-## When NOT to use
+## When not to use
 
-- 用户没有给出要改成什么（至少要提供一个字段）。
-- 用户未确认要修改账号资料。
+- 无法满足任一入参组合时不要调用：(`nickname`) 或 (`personal_note`) 或 (`sex`)。
+- 参数不满足约束时不要调用：`sex` 仅支持 `0` / `1` / `2`。
+- 仅希望查询信息、且不希望产生副作用时，不要调用。
 
+## Success Criteria
+
+- Must have `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be non-empty, `data.request.requestId` must be present, and `data.request.args` must match this call (`{ nickname|personal_note|sex payload }`).
+- `data.response` must be present (non-null object/string), proving RPC was sent and acknowledged.
+- Retry guidance: timeout/network may retry once with same args; input/schema errors should regenerate args; business rejection should replan.
 ## Input
 
 - Provide at least one:

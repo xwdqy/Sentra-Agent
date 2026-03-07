@@ -1,0 +1,40 @@
+{
+  "id": "tool_call_contract",
+  "uuid": "42d9bd90-0564-4cef-bec8-48ad61f44387",
+  "title": "Tool Call Contract",
+  "summary": "Defines strict sentra-tools invoke schema, typed parameter encoding, and tool-round constraints.",
+  "selection": "auto",
+  "when": [
+    "full",
+    "tools_only",
+    "router"
+  ],
+  "priority": 90,
+  "deps": [
+    "route_resolution"
+  ],
+  "tags": [
+    "protocol",
+    "tools",
+    "tool_call_contract",
+    "gate"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "sentra-tools",
+      "invoke",
+      "parameter",
+      "tool call",
+      "mcp",
+      "工具调用",
+      "调用工具",
+      "参数",
+      "工具参数",
+      "工具"
+    ],
+    "regex": [
+      "/(sentra-tools|invoke|parameter|tool\\s*call|mcp|工具调用|调用工具|工具参数|参数)/i"
+    ]
+  }
+}

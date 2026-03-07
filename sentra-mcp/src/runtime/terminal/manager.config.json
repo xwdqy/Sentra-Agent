@@ -1,0 +1,34 @@
+﻿{
+  "invokeName": "terminal_execute",
+  "argSchema": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Executable shell command. Must match terminalType syntax. If terminalType is omitted, runtime default is powershell on Windows and bash on Unix-like systems."
+      },
+      "terminalType": {
+        "type": "string",
+        "enum": ["powershell", "cmd", "bash", "zsh", "sh"],
+        "description": "Target shell dialect used to execute command. Choose explicitly when command syntax is shell-specific."
+      },
+      "cwd": { "type": "string" },
+      "interactive": { "type": "boolean" },
+      "sessionMode": { "type": "string", "enum": ["exec", "pty", "tmux_control"] },
+      "timeoutMs": { "type": "integer", "minimum": 1000, "maximum": 900000 },
+      "expectExit": { "type": "boolean" },
+      "stopSignal": { "type": "string", "enum": ["ctrl_c", "none"] },
+      "closeOnFinish": { "type": "boolean" },
+      "encoding": { "type": "string" },
+      "maxOutputChars": { "type": "integer", "minimum": 0, "maximum": 2000000 },
+      "tailLines": { "type": "integer", "minimum": 0, "maximum": 200000 }
+    },
+    "required": ["command"],
+    "additionalProperties": false
+  },
+  "inference": {
+    "temperature": 0.1,
+    "maxTokens": 1400
+  }
+}

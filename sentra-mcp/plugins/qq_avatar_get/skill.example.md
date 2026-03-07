@@ -11,13 +11,24 @@
 
 ## When to use
 
-- 用户要“看某人的头像/保存头像/拿头像做后续处理”。
-- 需要批量拉取多个 QQ 号头像。
+- 目标与工具能力一致：下载一个或多个 QQ 号的头像，并返回本地图片路径。
+- 可提供以下任一入参组合：(`user_id`) 或 (`user_ids`)。
+- 需要批量处理时，优先使用数组字段：`user_ids`。
+- 目标路由已明确：`user_id`。
 
-## When NOT to use
+## When not to use
 
-- 用户未提供 QQ 号。
+- 无法满足任一入参组合时不要调用：(`user_id`) 或 (`user_ids`)。
+- 路由不明确时不要调用（需明确 `user_id`）。
+- 参数不满足约束时不要调用：`user_ids` 数量范围需在 1 到 inf。
 
+## Success Criteria
+
+- This plugin is download-based HTTP flow (not WS RPC), so do not require `data.request/data.response`.
+- Single-call success requires `result.success === true`, `result.code === "OK"`, plus `data.user_id`, `data.path_absolute`, and `data.path_markdown`.
+- `data.path_absolute` must point to a local absolute avatar file path under workspace artifacts.
+- Batch mode requires `data.mode === "batch"` with non-empty `data.results`; each item must include `user_id` + `success` + `data|error`, and at least one item must succeed.
+- Retry guidance: timeout/download transient may retry once; invalid user args regenerate; repeated avatar fetch failures trigger replan.
 ## Input
 
 - Provide one of:

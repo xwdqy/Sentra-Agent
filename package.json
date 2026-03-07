@@ -7,6 +7,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/Main.js",
+    "test:sentra-mcp-sdk": "node test-sentra-mcp-sdk.mjs",
+    "demo:action-learner": "node dist/utils/actionLearnerDemo.js",
+    "demo:action-learner-sim": "node dist/utils/actionLearnerFeedbackSimulation.js",
+    "demo:action-learner-xml": "node dist/utils/actionLearnerXmlDemo.js",
+    "demo:action-learner-payload": "node dist/utils/actionLearnerPayloadAblation.js",
     "pm2:start": "pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop sentra-agent",
     "pm2:restart": "pm2 restart sentra-agent",

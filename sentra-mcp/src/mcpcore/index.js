@@ -9,10 +9,14 @@ import { config } from '../config/index.js';
 import { Governance } from '../governance/policy.js';
 import { embedTexts } from '../openai/client.js';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { truncateTextByTokens } from '../utils/tokenizer.js';
+import { getRuntimeSignal } from '../utils/runtime_context.js';
+import { makeAbortError } from '../utils/signal.js';
 
 function makeAINameLocal(name) {
   return `local__${name}`;
@@ -58,15 +62,18 @@ function __getLocalRemainMs(aiName) {
 }
 function sleep(ms) { return new Promise((r) => setTimeout(r, Math.max(0, ms))); }
 
-function __truncateText(s, maxChars) {
-  const max = Number(maxChars);
-  const m = Number.isFinite(max) && max > 0 ? Math.floor(max) : 4000;
+function __truncateTextByTokens(s, maxTokens) {
+  const max = Number(maxTokens);
+  const m = Number.isFinite(max) && max > 0 ? Math.floor(max) : 1024;
   const str = String(s ?? '');
-  if (str.length <= m) return str;
-  return str.slice(0, m) + `... (len=${str.length})`;
+  const out = truncateTextByTokens(str, {
+    maxTokens: m,
+    suffix: '\n...[truncated]'
+  });
+  return out.text;
 }
 
-function __extractMcpTextFromContent(content, maxChars) {
+function __extractMcpTextFromContent(content, maxTokens) {
   if (!Array.isArray(content)) return '';
   const parts = [];
   for (const it of content) {
@@ -75,7 +82,155 @@ function __extractMcpTextFromContent(content, maxChars) {
       parts.push(String(it.text));
     }
   }
-  return __truncateText(parts.join('\n'), maxChars);
+  return __truncateTextByTokens(parts.join('\n'), maxTokens);
+}
+
+function __resolveExternalMcpResultTokenLimit() {
+  const direct = Number(process.env.EXTERNAL_MCP_RESULT_MAX_TOKENS);
+  if (Number.isFinite(direct) && direct > 0) return Math.floor(direct);
+  return 8192;
+}
+
+function __resolveLocalPluginDir(tool = {}) {
+  const base = String(tool?._pluginAbsDir || '').trim();
+  if (base) return path.resolve(base);
+  const entry = String(tool?._pluginEntryPath || '').trim();
+  if (entry) return path.dirname(path.resolve(entry));
+  return '';
+}
+
+function __jsonReplacerForCli(_key, value) {
+  if (typeof value === 'function') return undefined;
+  if (typeof value === 'symbol') return undefined;
+  if (typeof value === 'bigint') return String(value);
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      code: value.code,
+      stack: value.stack,
+    };
+  }
+  return value;
+}
+
+function __toCliSerializable(value, fallback = {}) {
+  try {
+    return JSON.parse(JSON.stringify(value, __jsonReplacerForCli));
+  } catch {
+    return fallback;
+  }
+}
+
+function __buildCliInputPayload(args = {}, options = {}) {
+  const opts = (options && typeof options === 'object') ? { ...options } : {};
+  if (opts.runtime && typeof opts.runtime === 'object') {
+    const runtime = { ...opts.runtime };
+    delete runtime.signal;
+    opts.runtime = runtime;
+  }
+  const safeArgs = __toCliSerializable(args || {}, {});
+  const safeOptions = __toCliSerializable(opts, {});
+  return JSON.stringify({ args: safeArgs, options: safeOptions });
+}
+
+function __parseCliJsonOutput(stdout = '') {
+  const text = String(stdout || '').trim();
+  if (!text) return { ok: false, value: null };
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch {
+    return { ok: false, value: null };
+  }
+}
+
+function __terminateChildProcess(child) {
+  if (!child || typeof child.kill !== 'function') return;
+  try { child.kill('SIGINT'); } catch { }
+  setTimeout(() => {
+    try { child.kill('SIGTERM'); } catch { }
+  }, 120);
+}
+
+async function __runLocalPluginViaNode(tool, args = {}, options = {}) {
+  const cwd = __resolveLocalPluginDir(tool);
+  if (!cwd || !fs.existsSync(cwd)) {
+    throw new Error(`Local plugin directory not found: ${cwd || '(empty)'}`);
+  }
+  const indexPath = path.join(cwd, 'index.js');
+  if (!fs.existsSync(indexPath)) {
+    throw new Error(`Local plugin index.js not found: ${indexPath}`);
+  }
+  const pluginEnv = (tool?.pluginEnv && typeof tool.pluginEnv === 'object') ? tool.pluginEnv : {};
+  const input = __buildCliInputPayload(args, options);
+  const runtimeSignal = getRuntimeSignal();
+
+  return await new Promise((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const child = spawn(process.execPath, ['index.js'], {
+      cwd,
+      env: { ...process.env, ...pluginEnv, FORCE_COLOR: '0' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    const cleanup = () => {
+      if (runtimeSignal && typeof runtimeSignal.removeEventListener === 'function') {
+        try { runtimeSignal.removeEventListener('abort', onAbort); } catch { }
+      }
+    };
+    const settle = (fn, payload) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(payload);
+    };
+    const onAbort = () => {
+      __terminateChildProcess(child);
+      settle(reject, makeAbortError('Local plugin execution aborted', 'RUN_ABORTED', {
+        plugin: String(tool?.name || ''),
+      }));
+    };
+
+    if (runtimeSignal) {
+      if (runtimeSignal.aborted) {
+        onAbort();
+        return;
+      }
+      try { runtimeSignal.addEventListener('abort', onAbort, { once: true }); } catch { }
+    }
+
+    child.stdout?.on('data', (chunk) => { stdout += String(chunk || ''); });
+    child.stderr?.on('data', (chunk) => { stderr += String(chunk || ''); });
+    child.on('error', (err) => settle(reject, err));
+    child.on('close', (exitCode, exitSignal) => {
+      const parsed = __parseCliJsonOutput(stdout);
+      if (parsed.ok) {
+        settle(resolve, parsed.value);
+        return;
+      }
+      const errText = String(stderr || '').trim() || `Plugin process exited: code=${String(exitCode ?? '')} signal=${String(exitSignal ?? '')}`;
+      const out = fail(new Error(errText), 'INVALID_PLUGIN_OUTPUT', {
+        plugin: String(tool?.name || ''),
+        pluginDir: cwd,
+        command: 'node index.js',
+        exitCode: Number.isFinite(Number(exitCode)) ? Number(exitCode) : null,
+        exitSignal: exitSignal ? String(exitSignal) : null,
+        stdoutPreview: String(stdout || '').slice(-2000),
+        stderrPreview: String(stderr || '').slice(-2000),
+      });
+      settle(resolve, out);
+    });
+
+    try {
+      child.stdin?.end(input, 'utf8');
+    } catch (e) {
+      settle(reject, e);
+    }
+  });
 }
 
 function cosineSim(a = [], b = []) {
@@ -416,7 +571,7 @@ export class MCPCore {
         return;
       }
       const r = getRedis();
-      const key = `${config.redis.metricsPrefix}:cooldown:${aiName}`;
+      const key = `${config.redis.metricsPrefix}_cooldown_${aiName}`;
       // 原子：SET NX PX，成功表示获取到“冷却锁”，失败表示已有锁（处于冷却期）
       const setRes = await r.set(key, '1', 'PX', Math.max(1, Math.floor(cooldownMs)), 'NX');
       if (setRes !== 'OK') {
@@ -488,8 +643,8 @@ export class MCPCore {
   }
 
   static _cacheKey(aiName, hash) {
-    const pfx = String(config.redis?.metricsPrefix || 'sentra:mcp:metrics');
-    return `${pfx}:cache:tool:${aiName}:${hash}`;
+    const pfx = String(config.redis?.metricsPrefix || 'sentra_mcp_metrics');
+    return `${pfx}_cache_tool_${aiName}_${hash}`;
   }
 
   async callByAIName(aiName, args, options = {}) {
@@ -513,7 +668,7 @@ export class MCPCore {
     const vecReuseThreshold = Number(vecCfg.reuseThreshold ?? memCfg.reuseThreshold ?? 0.97);
     const vecTtlSec = Math.max(1, Number(vecCfg.ttlSeconds || 86400));
     const vecPoolN = Math.max(10, Number(memCfg.candidatePool || 200));
-    const vecPrefix = String(memCfg.prefix || 'sentra:mcp:mem');
+    const vecPrefix = String(memCfg.prefix || 'sentra_mcp_mem');
     let argsVec = null;
     let vecCacheTried = false;
 
@@ -558,7 +713,7 @@ export class MCPCore {
             }
             if (Array.isArray(argsVec) && argsVec.length) {
               const r = getRedis();
-              const idxKey = `${vecPrefix}:argcache:index:${aiName}`;
+              const idxKey = `${vecPrefix}_argcache_index_${aiName}`;
               const keys = await r.zrevrange(idxKey, 0, vecPoolN - 1);
               if (keys && keys.length) {
                 const pipeline = r.pipeline();
@@ -622,8 +777,23 @@ export class MCPCore {
           }
           await this.enforceCooldown(aiName, t.cooldownMs);
           const selectedTimeout = Number(t.timeoutMs) > 0 ? Number(t.timeoutMs) : config.planner.toolTimeoutMs;
-          const opt = { ...options, pluginEnv: t.pluginEnv || {}, timeoutMs: selectedTimeout };
-          const res = await executeToolWithTimeout(() => t.handler(args || {}, opt), selectedTimeout);
+          const runtime = {
+            ...(options?.runtime && typeof options.runtime === 'object' ? options.runtime : {}),
+            runId: String(options?.runId || options?.runtime?.runId || ''),
+            stepIndex: Number.isFinite(Number(options?.stepIndex))
+              ? Number(options.stepIndex)
+              : Number.isFinite(Number(options?.runtime?.stepIndex))
+                ? Number(options.runtime.stepIndex)
+                : undefined,
+            source: String(options?.source || options?.runtime?.source || 'mcpcore_local_tool'),
+            timeoutMs: selectedTimeout,
+          };
+          const opt = { ...options, pluginEnv: t.pluginEnv || {}, timeoutMs: selectedTimeout, runtime };
+          const res = await executeToolWithTimeout(
+            () => __runLocalPluginViaNode(t, args || {}, opt),
+            selectedTimeout,
+            { runtime, source: runtime.source, stepIndex: runtime.stepIndex, runId: runtime.runId }
+          );
           const outRaw = MCPCore._looksLikeToolResult(res)
             ? { ...res, provider: 'local' }
             : ok(res?.data ?? res, 'OK', { provider: 'local' });
@@ -655,8 +825,8 @@ export class MCPCore {
               if (Array.isArray(argsVec) && argsVec.length) {
                 const r = getRedis();
                 const ts = Date.now();
-                const docKey = `${vecPrefix}:argcache:doc:${aiName}:${ts}:${Math.random().toString(36).slice(2, 10)}`;
-                const idxKey = `${vecPrefix}:argcache:index:${aiName}`;
+                const docKey = `${vecPrefix}_argcache_doc_${aiName}_${ts}_${Math.random().toString(36).slice(2, 10)}`;
+                const idxKey = `${vecPrefix}_argcache_index_${aiName}`;
                 const payload = {
                   ts: String(ts),
                   args: MCPCore._stableStringify({ aiName, args: args || {} }),
@@ -684,14 +854,30 @@ export class MCPCore {
           await this.enforceCooldown(aiName, t.cooldownMs);
           // 外部工具：移除 schedule 字段（不传递给下游服务器）
           const { schedule, ...forwardArgs } = args || {};
-          const res = await executeToolWithTimeout(() => this.externalMgr.callTool(t.serverId, t.name, forwardArgs), config.planner.toolTimeoutMs);
+          const externalTimeout = Number(config.planner.toolTimeoutMs);
+          const runtime = {
+            ...(options?.runtime && typeof options.runtime === 'object' ? options.runtime : {}),
+            runId: String(options?.runId || options?.runtime?.runId || ''),
+            stepIndex: Number.isFinite(Number(options?.stepIndex))
+              ? Number(options.stepIndex)
+              : Number.isFinite(Number(options?.runtime?.stepIndex))
+                ? Number(options.runtime.stepIndex)
+                : undefined,
+            source: String(options?.source || options?.runtime?.source || 'mcpcore_external_tool'),
+            timeoutMs: externalTimeout,
+          };
+          const res = await executeToolWithTimeout(
+            () => this.externalMgr.callTool(t.serverId, t.name, forwardArgs),
+            externalTimeout,
+            { runtime, source: runtime.source, stepIndex: runtime.stepIndex, runId: runtime.runId }
+          );
 
           // MCP 标准 callTool 通常返回 { content: [{type:'text',text:'...'}], structuredContent?: any }
           // 若直接把 content 数组塞进 data，会导致日志与上下文极其冗长。
-          const maxChars = Number(process.env.EXTERNAL_MCP_RESULT_MAX_CHARS || 4000);
+          const maxTokens = __resolveExternalMcpResultTokenLimit();
           let payload = res;
           if (payload && typeof payload === 'object' && Array.isArray(payload.content)) {
-            const text = __extractMcpTextFromContent(payload.content, maxChars);
+            const text = __extractMcpTextFromContent(payload.content, maxTokens);
             const contentCount = payload.content.length;
             payload = {
               text,
@@ -733,8 +919,8 @@ export class MCPCore {
               if (Array.isArray(argsVec) && argsVec.length) {
                 const r = getRedis();
                 const ts = Date.now();
-                const docKey = `${vecPrefix}:argcache:doc:${aiName}:${ts}:${Math.random().toString(36).slice(2, 10)}`;
-                const idxKey = `${vecPrefix}:argcache:index:${aiName}`;
+                const docKey = `${vecPrefix}_argcache_doc_${aiName}_${ts}_${Math.random().toString(36).slice(2, 10)}`;
+                const idxKey = `${vecPrefix}_argcache_index_${aiName}`;
                 const payload = {
                   ts: String(ts),
                   args: MCPCore._stableStringify({ aiName, args: args || {} }),

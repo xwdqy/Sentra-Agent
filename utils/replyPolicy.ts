@@ -1,9 +1,9 @@
-/**
+﻿/**
  * 智能回复策略模块（精简版）
  * 功能：
  * - Per-sender 并发控制和队列机制
  * - UUID 跟踪和超时淘汰
- * - 是否进入一次对话任务由本模块决定，具体“回不回话”交给主模型和 Sentra 协议（<sentra-response>）
+ * - 是否进入一次对话任务由本模块决定，具体“回不回话”交给主模型和 Sentra 协议（<sentra-message>）
  */
 
 import { randomUUID } from 'crypto';
@@ -12,6 +12,9 @@ import { planGroupReplyDecision } from './replyIntervention.js';
 import { assessReplyWorth } from '../components/ReplyGate.js';
 import { loadAttentionStats, updateAttentionStatsAfterDecision } from './attentionStats.js';
 import { getEnv, getEnvInt, getEnvBool } from './envHotReloader.js';
+import { timeParser } from '../src/time-parser.js';
+import { tReplyPolicy, tReplyGateBase, tReplyGateCode } from './i18n/replyPolicyCatalog.js';
+import { buildGroupScopeId } from './conversationId.js';
 
 const logger = createLogger('ReplyPolicy');
 
@@ -117,7 +120,7 @@ type ReplyPolicyConfig = {
   replySimilarityThreshold: number;
 };
 
-type FatigueResult = { pass: boolean; reason: string; count: number; fatigue: number; lastAgeSec: number | null };
+type FatigueResult = { pass: boolean; reasonCode: string; count: number; fatigue: number; lastAgeSec: number | null };
 type FatigueInfo = { count: number; fatigue: number; lastAgeSec: number | null };
 type AttentionSession = {
   consideredCount: number;
@@ -161,6 +164,53 @@ type ReplyGateSignalsLike = {
   isFollowupAfterBotReply?: boolean;
   attentionSession?: AttentionSession;
 };
+
+type ReplyAction = 'silent' | 'action' | 'short' | 'delay';
+type DelayPlan = {
+  whenText: string;
+  fireAt: number;
+  delayMs: number;
+  targetISO: string;
+  timezone: string;
+  parserMethod?: string;
+};
+
+type ShouldReplyDecision = {
+  needReply: boolean;
+  action: ReplyAction;
+  delay?: DelayPlan;
+  reason_code: string;
+  reason?: string;
+  explainZh?: string;
+  decisionSource?: string;
+  decisionTrace?: DecisionTrace | Record<string, unknown>;
+  mandatory: boolean;
+  probability: number;
+  conversationId: string;
+  taskId: string | null;
+};
+
+const REASON_CODE = Object.freeze({
+  force_reply: 'force_reply',
+  private_llm_delay: 'private_llm_delay',
+  private_llm_short: 'private_llm_short',
+  private_llm_action: 'private_llm_action',
+  private_llm_unavailable: 'private_llm_unavailable',
+  local_concurrency_queue: 'local_concurrency_queue',
+  local_attention_list: 'local_attention_list',
+  local_attention_window: 'local_attention_window',
+  local_group_fatigue: 'local_group_fatigue',
+  local_sender_fatigue: 'local_sender_fatigue',
+  local_reply_gate_ignore: 'local_reply_gate_ignore',
+  local_reply_gate_accum: 'local_reply_gate_accum',
+  llm_reply_enter: 'llm_reply_enter',
+  llm_reply_silent: 'llm_reply_silent',
+  local_mandatory_mention: 'local_mandatory_mention',
+  final_no_reply: 'final_no_reply',
+  final_enter_main: 'final_enter_main'
+});
+
+type ReasonCode = (typeof REASON_CODE)[keyof typeof REASON_CODE];
 
 const senderQueues = new Map<string, TaskItem[]>();
 const activeTasks = new Map<string, Set<string>>();
@@ -211,9 +261,110 @@ function joinFromIndex(parts: string[], startIndex: number, sep: string): string
   return out.join(sep);
 }
 
+function explainByReasonCode(reasonCode: string, params: Record<string, unknown> = {}, fallback = ''): string {
+  const mapped = tReplyPolicy(reasonCode, params);
+  if (mapped) return mapped;
+  if (fallback) return fallback;
+  return reasonCode;
+}
+
+function buildReasonFields(
+  reasonCode: ReasonCode | string,
+  options: {
+    reasonDetail?: unknown;
+    explainKey?: string;
+    explainParams?: Record<string, unknown>;
+    explainFallback?: string;
+  } = {}
+): { reason_code: string; reason: string; explainZh: string } {
+  const reason_code = String(reasonCode || '').trim() || REASON_CODE.final_no_reply;
+  const reason = typeof options.reasonDetail === 'string' && options.reasonDetail.trim()
+    ? options.reasonDetail.trim()
+    : reason_code;
+  const explainKey = typeof options.explainKey === 'string' && options.explainKey.trim()
+    ? options.explainKey.trim()
+    : reason_code;
+  const explainZh = explainByReasonCode(explainKey, options.explainParams || {}, options.explainFallback || reason);
+  return { reason_code, reason, explainZh };
+}
+
 function getGateAnalyzerProb(gateResult: ReplyGateResult | null | undefined): number | null {
   const prob = gateResult?.debug?.analyzer?.probability;
   if (typeof prob === 'number' && Number.isFinite(prob)) return prob;
+  return null;
+}
+
+function normalizeReplyAction(rawAction: unknown, fallbackByNeedReply: boolean): ReplyAction {
+  const raw = String(rawAction ?? '').trim().toLowerCase();
+  if (raw === 'silent' || raw === 'none') return 'silent';
+  if (raw === 'short') return 'short';
+  if (raw === 'delay') return 'delay';
+  if (raw === 'action') return 'action';
+  return fallbackByNeedReply ? 'action' : 'silent';
+}
+
+function collectDelayParseCandidates(msg: MsgLike | null | undefined, delayWhenRaw: unknown): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (v: unknown) => {
+    if (typeof v !== 'string') return;
+    const t = v.trim();
+    if (!t || seen.has(t)) return;
+    seen.add(t);
+    out.push(t);
+  };
+
+  // 1) 优先模型给出的 delay_when
+  push(delayWhenRaw);
+
+  if (msg && typeof msg === 'object') {
+    push(msg.text);
+    push((msg as any).summary);
+    push((msg as any).objective_text);
+    push((msg as any).summary_text);
+    push((msg as any).objective);
+    push((msg as any).raw_text);
+    push((msg as any).user_text);
+  }
+
+  return out;
+}
+
+function buildDelayPlanFromText(msg: MsgLike, delayWhenRaw: unknown): DelayPlan | null {
+  const candidates = collectDelayParseCandidates(msg, delayWhenRaw);
+  if (candidates.length === 0) return null;
+
+  for (const sourceText of candidates) {
+    try {
+      const parsed = timeParser.parseTimeExpression(sourceText, {
+        language: sourceText.match(/[\u4e00-\u9fa5]/) ? 'zh' : 'en',
+        timezone: 'Asia/Shanghai'
+      });
+      if (!parsed || !parsed.success) continue;
+
+      const targetMs =
+        (parsed.parsedDateTime && typeof (parsed.parsedDateTime as any).toMillis === 'function')
+          ? Number((parsed.parsedDateTime as any).toMillis())
+          : Number(parsed.parsedTimestamp || 0);
+      if (!Number.isFinite(targetMs) || targetMs <= 0) continue;
+
+      const nowMs = Date.now();
+      const delayMs = Math.max(0, targetMs - nowMs);
+      if (delayMs <= 0) continue;
+
+      const targetISO = parsed.parsedISO || new Date(targetMs).toISOString();
+      return {
+        whenText: sourceText,
+        fireAt: targetMs,
+        delayMs,
+        targetISO,
+        timezone: parsed.timezone || 'Asia/Shanghai',
+        parserMethod: parsed.method || ''
+      };
+    } catch {
+      continue;
+    }
+  }
   return null;
 }
 
@@ -277,29 +428,6 @@ try {
   timer.unref?.();
 } catch {}
 
-const REPLY_GATE_BASE_ZH: Record<string, string> = {
-  reply_gate_disabled: 'ReplyGate 已关闭：跳过本地预判，交给 LLM 决策',
-  non_group_message: '非群聊消息：ReplyGate 不参与（由上层策略处理）',
-  empty_text: '空文本：群消息没有可分析的文本内容',
-  analyzer_error: '本地分析器异常：已回退为 LLM 决策',
-  policy_blocked: '合规策略拦截：检测到风险内容，本轮不进入回复流程',
-  below_min_threshold: '价值极低：低于最小阈值，本轮直接忽略',
-  pass_to_llm: '通过本地预判：进入 LLM 决策阶段'
-};
-
-const REPLY_GATE_REASON_CODE_ZH: Record<string, string> = {
-  EMPTY_OR_INVALID_INPUT: '空内容或非法输入',
-  TEXT_TOO_SHORT: '文本过短（信息量不足）',
-  LOW_ENTROPY_GIBBERISH: '疑似乱码/灌水（熵过低）',
-  TOO_FEW_TOKENS: '有效词过少（信息量不足）',
-  LOW_SEMANTIC_VALUE: '语义信息量低（缺少明确意图）',
-  POLICY_BLOCKED: '合规拦截（辱骂/敏感/风险内容）',
-  POLICY_FLAGGED: '合规提示（存在轻度风险内容）',
-  HARD_REPEAT_SHRINK: '高度重复：与近期内容相似度过高，回复概率被强力下调',
-  REPETITIVE_CONTENT: '重复内容：与历史消息过于相似',
-  LOW_REPLY_PROBABILITY: '回复价值低：综合评估后概率偏低'
-};
-
 function parseReplyGateReason(reason: unknown): {
   subsystem: string;
   base: string;
@@ -317,8 +445,8 @@ function parseReplyGateReason(reason: unknown): {
   const base = parts[1] || '';
   const suffix = joinFromIndex(parts, 2, ':');
   const codes = suffix ? suffix.split('|').map((s) => s.trim()).filter(Boolean) : [];
-  const baseZh = REPLY_GATE_BASE_ZH[base] || base;
-  const codesZh = codes.map((c) => REPLY_GATE_REASON_CODE_ZH[c] || c);
+  const baseZh = tReplyGateBase(base);
+  const codesZh = codes.map((c) => tReplyGateCode(c));
   return { subsystem, base, baseZh, codes, codesZh, raw };
 }
 
@@ -394,7 +522,7 @@ function buildConversationId(msg: MsgLike, senderId: unknown): string {
 }
 
 function getGroupKey(groupId: unknown): string {
-  return `G:${groupId ?? ''}`;
+  return buildGroupScopeId(groupId);
 }
 
 function resetGateSessionForConversationId(conversationId: string): void {
@@ -596,7 +724,7 @@ function evaluateGroupFatigue(
   config: ReplyPolicyConfig,
   options: AttentionWindowOptions = {}
 ): FatigueResult {
-  const result: FatigueResult = { pass: true, reason: '', count: 0, fatigue: 0, lastAgeSec: null };
+  const result: FatigueResult = { pass: true, reasonCode: '', count: 0, fatigue: 0, lastAgeSec: null };
   if (!config.groupFatigueEnabled) return result;
   if (!msg || msg.type !== 'group' || !msg.group_id) return result;
 
@@ -639,7 +767,7 @@ function evaluateGroupFatigue(
   const isImportant = !!options.isExplicitMention || !!options.mentionedByName;
   if (!isImportant && elapsed < requiredInterval) {
     result.pass = false;
-    result.reason = '群疲劳：短期内机器人在该群回复过多，进入退避窗口';
+    result.reasonCode = REASON_CODE.local_group_fatigue;
     return result;
   }
 
@@ -652,7 +780,7 @@ function evaluateSenderFatigue(
   config: ReplyPolicyConfig,
   options: AttentionWindowOptions = {}
 ): FatigueResult {
-  const result: FatigueResult = { pass: true, reason: '', count: 0, fatigue: 0, lastAgeSec: null };
+  const result: FatigueResult = { pass: true, reasonCode: '', count: 0, fatigue: 0, lastAgeSec: null };
   if (!config.userFatigueEnabled) return result;
   if (!msg || msg.type !== 'group') return result;
 
@@ -695,7 +823,7 @@ function evaluateSenderFatigue(
   const isImportant = !!options.isExplicitMention || !!options.mentionedByName;
   if (!isImportant && elapsed < requiredInterval) {
     result.pass = false;
-    result.reason = '用户疲劳：短期内机器人对该用户回复过多，进入退避窗口';
+    result.reasonCode = REASON_CODE.local_sender_fatigue;
     return result;
   }
 
@@ -919,12 +1047,12 @@ export async function completeTask(senderId: string, taskId: string): Promise<Ta
 /**
  * 智能回复决策 v2.0
  * @param {Object} msg - 消息对象
- * @returns {Promise<{needReply: boolean, reason: string, mandatory: boolean, probability: number, taskId: string|null}>}
+ * @returns {Promise<ShouldReplyDecision>}
  */
 export async function shouldReply(
   msg: MsgLike,
   options: { decisionContext?: Record<string, unknown> | null; forceReply?: boolean; source?: string } = {}
-) {
+): Promise<ShouldReplyDecision> {
   const config = getConfig();
   const senderIdRaw = normalizeSenderId(msg.sender_id);
   const decisionContext = options.decisionContext || null;
@@ -936,10 +1064,13 @@ export async function shouldReply(
   if (forceReply) {
     const taskId = randomUUID();
     addActiveTask(senderKey, taskId);
+    const reasonFields = buildReasonFields(REASON_CODE.force_reply, {
+      reasonDetail: 'force_reply'
+    });
     return {
       needReply: true,
-      reason: 'force_reply',
-      explainZh: '强制进入主流程（override 决策）',
+      action: 'action',
+      ...reasonFields,
       decisionSource: 'override_force',
       decisionTrace: { source: 'override_force', forceReply: true },
       mandatory: true,
@@ -948,18 +1079,137 @@ export async function shouldReply(
       taskId
     };
   }
-  // 私聊：保持必回策略
+  // 私聊：默认必回，但动作（action/short/delay）优先由 reply_gate_decision 决定。
   if (msg.type === 'private') {
     const taskId = randomUUID();
     addActiveTask(senderKey, taskId);
-    logger.info(`私聊消息，必须回复 (task=${taskId})`);
+
+    try {
+      const planOptions: {
+        signals: PlanGroupSignalsLike;
+        context?: Record<string, unknown>;
+        bot: { self_id: string; bot_names: Array<string | number> };
+      } = {
+        signals: {
+          mentionedByAt: false,
+          mentionedByName: false,
+          mentionedNames: [],
+          mentionedNameHitCount: 0,
+          mentionedNameHitsInText: false,
+          mentionedNameHitsInSummary: false,
+          senderReplyCountWindow: 0,
+          groupReplyCountWindow: 0,
+          senderFatigue: 0,
+          groupFatigue: 0,
+          isFollowupAfterBotReply: false,
+          activeTaskCount: getActiveTaskCount(senderKey)
+        },
+        bot: {
+          self_id: msg?.self_id != null ? String(msg.self_id) : '',
+          bot_names: Array.isArray(config.botNames) ? config.botNames : []
+        }
+      };
+      if (decisionContext) planOptions.context = decisionContext;
+
+      const intervention = await planGroupReplyDecision(msg, planOptions);
+      if (intervention && typeof intervention.shouldReply === 'boolean') {
+        const reasonText = typeof intervention.reason === 'string' && intervention.reason.trim()
+          ? intervention.reason.trim()
+          : '';
+        const actionFromIntervention = normalizeReplyAction(
+          (intervention as { action?: unknown }).action,
+          true
+        );
+
+        if (actionFromIntervention === 'delay') {
+          const delayWhenCandidate =
+            typeof (intervention as { delayWhen?: unknown }).delayWhen === 'string'
+              ? (intervention as { delayWhen?: string }).delayWhen
+              : '';
+          const privateDelayWhen = String(delayWhenCandidate || '').trim();
+          if (!privateDelayWhen) {
+            logger.info(`私聊消息，LLM给出 delay 但缺少 delay_when，尝试按用户原始文本解析 (task=${taskId})`);
+          }
+          const privateDelayPlan = buildDelayPlanFromText(msg, privateDelayWhen);
+          if (privateDelayPlan) {
+            const whenText = String(privateDelayPlan.whenText || '').trim();
+            logger.info(`私聊消息，LLM判定延迟回复 (action=delay, delayWhen=${whenText || 'n/a'}, task=${taskId})`);
+            const reasonFields = buildReasonFields(REASON_CODE.private_llm_delay, {
+              reasonDetail: reasonText || 'ReplyIntervention: private delay',
+              explainKey: reasonText ? 'private_llm_delay_with_reason' : REASON_CODE.private_llm_delay,
+              explainParams: { reason: reasonText }
+            });
+            return {
+              needReply: true,
+              action: 'delay',
+              delay: privateDelayPlan,
+              ...reasonFields,
+              decisionSource: 'llm_private_delay',
+              mandatory: true,
+              probability: 1.0,
+              conversationId,
+              taskId
+            };
+          }
+          logger.info(`私聊消息，LLM给出 delay 但 delay_when/原始文本均无法解析，按 action 处理 (task=${taskId})`);
+        }
+
+        if (actionFromIntervention === 'short') {
+          logger.info(`私聊消息，LLM判定短回复 (action=short, task=${taskId})`);
+          const reasonFields = buildReasonFields(REASON_CODE.private_llm_short, {
+            reasonDetail: reasonText || 'ReplyIntervention: private short',
+            explainKey: reasonText ? 'private_llm_short_with_reason' : REASON_CODE.private_llm_short,
+            explainParams: { reason: reasonText }
+          });
+          return {
+            needReply: true,
+            action: 'short',
+            ...reasonFields,
+            decisionSource: 'llm_private_short',
+            mandatory: true,
+            probability: 1.0,
+            conversationId,
+            taskId
+          };
+        }
+
+        if (actionFromIntervention === 'silent') {
+          logger.info(`私聊消息，LLM判定 silent，但私聊强制覆盖为 action (task=${taskId})`);
+        } else {
+          logger.info(`私聊消息，LLM判定正常回复 (action=action, task=${taskId})`);
+        }
+        const reasonFields = buildReasonFields(REASON_CODE.private_llm_action, {
+          reasonDetail: reasonText || 'ReplyIntervention: private action',
+          explainKey: reasonText ? 'private_llm_action_with_reason' : REASON_CODE.private_llm_action,
+          explainParams: { reason: reasonText }
+        });
+        return {
+          needReply: true,
+          action: 'action',
+          ...reasonFields,
+          decisionSource: 'llm_private_action',
+          mandatory: true,
+          probability: 1.0,
+          conversationId,
+          taskId
+        };
+      }
+    } catch (e) {
+      logger.debug('私聊 reply_gate_decision 调用失败，按 action 处理', { err: String(e) });
+    }
+
+    logger.info(`私聊消息，LLM决策不可用，按 action 处理 (task=${taskId})`);
+    const reasonFields = buildReasonFields(REASON_CODE.private_llm_unavailable, {
+      reasonDetail: 'private_llm_unavailable'
+    });
     return {
       needReply: true,
-      reason: '私聊消息',
-      explainZh: '私聊消息：默认必回',
-      decisionSource: 'local_private',
+      action: 'action',
+      ...reasonFields,
+      decisionSource: 'llm_private_unavailable',
       mandatory: true,
       probability: 1.0,
+      conversationId,
       taskId
     };
   }
@@ -972,13 +1222,17 @@ export async function shouldReply(
     const queue = getSenderQueue(senderKey);
     queue.push(task);
     logger.debug(`并发限制: sender=${senderKey} 活跃=${activeCount}/${config.maxConcurrentPerSender}, 队列长度=${queue.length}`);
+    const reasonFields = buildReasonFields(REASON_CODE.local_concurrency_queue, {
+      reasonDetail: 'local_concurrency_queue'
+    });
     return {
       needReply: false,
-      reason: '并发限制，已加入队列',
-      explainZh: '并发限制：当前会话已有任务在处理，消息已进入队列等待',
+      action: 'silent',
+      ...reasonFields,
       decisionSource: 'local_concurrency_queue',
       mandatory: false,
       probability: 0.0,
+      conversationId,
       taskId: null
     };
   }
@@ -1031,7 +1285,7 @@ export async function shouldReply(
   let mentionedNameHitsInSummary = false;
   if (isGroup && Array.isArray(config.botNames) && config.botNames.length > 0) {
     const textLower = ((msg.text || '') + '').toLowerCase();
-    const summaryLower = ((msg.summary || '') + '').toLowerCase();
+    const summaryLower = ((((msg as any).summary_text || (msg as any).objective_text || msg.summary || '') + '')).toLowerCase();
     const hits: string[] = [];
     if (textLower || summaryLower) {
       for (const name of config.botNames) {
@@ -1058,12 +1312,14 @@ export async function shouldReply(
   if (isGroup && msg.group_id) {
     inAttentionList = isSenderInAttentionList(msg, senderIdRaw, config);
     if (!inAttentionList && !isExplicitMention && !mentionedByName) {
-      const reason = '群监听队列外且未提及Bot，跳过本轮群聊消息';
-      logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${reason}`);
+      const reasonFields = buildReasonFields(REASON_CODE.local_attention_list, {
+        reasonDetail: 'local_attention_list'
+      });
+      logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${reasonFields.explainZh}`);
       return {
         needReply: false,
-        reason,
-        explainZh: '注意力名单未覆盖该发送者，且未@/未提及机器人名称：跳过本轮消息',
+        action: 'silent',
+        ...reasonFields,
         decisionSource: 'local_attention_list',
         mandatory: false,
         probability: 0.0,
@@ -1078,12 +1334,14 @@ export async function shouldReply(
       isExplicitMention: isExplicitMention || mentionedByName
     });
     if (!pass) {
-      const reason = '注意力窗口已满，跳过本轮群聊消息';
-      logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${reason}`);
+      const reasonFields = buildReasonFields(REASON_CODE.local_attention_window, {
+        reasonDetail: 'local_attention_window'
+      });
+      logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${reasonFields.explainZh}`);
       return {
         needReply: false,
-        reason,
-        explainZh: '注意力窗口已满：当前时间窗内活跃发送者过多，为避免刷屏本轮跳过',
+        action: 'silent',
+        ...reasonFields,
         decisionSource: 'local_attention_window',
         mandatory: false,
         probability: 0.0,
@@ -1106,7 +1364,7 @@ export async function shouldReply(
     });
     groupFatigueInfo = { count: gf.count, fatigue: gf.fatigue, lastAgeSec: gf.lastAgeSec };
     groupFatiguePass = !!gf.pass;
-    groupFatigueReason = gf.reason || '';
+    groupFatigueReason = gf.reasonCode || '';
 
     const uf = evaluateSenderFatigue(msg, senderIdRaw, config, {
       isExplicitMention,
@@ -1114,7 +1372,7 @@ export async function shouldReply(
     });
     senderFatigueInfo = { count: uf.count, fatigue: uf.fatigue, lastAgeSec: uf.lastAgeSec };
     senderFatiguePass = !!uf.pass;
-    senderFatigueReason = uf.reason || '';
+    senderFatigueReason = uf.reasonCode || '';
     logger.debug(
       `[${groupInfo}] 疲劳统计: groupCount=${groupFatigueInfo.count}, groupFatigue=${groupFatigueInfo.fatigue.toFixed(2)}, senderCount=${senderFatigueInfo.count}, senderFatigue=${senderFatigueInfo.fatigue.toFixed(2)}, senderLastReplyAgeSec=${senderFatigueInfo.lastAgeSec ?? 'null'}`
     );
@@ -1132,12 +1390,13 @@ export async function shouldReply(
 
   if (isGroup && config.pureLocalGating) {
     if (!groupFatiguePass) {
-      const fatigueReason = groupFatigueReason || '群疲劳：短期内机器人在该群回复过多，进入退避窗口';
-      logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${fatigueReason}`);
+      const reasonCode = groupFatigueReason || REASON_CODE.local_group_fatigue;
+      const reasonFields = buildReasonFields(reasonCode, { reasonDetail: reasonCode });
+      logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${reasonFields.explainZh}`);
       return {
         needReply: false,
-        reason: fatigueReason,
-        explainZh: fatigueReason,
+        action: 'silent',
+        ...reasonFields,
         decisionSource: 'local_group_fatigue',
         mandatory: false,
         probability: 0.0,
@@ -1146,12 +1405,13 @@ export async function shouldReply(
       };
     }
     if (!senderFatiguePass) {
-      const fatigueReason = senderFatigueReason || '用户疲劳：短期内机器人对该用户回复过多，进入退避窗口';
-      logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${fatigueReason}`);
+      const reasonCode = senderFatigueReason || REASON_CODE.local_sender_fatigue;
+      const reasonFields = buildReasonFields(reasonCode, { reasonDetail: reasonCode });
+      logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${reasonFields.explainZh}`);
       return {
         needReply: false,
-        reason: fatigueReason,
-        explainZh: fatigueReason,
+        action: 'silent',
+        ...reasonFields,
         decisionSource: 'local_sender_fatigue',
         mandatory: false,
         probability: 0.0,
@@ -1191,9 +1451,12 @@ export async function shouldReply(
 
   let probability = 1.0;
   let gateProb: number | null = null;
-  let reason = isGroup ? '群聊消息' : '消息';
+  let reasonCode: string = REASON_CODE.final_enter_main;
+  let reason = isGroup ? 'group_message' : 'message';
   let mandatory = false;
   let shouldReplyFlag = true;
+  let replyAction: ReplyAction = 'action';
+  let delayPlan: DelayPlan | null = null;
   let gateResult: ReplyGateResult | null = null;
   let explainZh = '';
   let decisionSource = 'local_policy';
@@ -1247,6 +1510,7 @@ export async function shouldReply(
         const explain = buildReplyGateExplainZh(gateResult);
         explainZh = explain?.summary || '';
         decisionSource = 'local_reply_gate';
+        reasonCode = REASON_CODE.local_reply_gate_ignore;
         const gateProbPercent =
           typeof gateResult.normalizedScore === 'number' && Number.isFinite(gateResult.normalizedScore)
             ? (gateResult.normalizedScore * 100).toFixed(1)
@@ -1256,7 +1520,7 @@ export async function shouldReply(
           typeof analyzerProb === 'number' ? (analyzerProb * 100).toFixed(1) : 'null';
 
         logger.info(
-          `[${groupInfo}] 用户${senderIdRaw} 预判为不回复: ${explainZh || '本地门禁判定无需回复'} (gateProb=${gateProbPercent}%, analyzerProb=${analyzerProbPercent}%, raw=${gateReason})`
+          `[${groupInfo}] 用户${senderIdRaw} 预判为不回复: ${explainZh || explainByReasonCode(REASON_CODE.local_reply_gate_ignore)} (gateProb=${gateProbPercent}%, analyzerProb=${analyzerProbPercent}%, raw=${gateReason})`
         );
         if (isGroup && msg.group_id) {
           try {
@@ -1280,10 +1544,14 @@ export async function shouldReply(
             });
           }
         }
+        const reasonFields = buildReasonFields(reasonCode, {
+          reasonDetail: gateReason,
+          explainFallback: explainZh || explainByReasonCode(REASON_CODE.local_reply_gate_ignore)
+        });
         return {
           needReply: false,
-          reason: gateReason,
-          explainZh: explainZh || undefined,
+          action: 'silent',
+          ...reasonFields,
           decisionSource,
           decisionTrace,
           mandatory: false,
@@ -1336,13 +1604,18 @@ export async function shouldReply(
           });
         }
         const reasonAccum = 'ReplyGateAccum: below_threshold_or_busy';
-        explainZh = '聚合门禁未通过：近期多条低价值消息累计不足阈值，或当前已有任务在处理（避免刷屏）';
+        reasonCode = REASON_CODE.local_reply_gate_accum;
+        explainZh = explainByReasonCode(REASON_CODE.local_reply_gate_accum);
         decisionSource = 'local_reply_gate_accum';
         logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${explainZh} (raw=${reasonAccum}, gateProb=${(gateProb * 100).toFixed(1)}%)`);
+        const reasonFields = buildReasonFields(reasonCode, {
+          reasonDetail: reasonAccum,
+          explainFallback: explainZh
+        });
         return {
           needReply: false,
-          reason: reasonAccum,
-          explainZh,
+          action: 'silent',
+          ...reasonFields,
           decisionSource,
           decisionTrace,
           mandatory: false,
@@ -1420,7 +1693,12 @@ export async function shouldReply(
     const intervention = await planGroupReplyDecision(msg, planOptions);
 
     if (intervention && typeof intervention.shouldReply === 'boolean') {
-      shouldReplyFlag = intervention.shouldReply;
+      const actionFromIntervention = normalizeReplyAction(
+        (intervention as { action?: unknown }).action,
+        intervention.shouldReply
+      );
+      replyAction = actionFromIntervention;
+      shouldReplyFlag = actionFromIntervention !== 'silent';
       decisionTrace.llmDecision = {
         shouldReply: shouldReplyFlag,
         confidence:
@@ -1439,18 +1717,40 @@ export async function shouldReply(
       }
 
       probability = interventionConfidence;
+      reasonCode = shouldReplyFlag ? REASON_CODE.llm_reply_enter : REASON_CODE.llm_reply_silent;
       reason = intervention.reason
         ? `ReplyIntervention: ${intervention.reason}`
         : (shouldReplyFlag
             ? 'ReplyIntervention: LLM 判定应进入主对话流程'
             : 'ReplyIntervention: LLM 判定本轮不进入主对话流程');
 
-      if (typeof intervention.reason === 'string' && intervention.reason.trim()) {
-        explainZh = `LLM 决策：${intervention.reason.trim()}`;
+      if (replyAction === 'delay') {
+        const delayWhenCandidate =
+          typeof (intervention as { delayWhen?: unknown }).delayWhen === 'string'
+            ? (intervention as { delayWhen?: string }).delayWhen
+            : '';
+        const parsedDelay = buildDelayPlanFromText(msg, delayWhenCandidate);
+        if (parsedDelay) {
+          delayPlan = parsedDelay;
+        } else {
+          // 无法解析明确时间则回退为正常 action，避免进入无效 delay 态
+          replyAction = shouldReplyFlag ? 'action' : 'silent';
+          if (replyAction === 'action') {
+            reason = `${reason} (delay parse failed, fallback to action)`;
+          }
+        }
       } else {
-        explainZh = shouldReplyFlag
-          ? 'LLM 决策：建议进入主对话流程'
-          : 'LLM 决策：建议本轮不进入主对话流程';
+        delayPlan = null;
+      }
+
+      if (typeof intervention.reason === 'string' && intervention.reason.trim()) {
+        explainZh = explainByReasonCode('llm_reply_with_reason', {
+          reason: intervention.reason.trim()
+        });
+      } else {
+        explainZh = explainByReasonCode(
+          shouldReplyFlag ? REASON_CODE.llm_reply_enter : REASON_CODE.llm_reply_silent
+        );
       }
     }
   }
@@ -1460,9 +1760,12 @@ export async function shouldReply(
       logger.info('当前决策判定无需回复，但配置要求对显式@必须回复，强制覆盖为需要回复');
     }
     shouldReplyFlag = true;
+    replyAction = 'action';
+    delayPlan = null;
     mandatory = true;
-    reason = '显式@（配置必须回复）';
-    explainZh = '显式@且配置要求必须回复：强制覆盖为需要回复';
+    reasonCode = REASON_CODE.local_mandatory_mention;
+    reason = 'local_mandatory_mention';
+    explainZh = explainByReasonCode(REASON_CODE.local_mandatory_mention);
     decisionSource = 'local_mandatory_mention';
     probability = 1.0;
   }
@@ -1487,12 +1790,19 @@ export async function shouldReply(
   }
 
   if (!shouldReplyFlag) {
-    const zh = explainZh || (typeof reason === 'string' ? reason : '本轮不回复');
-    logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${zh} (raw=${reason}, p=${(probability * 100).toFixed(1)}%, src=${decisionSource})`);
+    replyAction = 'silent';
+    delayPlan = null;
+    const finalCode = reasonCode || REASON_CODE.final_no_reply;
+    const reasonFields = buildReasonFields(finalCode, {
+      reasonDetail: reason,
+      explainFallback: explainZh || explainByReasonCode(REASON_CODE.final_no_reply)
+    });
+    const zh = reasonFields.explainZh;
+    logger.info(`[${groupInfo}] 用户${senderIdRaw} 决策为不回复: ${zh} (action=silent, raw=${reason}, p=${(probability * 100).toFixed(1)}%, src=${decisionSource})`);
     return {
       needReply: false,
-      reason,
-      explainZh: zh,
+      action: 'silent',
+      ...reasonFields,
       decisionSource,
       decisionTrace,
       mandatory: false,
@@ -1508,17 +1818,20 @@ export async function shouldReply(
     markAttentionWindow(msg, senderIdRaw, config);
     recordReplyForFatigue(msg, senderIdRaw, config);
   }
-  if (!explainZh) {
-    explainZh = typeof reason === 'string' ? reason : '进入主对话流程';
-  }
+  const finalCode = reasonCode || REASON_CODE.final_enter_main;
+  const reasonFields = buildReasonFields(finalCode, {
+    reasonDetail: reason,
+    explainFallback: explainZh || explainByReasonCode(REASON_CODE.final_enter_main)
+  });
   logger.info(
-    `[${groupInfo}] 用户${senderIdRaw} 启动对话: ${explainZh} (raw=${reason}, mandatory=${mandatory}, p=${(probability * 100).toFixed(1)}%, src=${decisionSource}, task=${taskId})`
+    `[${groupInfo}] 用户${senderIdRaw} 启动对话: ${reasonFields.explainZh} (action=${replyAction}${delayPlan ? `, delayWhen=${delayPlan.whenText || ''}` : ''}, raw=${reason}, mandatory=${mandatory}, p=${(probability * 100).toFixed(1)}%, src=${decisionSource}, task=${taskId})`
   );
 
   return {
     needReply: true,
-    reason,
-    explainZh,
+    action: replyAction,
+    ...(delayPlan ? { delay: delayPlan } : {}),
+    ...reasonFields,
     decisionSource,
     decisionTrace,
     mandatory,

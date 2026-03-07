@@ -33,33 +33,6 @@
       "filename": {
         "type": "string",
         "description": "输出文件名（仅文件名，不含目录）。保存目录固定为 artifacts/。建议包含时间戳以避免重名，例如：topic_1696231234567.png。插件不会自动追加时间戳，需调用方提供。"
-      },
-      "schedule": {
-        "type": "object",
-        "properties": {
-          "when": {
-            "type": "string",
-            "description": "时间表达：如 '5分钟后' / '30秒后' / '明天09:00' / '2025-12-16 21:30' / ISO 字符串。请使用清晰、可解析的时间表达，避免使用『稍后』『改天』『有空的时候』『尽快』『5分钟之后』等模糊说法。"
-          },
-          "language": {
-            "type": "string",
-            "description": "语言标识，例如 zh|en（默认 zh）"
-          },
-          "timezone": {
-            "type": "string",
-            "description": "IANA 时区名称，例如 Asia/Shanghai"
-          },
-          "targetISO": {
-            "type": "string",
-            "description": "预解析好的绝对时间（ISO 字符串），例如 '2025-12-16T21:30:00+08:00'；如提供，将被上游优先用作目标时间。"
-          }
-        },
-        "required": [
-          "when",
-          "targetISO"
-        ],
-        "additionalProperties": true,
-        "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
     "required": [
@@ -68,5 +41,19 @@
     ],
     "additionalProperties": true
   },
-  "timeoutMs": 150000
+  "timeoutMs": 150000,
+  "trigger_keywords": [
+    "思维导图",
+    "脑图",
+    "mindmap",
+    "mind map",
+    "大纲转导图"
+  ],
+  "trigger_patterns": [
+    "(思维导图|脑图).{0,12}(mindmap|mind map|大纲转导图)",
+    "(mindmap|mind map|大纲转导图).{0,12}(思维导图|脑图)",
+    "(思维导图|脑图|mindmap|mind map|大纲转导图)"
+  ],
+  "keyword_boost": 63,
+  "regex_boost": 88
 }

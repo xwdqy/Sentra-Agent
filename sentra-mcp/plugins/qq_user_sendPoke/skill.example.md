@@ -2,44 +2,51 @@
 
 ## Capability
 
-- 发送“戳一戳”（可私聊戳、也可在群内戳指定目标）。
-
-## Real-world impact
-
-- 真实互动行为：会对目标用户触发戳一戳。
-- 依赖 WS SDK：通过 `ws://localhost:6702` 调用 `user.sendPoke`。
-- 可能触发频率限制；插件支持间隔与失败重试（由插件 `.env` 控制）。
+- Send QQ `user.sendPoke` RPC requests via WebSocket SDK.
+- Support multi-round poke (`times`) with optional retry-on-failure per round.
+- Return round-level execution evidence for each poke attempt.
 
 ## When to use
 
-- 用户明确要求“戳一下/戳几下”。
-- 需要在群里戳人时：提供 `group_id`，可选 `target_id`。
+- The objective is to actively poke a QQ user, not just construct a message segment.
+- You can provide required target parameter: `user_id`.
+- You may need optional routing/control params: `group_id`, `target_id`, `times`.
 
-## When NOT to use
+## When not to use
 
-- 不要在用户未授权情况下骚扰式连续戳。
+- Required argument `user_id` is missing.
+- Task is read-only (query/info-only) and should not trigger outbound side effects.
+- You only need a sentra-message `poke` segment object without RPC execution.
 
-## Input
+## Success Criteria
+
+- `result.success === true` and `result.code` is `OK` or `PARTIAL_SUCCESS`.
+- `result.data.request.type === "sdk"` and `result.data.request.path === "user.sendPoke"`.
+- `result.data.request.args` must exist and be an array whose first item is the target `user_id` (number form).
+- `result.data.results` must be a non-empty per-round array.
+- Every round item must include `round` (number) and `success` (boolean).
+- Successful rounds must include `response`; failed rounds must include `error` (and normally include `attempts`).
+- `result.code === "OK"` means all rounds are successful.
+- `result.code === "PARTIAL_SUCCESS"` means at least one round success and at least one round failure.
+- Retry guidance: timeout/transient RPC failures can retry per failed round; invalid/missing args should use `retry_regen`; all rounds failed should `replan`/`fail_fast`.
+
+## Inputs
 
 - Required:
-  - `user_id` (string): 接收者 QQ 号
+  - `user_id` (string|number): target QQ user id.
 - Optional:
-  - `group_id` (string): 群号（不填则按私聊戳）
-  - `target_id` (string): 群内戳的目标 QQ 号（不填默认戳 `user_id`）
-  - `times` (integer 1-5; default 1)
-  - `requestId` (string)
+  - `times` (number): poke rounds, internally clamped to `1..5`.
+  - `group_id` (string|number): group context (if needed by adapter path).
+  - `target_id` (string|number): optional extended target field for adapters requiring a 3rd arg.
+  - `requestId` (string): custom RPC request id.
 
-## Output
+## Outputs
 
-- 成功时（至少一次成功）：`success=true`，`code` 可能为 `OK` 或 `PARTIAL_SUCCESS`。
-- 返回 `data` 内包含：
-  - `总次数`/`成功次数`/`失败次数`/`总尝试数`
-  - `配置`（间隔时间、失败重试配置）
-  - `request`（sdk path/args）
-  - `results`（每轮每次尝试的明细）
-
-## Failure modes
-
-- `INVALID`: 缺 `user_id`。
-- `TIMEOUT`: 全部轮次失败且包含超时特征。
-- `ALL_FAILED`: 所有轮次都失败（通常是 WS/权限/风控/参数不支持）。
+- Success (`OK` or `PARTIAL_SUCCESS`):
+  - `data.request`: `{ type: "sdk", path: "user.sendPoke", args: [...] }`
+  - `data.results`: per-round execution array.
+  - `data` also includes aggregate counters and runtime config summary fields.
+- Failure:
+  - `INVALID`: missing required argument.
+  - `TIMEOUT`: all rounds failed and timeout-like errors observed.
+  - `ALL_FAILED`: all rounds failed for non-timeout reasons.

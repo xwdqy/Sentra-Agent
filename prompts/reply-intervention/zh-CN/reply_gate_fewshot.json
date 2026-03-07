@@ -1,0 +1,86 @@
+{
+  "examples": [
+    {
+      "user": {
+        "id": "fs_1",
+        "objectiveLine": "Decide whether to enter main flow.",
+        "summary": "The user explicitly @你 and asked the bot to help solve an error.",
+        "mentionedByAt": true,
+        "mentionedByName": true,
+        "followup": false,
+        "note": "Few-shot example 1: explicit @ and actionable request"
+      },
+      "assistant": {
+        "enter": true,
+        "action": "action",
+        "reason": "Explicitly addressed to the bot with a clear actionable request."
+      }
+    },
+    {
+      "user": {
+        "id": "fs_2",
+        "objectiveLine": "Decide whether to enter main flow.",
+        "summary": "The user directly called the bot name and requested a concrete task.",
+        "mentionedByAt": false,
+        "mentionedByName": true,
+        "followup": false,
+        "note": "Few-shot example 2: called by bot name and asked to do a task"
+      },
+      "assistant": {
+        "enter": true,
+        "action": "action",
+        "reason": "The user directly called the bot by name and requested a task."
+      }
+    },
+    {
+      "user": {
+        "id": "fs_3",
+        "objectiveLine": "Decide whether to enter main flow.",
+        "summary": "Group chat praise/third-person mention about the bot with no actionable request.",
+        "mentionedByAt": false,
+        "mentionedByName": true,
+        "followup": false,
+        "note": "Few-shot example 3: third-person mention/praise without a request"
+      },
+      "assistant": {
+        "enter": false,
+        "action": "silent",
+        "reason": "No actionable request; replying may be unnecessary noise in group chat."
+      }
+    },
+    {
+      "user": {
+        "id": "fs_4",
+        "objectiveLine": "Decide whether to enter main flow.",
+        "summary": "The message is clearly addressed to another member and not to the bot.",
+        "mentionedByAt": false,
+        "mentionedByName": false,
+        "followup": false,
+        "note": "Few-shot example 4: conversation is clearly between other members"
+      },
+      "assistant": {
+        "enter": false,
+        "action": "silent",
+        "reason": "The message is addressed to someone else and not requesting the bot."
+      }
+    },
+    {
+      "user": {
+        "id": "fs_5",
+        "objectiveLine": "Decide whether to enter main flow.",
+        "summary": "The user gives an explicit future-timed command: 过4分钟之后戳我2下.",
+        "mentionedByAt": true,
+        "mentionedByName": true,
+        "followup": false,
+        "note": "Few-shot example 5: explicit delay intent should output action=delay + delay_when"
+      },
+      "assistant": {
+        "enter": true,
+        "action": "delay",
+        "delayWhen": "4分钟后",
+        "reason": "Explicit future-timed request; defer user-facing reply and provide parseable delay_when."
+      }
+    }
+  ]
+}
+

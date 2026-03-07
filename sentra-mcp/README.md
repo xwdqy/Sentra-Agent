@@ -86,6 +86,24 @@ for await (const ev of sdk.stream({
 - **streamWithCallback({ objective, conversation?, context?, onEvent }): Promise<{ stop():void, done: Promise<void> }>**
   - Convenience wrapper to handle events via callback. `stop()` stops consumption.
 
+- **runTerminalTask(input, options?): Promise<Result>**
+  - Dedicated Terminal Manager entrypoint (independent from planner/tool rerank path).
+  - Supports 2 modes:
+    - JSON args mode: `runTerminalTask({ args: { command, terminalType, cwd, timeoutMs, ... } })`
+    - Natural language mode: `runTerminalTask({ request: '...' })` (model infers terminal args, validates against schema, then executes)
+  - Execution channel policy:
+    - default is `exec` (pipe, non-PTY)
+    - set `interactive=true` to use PTY path
+    - optional `sessionMode=tmux_control` for structured long-running session control (Linux/macOS with `tmux`)
+  - Uses dedicated runtime assets:
+    - `src/runtime/terminal/manager.config.json`
+    - `src/runtime/terminal/prompts/terminal_manager.json`
+  - Prompt policy:
+    - terminal manager prompt is fixed in English and constrained to `sentra-tools` XML-only output.
+  - Returns:
+    - `{ success: true, data: { mode, invokeName, resolvedArgs, inference?, terminal } }`
+  - `timeoutMs` is optional. Provide it only when timeout control is needed.
+
 ## Events
 
 - **start**: `{ runId, ts, objective, context }`
@@ -120,7 +138,7 @@ Key variables in `.env`:
 
 - Redis (optional):
   - `REDIS_HOST`, `REDIS_PORT`, `REDIS_DB`, `REDIS_PASSWORD`
-  - Prefixes: `REDIS_METRICS_PREFIX`, `REDIS_CONTEXT_PREFIX`
+  - Key 前缀为内置固定值：`sentra_mcp_metrics`、`sentra_mcp_ctx`、`sentra_mcp_mem`（无需配置）
 
 - Planner/Executor:
   - `PLAN_MAX_STEPS`, `PLAN_MAX_CONCURRENCY`, `PLAN_TOTAL_TIME_BUDGET_MS`

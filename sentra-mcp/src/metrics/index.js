@@ -4,7 +4,7 @@ import { config } from '../config/index.js';
 const prefix = config.redis.metricsPrefix;
 
 function key(...parts) {
-  return [prefix, ...parts].join(':');
+  return [prefix, ...parts].join('_');
 }
 
 export const Metrics = {

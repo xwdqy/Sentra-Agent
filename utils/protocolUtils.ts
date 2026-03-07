@@ -1,38 +1,36 @@
 /**
- * Sentra协议处理模块
- * 包含<sentra-result>、<sentra-user-question>、<sentra-response>的构建和解析
+ * Sentra protocol utilities.
+ * Includes builders/parsers for <sentra-result>, <sentra-input>, and <sentra-message>.
  */
 
-import { z } from 'zod';
-import { jsonToXMLLines, extractXMLTag, extractAllXMLTags, extractFilesFromContent, valueToXMLString, USER_QUESTION_FILTER_KEYS, extractFullXMLTag, extractAllFullXMLTags, escapeXmlAttr, unescapeXml, stripTypedValueWrapper, extractXmlAttrValue, extractInnerXmlFromFullTag, getFastXmlParser } from './xmlUtils.js';
+import { jsonToXMLLines, extractXMLTag, extractFilesFromContent, valueToXMLString, extractFullXMLTag, extractAllFullXMLTags, escapeXmlAttr, unescapeXml, stripTypedValueWrapper, extractXmlAttrValue, extractInnerXmlFromFullTag, getFastXmlParser } from './xmlUtils.js';
 import { createLogger } from './logger.js';
 import type { ChatMessage } from '../src/types.js';
 
 const logger = createLogger('ProtocolUtils');
 
-export interface SentraResponseResource {
+export interface SentraMessageResource {
   type: string;
   source: string;
   caption?: string | undefined;
   segment_index?: number | undefined;
 }
 
-export interface SentraResponseEmoji {
-  source: string;
-  caption?: string | undefined;
-  segment_index?: number | undefined;
+export interface SentraMessageSegment {
+  type: string;
+  data: Record<string, unknown>;
 }
 
-export interface ParsedSentraResponse {
+export interface ParsedSentraMessage {
+  message: SentraMessageSegment[];
   textSegments: string[];
-  resources: SentraResponseResource[];
+  resources: SentraMessageResource[];
   group_id?: string | undefined;
   user_id?: string | undefined;
-  replyMode?: 'none' | 'first' | 'always' | string;
-  replyToMessageId?: string | undefined;
-  mentionsBySegment?: Record<string, Array<string | number>>;
-  mentions?: string[];
-  emoji?: SentraResponseEmoji;
+  chat_type?: 'group' | 'private' | string;
+  sender_id?: string | undefined;
+  sender_name?: string | undefined;
+  message_id?: string | undefined;
   shouldSkip?: boolean;
 }
 
@@ -100,6 +98,29 @@ export type UserQuestionMessage = {
   [key: string]: unknown;
 };
 
+type SentraMessagePacket = {
+  group_id?: string | number;
+  user_id?: string | number;
+  chat_type?: 'group' | 'private' | string;
+  sender_id?: string | number;
+  sender_name?: string;
+  message_id?: string | number;
+  message?: Array<{ type?: string; data?: Record<string, unknown> }>;
+};
+
+const SUPPORTED_SENTRA_MESSAGE_SEGMENT_TYPES = new Set([
+  'text',
+  'reply',
+  'at',
+  'image',
+  'file',
+  'video',
+  'record',
+  'music',
+  'poke',
+  'recall'
+]);
+
 function safeInt(v: unknown, fallback: number): number {
   const n = Number.parseInt(String(v ?? ''), 10);
   return Number.isFinite(n) ? n : fallback;
@@ -123,49 +144,93 @@ function normalizeToArray<T = any>(v: any): T[] {
   return Array.isArray(v) ? v : [v];
 }
 
-function normalizeMentionIds(ids: any): string[] {
-  if (!Array.isArray(ids)) return [];
-  const out = [];
-  const seen = new Set();
-  for (const mid of ids) {
-    const raw = String(mid ?? '').trim();
-    if (!raw) continue;
-    const lowered = raw.toLowerCase ? raw.toLowerCase() : raw;
-    const normalized = (lowered === '@all') ? 'all' : raw;
-    if (normalized !== 'all' && !/^\d+$/.test(normalized)) continue;
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(normalized);
-    if (out.length >= 20) break;
+function parseTypedArrayValue(node: any): any[] {
+  if (node == null) return [];
+  const out: any[] = [];
+  const typedKeys = ['string', 'number', 'boolean', 'null', 'array', 'object'];
+
+  const pushTyped = (key: string, value: any) => {
+    if (key === 'string') {
+      out.push(stripTypedValueWrapper(unescapeXml(getTextNode(value))).trim());
+      return;
+    }
+    if (key === 'number') {
+      out.push(inferScalarForParam(stripTypedValueWrapper(unescapeXml(getTextNode(value)))));
+      return;
+    }
+    if (key === 'boolean') {
+      out.push(parseBooleanLike(stripTypedValueWrapper(unescapeXml(getTextNode(value)))));
+      return;
+    }
+    if (key === 'null') {
+      out.push(null);
+      return;
+    }
+    if (key === 'array') {
+      out.push(parseTypedArrayValue(value));
+      return;
+    }
+    if (key === 'object') {
+      out.push(parseTypedObjectValue(value));
+    }
+  };
+
+  if (Array.isArray(node)) {
+    for (const part of node) {
+      out.push(...parseTypedArrayValue(part));
+    }
+    return out;
+  }
+
+  if (typeof node !== 'object') {
+    out.push(inferScalarForParam(String(node)));
+    return out;
+  }
+
+  const itemNodes = normalizeToArray((node as AnyRecord).item);
+  if (itemNodes.length > 0) {
+    for (const itemNode of itemNodes) {
+      out.push(parseTypedValue(itemNode));
+    }
+    return out;
+  }
+
+  for (const key of typedKeys) {
+    if (!Object.prototype.hasOwnProperty.call(node, key)) continue;
+    const values = normalizeToArray((node as AnyRecord)[key]);
+    for (const value of values) pushTyped(key, value);
+  }
+
+  return out;
+}
+
+function parseTypedObjectValue(node: any): Record<string, any> {
+  const out: Record<string, any> = {};
+  if (!node || typeof node !== 'object') return out;
+  const params = normalizeToArray((node as AnyRecord).parameter);
+  for (const p of params) {
+    if (!p || typeof p !== 'object') continue;
+    const key = String((p as AnyRecord).name || '').trim();
+    if (!key) continue;
+    out[key] = parseTypedValue(p);
   }
   return out;
 }
 
-function sanitizeMentionsBySegment(map: any, maxSegments: number): Record<string, Array<string | number>> {
-  try {
-    if (!map || typeof map !== 'object') return {};
-    const out: Record<string, Array<string | number>> = {};
-    for (const [k, v] of Object.entries(map)) {
-      const idx = String(k ?? '').trim();
-      if (!idx || !/^\d+$/.test(idx)) continue;
-      const n = safeInt(idx, -1);
-      if (!Number.isFinite(n) || n <= 0) continue;
-      if (Number.isFinite(maxSegments) && maxSegments > 0 && n > maxSegments) continue;
-      const ids = normalizeMentionIds(Array.isArray(v) ? v : [v]);
-      if (ids.length > 0) out[String(n)] = ids;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-function pickFirstTypedValue(paramObj: any): any {
+function parseTypedValue(paramObj: any): any {
   if (!paramObj || typeof paramObj !== 'object') return '';
   if (paramObj.null !== undefined) return null;
   if (paramObj.boolean !== undefined) return parseBooleanLike(stripTypedValueWrapper(unescapeXml(getTextNode(paramObj.boolean))));
   if (paramObj.number !== undefined) return inferScalarForParam(stripTypedValueWrapper(unescapeXml(getTextNode(paramObj.number))));
-  if (paramObj.string !== undefined) return stripTypedValueWrapper(unescapeXml(getTextNode(paramObj.string)));
+  if (paramObj.string !== undefined) return stripTypedValueWrapper(unescapeXml(getTextNode(paramObj.string))).trim();
+  if (paramObj.array !== undefined) return parseTypedArrayValue(paramObj.array);
+  if (paramObj.object !== undefined) return parseTypedObjectValue(paramObj.object);
+  return '';
+}
+
+function pickFirstTypedValue(paramObj: any): any {
+  const typedValue = parseTypedValue(paramObj);
+  if (typedValue !== '') return typedValue;
 
   // Fallback: treat inner text as scalar
   const raw = stripTypedValueWrapper(unescapeXml(getTextNode(paramObj)));
@@ -271,16 +336,16 @@ function parseArgsContentToObject(argsContent: any): any {
   }
 }
 
-// 内部：将 JS 值渲染为参数 <parameter> 的文本
+// 鍐呴儴锛氬皢 JS 鍊兼覆鏌撲负鍙傛暟 <parameter> 鐨勬枃鏈?
 function paramValueToText(v: any): string {
   if (v === null || v === undefined) return '';
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  // 对象/数组：用 JSON 字符串表达
+  // 瀵硅薄/鏁扮粍锛氱敤 JSON 瀛楃涓茶〃杈?
   try { return JSON.stringify(v); } catch { return String(v); }
 }
 
-// 内部：将 args 对象渲染为 XML 子元素（用于 <args> 或 <sentra-tools><parameter>）
+// 鍐呴儴锛氬皢 args 瀵硅薄娓叉煋涓?XML 瀛愬厓绱狅紙鐢ㄤ簬 <args> 鎴?<sentra-tools><parameter>锛?
 function argsObjectToParamEntries(args: any = {}): Array<{ name: string; value: string }> {
   const out = [];
   try {
@@ -317,6 +382,8 @@ export function parseReplyGateDecisionFromSentraTools(text: unknown): any {
         if (name !== 'reply_gate_decision') continue;
 
         let enter = null;
+        let action = '';
+        let delayWhen = '';
         let reason = '';
         const params = normalizeToArray(invoke?.parameter);
         for (const p of params) {
@@ -330,10 +397,25 @@ export function parseReplyGateDecisionFromSentraTools(text: unknown): any {
           if (pName === 'reason') {
             const v = pickFirstTypedValue(p);
             reason = String(v ?? '').trim();
+            continue;
+          }
+          if (pName === 'action') {
+            const v = pickFirstTypedValue(p);
+            action = String(v ?? '').trim().toLowerCase();
+            continue;
+          }
+          if (pName === 'delay_when') {
+            const v = pickFirstTypedValue(p);
+            delayWhen = String(v ?? '').trim();
           }
         }
         if (typeof enter !== 'boolean') continue;
-        last = { enter, reason, invokeName: name };
+        if (!action) {
+          action = enter ? 'action' : 'silent';
+        }
+        if (action === 'silent') enter = false;
+        else enter = true;
+        last = { enter, action, delayWhen, reason, invokeName: name };
       }
     }
   } catch { }
@@ -349,6 +431,8 @@ export function parseReplyGateDecisionFromSentraTools(text: unknown): any {
         if (name !== 'reply_gate_decision') continue;
 
         let enter = null;
+        let action = '';
+        let delayWhen = '';
         let reason = '';
 
         const params = extractAllFullXMLTags(invokeXml, 'parameter');
@@ -372,11 +456,30 @@ export function parseReplyGateDecisionFromSentraTools(text: unknown): any {
             const strText = extractXMLTag(p, 'string');
             const raw = strText != null ? strText : paramInner;
             reason = stripTypedValueWrapper(unescapeXml(raw || '')).trim();
+            continue;
+          }
+
+          if (pName === 'action') {
+            const strText = extractXMLTag(p, 'string');
+            const raw = strText != null ? strText : paramInner;
+            action = stripTypedValueWrapper(unescapeXml(raw || '')).trim().toLowerCase();
+            continue;
+          }
+
+          if (pName === 'delay_when') {
+            const strText = extractXMLTag(p, 'string');
+            const raw = strText != null ? strText : paramInner;
+            delayWhen = stripTypedValueWrapper(unescapeXml(raw || '')).trim();
           }
         }
 
         if (typeof enter !== 'boolean') continue;
-        last = { enter, reason, invokeName: name };
+        if (!action) {
+          action = enter ? 'action' : 'silent';
+        }
+        if (action === 'silent') enter = false;
+        else enter = true;
+        last = { enter, action, delayWhen, reason, invokeName: name };
       }
     }
   } catch { }
@@ -389,7 +492,11 @@ export function parseSentraToolsInvocations(text: unknown): Array<{ aiName: stri
   if (!s) return [];
 
   const maybeParseJson = (v: unknown) => {
-    const t = String(v ?? '').trim();
+    if (v == null) return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return v;
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'object') return v;
+    const t = String(v).trim();
     if (!t) return '';
     if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
       try {
@@ -432,28 +539,10 @@ export function parseSentraToolsInvocations(text: unknown): Array<{ aiName: stri
   return out;
 }
 
-// Zod schema for resource validation
-const ResourceSchema = z.object({
-  type: z.enum(['image', 'video', 'audio', 'file', 'link']),
-  source: z.string(),
-  caption: z.string().optional(),
-  segment_index: z.number().int().positive().optional()
-});
-
-const SentraResponseSchema = z.object({
-  textSegments: z.array(z.string()),
-  resources: z.array(ResourceSchema).optional().default([]),
-  group_id: z.string().optional(),
-  user_id: z.string().optional(),
-  replyMode: z.enum(['none', 'first', 'always']).optional().default('none'),
-  replyToMessageId: z.string().optional(),
-  mentionsBySegment: z.record(z.string(), z.array(z.union([z.string(), z.number()]))).optional().default({})
-});
-
 /**
- * 构建 Sentra XML 块：
+ * 鏋勫缓 Sentra XML 鍧楋細
  * - tool_result -> <sentra-result>
- * - tool_result_group -> <sentra-result-group> 包含多个 <sentra-result>
+ * - tool_result_group -> <sentra-result-group> 鍖呭惈澶氫釜 <sentra-result>
  */
 export function buildSentraResultBlock(ev: ToolResultEvent | ToolResultGroupEvent): string {
   try {
@@ -469,7 +558,11 @@ export function buildSentraResultBlock(ev: ToolResultEvent | ToolResultGroupEven
       const groupStatusRaw = typeof ev?.resultStatus === 'string' ? ev.resultStatus : '';
       const groupStatus = String(groupStatusRaw).toLowerCase() === 'final' ? 'final' : 'progress';
       const lines = [
-        `<sentra-result-group group_id="${gid}" group_size="${gsize}" order_step_ids="${orderStepIds.join(',')}" status="${groupStatus}">`
+        '<sentra-result-group>',
+        `  <step_group_id>${valueToXMLString(gid, 0)}</step_group_id>`,
+        `  <group_size>${valueToXMLString(gsize, 0)}</group_size>`,
+        `  <order_step_ids>${valueToXMLString(orderStepIds.join(','), 0)}</order_step_ids>`,
+        `  <status>${valueToXMLString(groupStatus, 0)}</status>`
       ];
       for (const item of events) {
         const xml = buildSingleResultXML({
@@ -481,7 +574,7 @@ export function buildSentraResultBlock(ev: ToolResultEvent | ToolResultGroupEven
         const indented = xml.split('\n').map(l => `  ${l}`).join('\n');
         lines.push(indented);
       }
-      // 附带一次性提取到的文件资源（可选）
+      // 闄勫甫涓€娆℃€ф彁鍙栧埌鐨勬枃浠惰祫婧愶紙鍙€夛級
       const collected: Array<{ key: string; path: string }> = [];
       events.forEach((item: ToolResultEvent, idx: number) => {
         if (!item || !item.result) return;
@@ -493,7 +586,7 @@ export function buildSentraResultBlock(ev: ToolResultEvent | ToolResultGroupEven
         collected.push(...fromResult);
       });
 
-      // 去重：按 path 聚合，避免同一文件被多次包含
+      // 鍘婚噸锛氭寜 path 鑱氬悎锛岄伩鍏嶅悓涓€鏂囦欢琚娆″寘鍚?
       const seenPaths = new Set();
       const files: Array<{ key: string; path: string }> = [];
       for (const f of collected) {
@@ -518,12 +611,12 @@ export function buildSentraResultBlock(ev: ToolResultEvent | ToolResultGroupEven
     }
     return '';
   } catch (e) {
-    // 发生异常时返回 JSON 包裹，避免终止主流程
+    // 鍙戠敓寮傚父鏃惰繑鍥?JSON 鍖呰９锛岄伩鍏嶇粓姝富娴佺▼
     try { return `<sentra-result>${valueToXMLString(JSON.stringify(ev), 0)}</sentra-result>`; } catch { return '<sentra-result></sentra-result>'; }
   }
 }
 
-// 内部：构建单个 <sentra-result>（统一字段）
+// 鍐呴儴锛氭瀯寤哄崟涓?<sentra-result>锛堢粺涓€瀛楁锛?
 function resolveStepId(ev: ToolResultEvent): string {
   const fromEvent = typeof ev?.stepId === 'string' ? ev.stepId.trim() : '';
   if (fromEvent) return fromEvent;
@@ -556,7 +649,6 @@ function buildSingleResultXML(ev: ToolResultEvent): string {
   const provider = typeof result?.provider === 'string'
     ? result.provider
     : (toolMeta && typeof toolMeta.provider === 'string' ? toolMeta.provider : '');
-  const args = ev?.args || {};
   const data = result && Object.prototype.hasOwnProperty.call(result, 'data')
     ? result.data
     : (ev?.result ?? null);
@@ -568,9 +660,15 @@ function buildSingleResultXML(ev: ToolResultEvent): string {
     if (Object.prototype.hasOwnProperty.call(result, 'detail')) extra.detail = result.detail;
   }
 
-  const lines = [`<sentra-result step_id="${stepId}" tool="${aiName}" success="${success}" status="${status}">`];
+  const lines = [
+    '<sentra-result>',
+    `  <step_id>${valueToXMLString(stepId, 0)}</step_id>`,
+    `  <tool>${valueToXMLString(aiName, 0)}</tool>`,
+    `  <success>${success}</success>`,
+    `  <status>${valueToXMLString(status, 0)}</status>`
+  ];
   if (reason) lines.push(`  <reason>${valueToXMLString(reason, 0)}</reason>`);
-  // 同时输出 <aiName> 以便旧解析器兼容
+  // 鍚屾椂杈撳嚭 <aiName> 浠ヤ究鏃цВ鏋愬櫒鍏煎
   lines.push(`  <aiName>${valueToXMLString(aiName, 0)}</aiName>`);
   try {
     const completion = ev?.completion as { state?: string; mustAnswerFromResult?: boolean; instruction?: string } | undefined;
@@ -585,13 +683,8 @@ function buildSingleResultXML(ev: ToolResultEvent): string {
       lines.push('  </completion>');
     }
   } catch { }
-  // args：同时提供结构化与 JSON 两种表示
-  try {
-    lines.push('  <args>');
-    lines.push(...jsonToXMLLines(args, 2, 0, 6));
-    lines.push('  </args>');
-  } catch { }
-  // result：拆为 success/code/data/provider
+  // args锛氬悓鏃舵彁渚涚粨鏋勫寲涓?JSON 涓ょ琛ㄧず
+  // result锛氭媶涓?success/code/data/provider
   lines.push('  <result>');
   lines.push(`    <success>${success}</success>`);
   if (code) lines.push(`    <code>${valueToXMLString(code, 0)}</code>`);
@@ -623,7 +716,7 @@ function buildSingleResultXML(ev: ToolResultEvent): string {
   } catch { }
   lines.push('  </result>');
 
-  // 附带便于调试的元信息（可选）
+  // 闄勫甫渚夸簬璋冭瘯鐨勫厓淇℃伅锛堝彲閫夛級
   if (Array.isArray(ev?.dependsOnStepIds) || Array.isArray(ev?.dependedByStepIds)) {
     lines.push('  <dependencies>');
     if (Array.isArray(ev.dependsOnStepIds)) lines.push(`    <depends_on_step_ids>${ev.dependsOnStepIds.join(',')}</depends_on_step_ids>`);
@@ -632,7 +725,7 @@ function buildSingleResultXML(ev: ToolResultEvent): string {
     lines.push('  </dependencies>');
   }
 
-  // 附带文件路径（可选）
+  // 闄勫甫鏂囦欢璺緞锛堝彲閫夛級
   const fileRoot = result && Object.prototype.hasOwnProperty.call(result, 'data')
     ? result.data
     : ev?.result;
@@ -655,424 +748,500 @@ function buildSingleResultXML(ev: ToolResultEvent): string {
 }
 
 /**
- * 构建<sentra-user-question>块（用户提问）
- * 自动过滤segments、images、videos、files、records等冗余字段
+ * Message protocol helpers.
  */
-export function buildSentraUserQuestionBlock(msg: UserQuestionMessage) {
-  const xmlLines = ['<sentra-user-question>'];
+function isPositiveIntegerString(value: string): boolean {
+  const s = String(value || '').trim();
+  if (!/^\d+$/.test(s)) return false;
+  try {
+    return BigInt(s) > 0n;
+  } catch {
+    const n = Number(s);
+    return Number.isFinite(n) && n > 0;
+  }
+}
 
-  const mergedUsers: MergedUser[] = Array.isArray(msg?._mergedUsers) ? msg._mergedUsers : [];
-  const isMerged = !!msg?._merged && mergedUsers.length > 1 && msg?.type === 'group';
-
-  if (isMerged) {
-    const mergedLines: string[] = [];
-    mergedUsers.forEach((u: MergedUser, idx: number) => {
-      if (!u) return;
-      const name = (u.sender_name || u.nickname || `User${idx + 1}`).trim();
-      const baseText =
-        (typeof u.text === 'string' && u.text.trim()) ||
-        (u.raw && ((u.raw.summary && String(u.raw.summary).trim()) || (u.raw.text && String(u.raw.text).trim()))) ||
-        '';
-      if (!baseText) return;
-      mergedLines.push(name ? `${name}: ${baseText}` : baseText);
-    });
-
-    const mergedText = mergedLines.join('\n\n');
-
-    xmlLines.push('  <mode>group_multi_user_merge</mode>');
-    if (msg.group_id != null) {
-      xmlLines.push(`  <group_id>${valueToXMLString(String(msg.group_id), 0)}</group_id>`);
+function trimStringDeep(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string') return value.trim();
+  if (Array.isArray(value)) return value.map((v) => trimStringDeep(v));
+  if (typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = trimStringDeep(v);
     }
-    if (msg._mergedPrimarySenderId != null) {
-      xmlLines.push(
-        `  <primary_sender_id>${valueToXMLString(String(msg._mergedPrimarySenderId), 0)}</primary_sender_id>`
-      );
-    }
-    if (typeof msg.sender_name === 'string' && msg.sender_name.trim()) {
-      xmlLines.push(`  <primary_sender_name>${valueToXMLString(msg.sender_name, 0)}</primary_sender_name>`);
-    }
-    xmlLines.push(`  <user_count>${mergedUsers.length}</user_count>`);
-    if (mergedText) {
-      xmlLines.push(`  <text>${valueToXMLString(mergedText, 0)}</text>`);
-    }
+    return out;
+  }
+  return value;
+}
 
-    xmlLines.push('  <multi_user merge="true">');
-    mergedUsers.forEach((u: MergedUser, idx: number) => {
-      if (!u) return;
-      const uid = u.sender_id != null ? String(u.sender_id) : '';
-      const uname = u.sender_name || '';
-      const mid = u.message_id != null ? String(u.message_id) : '';
-      const text =
-        (typeof u.text === 'string' && u.text.trim()) ||
-        (u.raw && ((u.raw.summary && String(u.raw.summary).trim()) || (u.raw.text && String(u.raw.text).trim()))) ||
-        '';
-      const time = u.time_str || (u.raw && u.raw.time_str) || '';
+function normalizeSegmentMessageId(value: unknown): string {
+  if (value == null) return '';
+  const s = String(value).trim();
+  if (!s || s === '0') return '';
+  return s;
+}
 
-      xmlLines.push(`    <user index="${idx + 1}">`);
-      if (uid) xmlLines.push(`      <user_id>${valueToXMLString(uid, 0)}</user_id>`);
-      if (uname) xmlLines.push(`      <nickname>${valueToXMLString(uname, 0)}</nickname>`);
-      if (mid) xmlLines.push(`      <message_id>${valueToXMLString(mid, 0)}</message_id>`);
-      if (text) xmlLines.push(`      <text>${valueToXMLString(text, 0)}</text>`);
-      if (time) xmlLines.push(`      <time>${valueToXMLString(time, 0)}</time>`);
-      xmlLines.push('    </user>');
-    });
-    xmlLines.push('  </multi_user>');
+function withSegmentMessageId(
+  segments: Array<{ type?: string; data?: Record<string, unknown> }>,
+  messageId: unknown
+): Array<{ type?: string; data?: Record<string, unknown> }> {
+  const normalized = normalizeSegmentMessageId(messageId);
+  if (!normalized) return segments;
+  return segments.map((seg) => {
+    const data = seg && seg.data && typeof seg.data === 'object'
+      ? { ...seg.data }
+      : {};
+    data.message_id = normalized;
+    return { ...seg, data };
+  });
+}
+
+type SentraInputBuildOptions = {
+  currentMessage?: Record<string, unknown> | null;
+  pendingMessagesXml?: string;
+  historyMessagesXml?: string;
+  toolResultsXml?: string;
+};
+
+function normalizeMessageSegments(msg: Record<string, unknown> | null | undefined): Array<{ type: string; data: Record<string, unknown> }> {
+  if (!msg || typeof msg !== 'object') return [];
+  const rawSegs = Array.isArray(msg.message)
+    ? msg.message
+    : (Array.isArray(msg.segments) ? msg.segments : []);
+  const out: Array<{ type: string; data: Record<string, unknown> }> = [];
+  for (const seg of rawSegs) {
+    if (!seg || typeof seg !== 'object') continue;
+    const s = seg as { type?: unknown; data?: unknown };
+    const type = typeof s.type === 'string' ? s.type.trim().toLowerCase() : '';
+    if (!type) continue;
+    const rawData = s.data && typeof s.data === 'object' ? s.data as Record<string, unknown> : {};
+    const data = trimStringDeep(rawData) as Record<string, unknown>;
+    out.push({ type, data });
+  }
+  if (out.length > 0) return out;
+
+  const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+  if (text) return [{ type: 'text', data: { text } }];
+  return [];
+}
+
+function normalizeObjectArray(raw: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    out.push(trimStringDeep(item) as Record<string, unknown>);
+  }
+  return out;
+}
+
+function mergeUniqueObjects(
+  primary: Array<Record<string, unknown>>,
+  secondary: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+
+  const pushOne = (item: Record<string, unknown>) => {
+    try {
+      const key = JSON.stringify(item);
+      if (seen.has(key)) return;
+      seen.add(key);
+    } catch {
+      // ignore dedup on stringify failure
+    }
+    out.push(item);
+  };
+
+  for (const item of primary) pushOne(item);
+  for (const item of secondary) pushOne(item);
+  return out;
+}
+
+function pickCurrentForwards(msg: Record<string, unknown>): Array<Record<string, unknown>> {
+  const own = normalizeObjectArray((msg as any).forwards);
+  const replyMedia = (msg as any).reply && typeof (msg as any).reply === 'object'
+    ? ((msg as any).reply as Record<string, unknown>).media
+    : undefined;
+  const reply = replyMedia && typeof replyMedia === 'object'
+    ? normalizeObjectArray((replyMedia as Record<string, unknown>).forwards)
+    : [];
+  return mergeUniqueObjects(own, reply);
+}
+
+function pickCurrentCards(msg: Record<string, unknown>): Array<Record<string, unknown>> {
+  const own = normalizeObjectArray((msg as any).cards);
+  const replyMedia = (msg as any).reply && typeof (msg as any).reply === 'object'
+    ? ((msg as any).reply as Record<string, unknown>).media
+    : undefined;
+  const reply = replyMedia && typeof replyMedia === 'object'
+    ? normalizeObjectArray((replyMedia as Record<string, unknown>).cards)
+    : [];
+  return mergeUniqueObjects(own, reply);
+}
+
+function emitInputSection(lines: string[], tag: string, raw: unknown) {
+  const content = typeof raw === 'string' ? raw.trim() : '';
+  if (!content) return;
+  if (content.includes(`<${tag}>`) && content.includes(`</${tag}>`)) {
+    lines.push(content);
+    return;
+  }
+  lines.push(`  <${tag}>`);
+  lines.push(content);
+  lines.push(`  </${tag}>`);
+}
+
+export function buildSentraInputBlock({
+  currentMessage,
+  pendingMessagesXml = '',
+  historyMessagesXml = '',
+  toolResultsXml = ''
+}: SentraInputBuildOptions = {}): string {
+  const msg = currentMessage && typeof currentMessage === 'object' ? currentMessage : {};
+  const lines: string[] = ['<sentra-input>'];
+
+  lines.push('  <current_messages>');
+  lines.push('    <sentra-message>');
+  const typeRaw = typeof msg.type === 'string' ? msg.type.trim().toLowerCase() : '';
+  const chatType = typeRaw === 'group' || typeRaw === 'private'
+    ? typeRaw
+    : (msg.group_id != null ? 'group' : (msg.sender_id != null ? 'private' : ''));
+  if (chatType) lines.push(`    <chat_type>${valueToXMLString(chatType, 0)}</chat_type>`);
+
+  const groupId = msg.group_id != null ? String(msg.group_id).trim() : '';
+  const senderId = msg.sender_id != null ? String(msg.sender_id).trim() : '';
+  if (chatType === 'group' && groupId && isPositiveIntegerString(groupId)) {
+    lines.push(`    <group_id>${valueToXMLString(groupId, 0)}</group_id>`);
+  } else if (chatType === 'private' && senderId && isPositiveIntegerString(senderId)) {
+    lines.push(`    <user_id>${valueToXMLString(senderId, 0)}</user_id>`);
+  }
+  if (senderId && isPositiveIntegerString(senderId)) {
+    lines.push(`    <sender_id>${valueToXMLString(senderId, 0)}</sender_id>`);
   }
 
-  // 递归遍历msg对象，过滤指定的键
-  xmlLines.push(...jsonToXMLLines(msg, 1, 0, 6, USER_QUESTION_FILTER_KEYS));
+  const senderName = typeof msg.sender_name === 'string' ? msg.sender_name.trim() : '';
+  if (senderName) lines.push(`    <sender_name>${valueToXMLString(senderName, 0)}</sender_name>`);
 
-  xmlLines.push('</sentra-user-question>');
+  const eventType = typeof (msg as any).event_type === 'string'
+    ? String((msg as any).event_type).trim().toLowerCase()
+    : '';
+  const isPokeEvent = eventType === 'poke';
+  const messageId = msg.message_id != null ? String(msg.message_id).trim() : '';
+
+  lines.push('    <message>');
+  const rawSegs = normalizeMessageSegments(msg);
+  const segs = isPokeEvent ? rawSegs : withSegmentMessageId(rawSegs, messageId);
+  let idx = 1;
+  for (const seg of segs) {
+    lines.push(`      <segment index="${idx}">`);
+    lines.push(`        <type>${valueToXMLString(seg.type, 0)}</type>`);
+    lines.push('        <data>');
+    lines.push(...jsonToXMLLines(seg.data, 5, 0, 6));
+    lines.push('        </data>');
+    lines.push('      </segment>');
+    idx += 1;
+  }
+  lines.push('    </message>');
+
+  const forwards = pickCurrentForwards(msg);
+  if (forwards.length > 0) {
+    lines.push('    <forwards>');
+    for (let i = 0; i < forwards.length; i++) {
+      lines.push(`      <forward index="${i + 1}">`);
+      lines.push(...jsonToXMLLines(forwards[i], 6, 0, 8));
+      lines.push('      </forward>');
+    }
+    lines.push('    </forwards>');
+  }
+
+  const cards = pickCurrentCards(msg);
+  if (cards.length > 0) {
+    lines.push('    <cards>');
+    for (let i = 0; i < cards.length; i++) {
+      lines.push(`      <card index="${i + 1}">`);
+      lines.push(...jsonToXMLLines(cards[i], 6, 0, 8));
+      lines.push('      </card>');
+    }
+    lines.push('    </cards>');
+  }
+
+  lines.push('    </sentra-message>');
+  lines.push('  </current_messages>');
+
+  emitInputSection(lines, 'sentra-pending-messages', pendingMessagesXml);
+  emitInputSection(lines, 'sentra-history-messages', historyMessagesXml);
+  emitInputSection(lines, 'sentra-tool-results', toolResultsXml);
+
+  lines.push('</sentra-input>');
+  return lines.join('\n');
+}
+
+export function buildSentraMessageBlock(packet: SentraMessagePacket): string {
+  const xmlLines = ['<sentra-message>'];
+
+  const gid = packet?.group_id != null ? String(packet.group_id).trim() : '';
+  const uid = packet?.user_id != null ? String(packet.user_id).trim() : '';
+  const senderId = packet?.sender_id != null ? String(packet.sender_id).trim() : '';
+  const chatTypeRaw = typeof packet?.chat_type === 'string' ? packet.chat_type.trim().toLowerCase() : '';
+  const inferredChatType = chatTypeRaw || (gid ? 'group' : ((uid || senderId) ? 'private' : ''));
+  if (inferredChatType) {
+    xmlLines.push(`  <chat_type>${valueToXMLString(inferredChatType, 0)}</chat_type>`);
+  }
+  if (inferredChatType === 'group' && gid && isPositiveIntegerString(gid)) {
+    xmlLines.push(`  <group_id>${valueToXMLString(gid, 0)}</group_id>`);
+  } else if (inferredChatType === 'private') {
+    const privateId = uid && isPositiveIntegerString(uid)
+      ? uid
+      : (senderId && isPositiveIntegerString(senderId) ? senderId : '');
+    if (privateId) {
+      xmlLines.push(`  <user_id>${valueToXMLString(privateId, 0)}</user_id>`);
+    }
+  } else if (!inferredChatType) {
+    if (gid && isPositiveIntegerString(gid)) {
+      xmlLines.push(`  <group_id>${valueToXMLString(gid, 0)}</group_id>`);
+    } else if (uid && isPositiveIntegerString(uid)) {
+      xmlLines.push(`  <user_id>${valueToXMLString(uid, 0)}</user_id>`);
+    }
+  }
+  if (senderId) {
+    xmlLines.push(`  <sender_id>${valueToXMLString(senderId, 0)}</sender_id>`);
+  }
+  if (typeof packet?.sender_name === 'string' && packet.sender_name.trim()) {
+    xmlLines.push(`  <sender_name>${valueToXMLString(packet.sender_name.trim(), 0)}</sender_name>`);
+  }
+
+  const rawSegments = Array.isArray(packet?.message) ? packet.message : [];
+  const packetMessageId = packet?.message_id != null ? String(packet.message_id).trim() : '';
+  const segments = withSegmentMessageId(rawSegments, packetMessageId);
+  xmlLines.push('  <message>');
+  let index = 1;
+  for (const seg of segments) {
+    if (!seg || typeof seg !== 'object') continue;
+    const type = typeof seg.type === 'string' ? seg.type.trim() : '';
+    if (!type) continue;
+    const dataRaw = seg.data && typeof seg.data === 'object' ? seg.data : {};
+    const data = trimStringDeep(dataRaw);
+    xmlLines.push(`    <segment index="${index}">`);
+    xmlLines.push(`      <type>${valueToXMLString(type, 0)}</type>`);
+    xmlLines.push('      <data>');
+    xmlLines.push(...jsonToXMLLines(data, 4, 0, 6));
+    xmlLines.push('      </data>');
+    xmlLines.push('    </segment>');
+    index += 1;
+  }
+  xmlLines.push('  </message>');
+  xmlLines.push('</sentra-message>');
   return xmlLines.join('\n');
 }
 
-/**
- * 解析<sentra-response>协议
- */
-export function parseSentraResponse(response: unknown): ParsedSentraResponse {
-  const hasSentraTag = typeof response === 'string' && response.includes('<sentra-response>');
+function hasMeaningfulMessageData(value: unknown, depth = 0): boolean {
+  if (value == null) return false;
+  if (depth > 3) return true;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number' || typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.some((x) => hasMeaningfulMessageData(x, depth + 1));
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return false;
+    return entries.some(([, v]) => hasMeaningfulMessageData(v, depth + 1));
+  }
+  return false;
+}
 
-  let parsed: any = null;
+function isMeaningfulSentraSegment(seg: SentraMessageSegment | null | undefined): boolean {
+  if (!seg || typeof seg !== 'object') return false;
+  const type = String(seg.type || '').trim().toLowerCase();
+  if (!type) return false;
+  if (!SUPPORTED_SENTRA_MESSAGE_SEGMENT_TYPES.has(type)) return false;
+  const data = seg.data && typeof seg.data === 'object' ? seg.data : {};
+
+  if (type === 'text') {
+    const text = typeof data.text === 'string' ? data.text.trim() : '';
+    return text.length > 0;
+  }
+  if (type === 'music') {
+    const provider = typeof data.type === 'string' ? data.type.trim().toLowerCase() : '';
+    const id = data.id == null ? '' : String(data.id).trim();
+    return provider.length > 0 && id.length > 0;
+  }
+  if (type === 'poke') {
+    const userId = data.user_id == null ? '' : String(data.user_id).trim();
+    const groupId = data.group_id == null ? '' : String(data.group_id).trim();
+    if (!/^\d+$/.test(userId)) return false;
+    if (groupId && !/^\d+$/.test(groupId)) return false;
+    return true;
+  }
+  if (type === 'recall') {
+    const messageId = data.message_id == null ? '' : String(data.message_id).trim();
+    if (!/^\d+$/.test(messageId)) return false;
+    try {
+      return BigInt(messageId) > 0n;
+    } catch {
+      const n = Number(messageId);
+      return Number.isFinite(n) && n > 0;
+    }
+  }
+  return hasMeaningfulMessageData(data);
+}
+
+export function parseSentraMessage(response: unknown): ParsedSentraMessage {
+  const raw = typeof response === 'string' ? response : String(response ?? '');
+  if (!raw.trim()) {
+    return { message: [], textSegments: [], resources: [], shouldSkip: true };
+  }
+
   try {
-    const full = extractFullXMLTag(String(response ?? ''), 'sentra-response');
+    const full = extractFullXMLTag(raw, 'sentra-message');
     if (full) {
       const doc = getXmlParser().parse(`<root>${full}</root>`);
-      parsed = doc?.root?.['sentra-response'] || null;
-    }
-  } catch {
-    parsed = null;
-  }
+      const root = doc?.root?.['sentra-message'];
+      if (root) {
+        const out: ParsedSentraMessage = {
+          message: [],
+          textSegments: [],
+          resources: []
+        };
 
-  if (parsed) {
-    let targetGroupId = null;
-    let targetUserId = null;
-    try {
-      const gid = unescapeXml(getTextNode(parsed.group_id).trim());
-      const uid = unescapeXml(getTextNode(parsed.user_id).trim());
-      const gidOk = gid && /^\d+$/.test(gid);
-      const uidOk = uid && /^\d+$/.test(uid);
-      if (gidOk && uidOk) {
-        logger.warn('检测到同时存在 <group_id> 和 <user_id>，将忽略目标并按当前会话发送');
-      } else if (gidOk) {
-        targetGroupId = gid;
-      } else if (uidOk) {
-        targetUserId = uid;
-      }
-    } catch { }
+        const gid = unescapeXml(getTextNode(root?.group_id).trim());
+        const uid = unescapeXml(getTextNode(root?.user_id).trim());
+        if (gid && /^\d+$/.test(gid)) out.group_id = gid;
+        if (uid && /^\d+$/.test(uid)) out.user_id = uid;
 
-    const textSegments: string[] = [];
-    for (let i = 1; i <= 50; i++) {
-      const key = `text${i}`;
-      if (!(key in parsed)) break;
-      const t = unescapeXml(getTextNode(parsed[key]).trim());
-      if (t) textSegments.push(t);
-    }
+        const chatType = unescapeXml(getTextNode(root?.chat_type).trim()).toLowerCase();
+        if (chatType) out.chat_type = chatType;
 
-    let resources: SentraResponseResource[] = [];
-    try {
-      const rb = parsed.resources;
-      const items: XmlRecord[] = rb && rb.resource
-        ? (Array.isArray(rb.resource) ? rb.resource : [rb.resource]) as XmlRecord[]
-        : [];
-      resources = items.map((it: XmlRecord) => {
-        if (!it || typeof it !== 'object') return null;
-        const type = unescapeXml(getTextNode((it as XmlRecord)?.type).trim());
-        const source = unescapeXml(getTextNode((it as XmlRecord)?.source).trim());
-        const caption = unescapeXml(getTextNode((it as XmlRecord)?.caption).trim());
-        const segRaw = unescapeXml(getTextNode((it as XmlRecord)?.segment_index).trim());
-        const seg = segRaw && /^\d+$/.test(segRaw) ? safeInt(segRaw, -1) : null;
-        if (!type || !source) return null;
-        const r: SentraResponseResource = { type, source };
-        if (caption) r.caption = caption;
-        if (seg && Number.isFinite(seg) && seg > 0) r.segment_index = seg;
-        return ResourceSchema.parse(r);
-      }).filter(Boolean) as SentraResponseResource[];
-    } catch { }
+        const senderId = unescapeXml(getTextNode(root?.sender_id).trim());
+        if (senderId) out.sender_id = senderId;
+        const senderName = unescapeXml(getTextNode(root?.sender_name).trim());
+        if (senderName) out.sender_name = senderName;
+        let messageId = unescapeXml(getTextNode(root?.message_id).trim());
 
-    let replyMode: 'none' | 'first' | 'always' | string = 'none';
-    let replyToMessageId: string | null = null;
-    let mentionsBySegment: Record<string, Array<string | number>> = {};
-    try {
-      const send = parsed.send;
-      const rm = String(getTextNode(send?.reply_mode) || '').trim().toLowerCase();
-      if (rm === 'first' || rm === 'always') replyMode = rm;
-
-      const rid = unescapeXml(String(getTextNode(send?.reply_to_message_id) || '').trim());
-      if (rid && /^\d+$/.test(rid)) replyToMessageId = rid;
-
-      const mbs = send?.mentions_by_segment;
-        const segs = mbs ? normalizeToArray(mbs.segment) : [];
-        if (segs.length > 0) {
-          const map: Record<string, string[]> = {};
-          for (const seg of segs) {
-            const idxRaw = seg && seg.index != null ? String(seg.index).trim() : '';
-            if (!idxRaw || !/^\d+$/.test(idxRaw)) continue;
-            const sids = seg?.id;
-            const arr = sids ? (Array.isArray(sids) ? sids : [sids]) : [];
-            const ids2 = arr.map((v) => unescapeXml(getTextNode(v).trim())).filter(Boolean);
-            if (ids2.length > 0) map[idxRaw] = ids2;
+        const segments = normalizeToArray(root?.message?.segment);
+        let segIndex = 0;
+        for (const seg of segments) {
+          const type = unescapeXml(getTextNode(seg?.type).trim()).toLowerCase();
+          if (!type) continue;
+          if (!SUPPORTED_SENTRA_MESSAGE_SEGMENT_TYPES.has(type)) continue;
+          const dataObj = xmlNodeToJs(seg?.data);
+          const data = dataObj && typeof dataObj === 'object' ? dataObj as Record<string, unknown> : {};
+          out.message.push({ type, data });
+          segIndex += 1;
+          if (!messageId) {
+            const segMessageId = normalizeSegmentMessageId((data as Record<string, unknown>).message_id);
+            if (segMessageId) messageId = segMessageId;
           }
-          mentionsBySegment = sanitizeMentionsBySegment(map, textSegments.length || 0);
+
+          if (type === 'text') {
+            const textVal = typeof data.text === 'string' ? String(data.text).trim() : '';
+            if (textVal) out.textSegments.push(textVal);
+          } else {
+            const source = typeof data.file === 'string'
+              ? String(data.file).trim()
+              : (typeof data.source === 'string' ? String(data.source).trim() : '');
+            const caption = typeof data.caption === 'string' ? String(data.caption).trim() : '';
+            if (source) {
+              out.resources.push({
+                type: type === 'audio' ? 'record' : type,
+                source,
+                ...(caption ? { caption } : {}),
+                segment_index: segIndex
+              });
+            }
+          }
         }
-    } catch { }
+        if (messageId) out.message_id = messageId;
 
-    let emoji: SentraResponseEmoji | null = null;
-    try {
-      const eb = parsed.emoji;
-      const source = unescapeXml(getTextNode(eb?.source).trim());
-      const caption = unescapeXml(getTextNode(eb?.caption).trim());
-      const segRaw = unescapeXml(getTextNode(eb?.segment_index).trim());
-      const seg = segRaw && /^\d+$/.test(segRaw) ? safeInt(segRaw, -1) : null;
-      if (source) {
-        emoji = { source };
-        if (caption) emoji.caption = caption;
-        if (seg && Number.isFinite(seg) && seg > 0) emoji.segment_index = seg;
+        const hasResources = out.resources.length > 0;
+        const hasMeaningfulSegments = out.message.some((seg) => isMeaningfulSentraSegment(seg));
+        if (!hasMeaningfulSegments && !hasResources) out.shouldSkip = true;
+        return out;
       }
-    } catch { }
-
-    try {
-      const validated = SentraResponseSchema.parse({
-        textSegments,
-        resources,
-        group_id: targetGroupId || undefined,
-        user_id: targetUserId || undefined,
-        replyMode,
-        replyToMessageId: replyToMessageId || undefined,
-        mentionsBySegment
-      });
-      const out = validated as any as ParsedSentraResponse;
-      if (emoji) out.emoji = emoji;
-
-      const hasText = Array.isArray(validated.textSegments)
-        && validated.textSegments.some((t) => (t || '').trim());
-      const hasResources = Array.isArray(out.resources) && out.resources.length > 0;
-      const hasEmoji = !!out.emoji;
-      if (!hasText && !hasResources && !hasEmoji) {
-        out.shouldSkip = true;
-      }
-      return out;
-    } catch {
-      const fallback: ParsedSentraResponse = {
-        textSegments,
-        resources: [],
-        replyMode,
-        replyToMessageId: replyToMessageId || undefined,
-        mentionsBySegment
-      };
-      if (emoji) fallback.emoji = emoji;
-      if (textSegments.length === 0) fallback.shouldSkip = true;
-      return fallback;
-    }
-  }
-
-  const responseContent = extractXMLTag(String(response ?? ''), 'sentra-response');
-  if (!responseContent) {
-    if (hasSentraTag) {
-      // 存在 <sentra-response> 标签但内容为空：视为“本轮选择保持沉默”，由上层跳过发送
-      logger.warn('检测到空的 <sentra-response> 块，将跳过发送');
-      return { textSegments: [], resources: [], replyMode: 'none', mentions: [], shouldSkip: true };
-    }
-
-    logger.warn('未找到 <sentra-response> 块，将跳过发送');
-    return { textSegments: [], resources: [], replyMode: 'none', mentions: [], shouldSkip: true };
-  }
-
-  let targetGroupId = null;
-  let targetUserId = null;
-  try {
-    const gid = unescapeXml((extractXMLTag(responseContent, 'group_id') || '').trim());
-    const uid = unescapeXml((extractXMLTag(responseContent, 'user_id') || '').trim());
-
-    const gidOk = gid && /^\d+$/.test(gid);
-    const uidOk = uid && /^\d+$/.test(uid);
-
-    if (gidOk && uidOk) {
-      logger.warn('检测到同时存在 <group_id> 和 <user_id>，将忽略目标并按当前会话发送');
-    } else if (gidOk) {
-      targetGroupId = gid;
-    } else if (uidOk) {
-      targetUserId = uid;
     }
   } catch { }
 
-  // 提取所有 <text1>, <text2>, <text3> ... 标签
-  const textSegments: string[] = [];
-  let index = 1;
-  while (true) {
-    const textTag = `text${index}`;
-    const textContent = extractXMLTag(responseContent, textTag);
-    if (!textContent) break;
+  return { message: [], textSegments: [], resources: [], shouldSkip: true };
+}
 
-    // 反转义 XML/HTML 实体（处理模型可能输出的转义字符）
-    const unescapedText = unescapeXml(textContent.trim());
-    textSegments.push(unescapedText);
-    //logger.debug(`提取 <${textTag}>: ${unescapedText.slice(0, 80)}`);
-    index++;
-  }
-
-  // 如果没有文本，直接跳过（保持空数组）
-  if (textSegments.length === 0) {
-    logger.warn('未找到任何文本段落，保持空数组');
-  }
-
-  logger.debug(`共提取 ${textSegments.length} 个文本段落`);
-
-  // 提取 <resources> 块
-  const resourcesBlock = extractXMLTag(responseContent, 'resources');
-  let resources: SentraResponseResource[] = [];
-
-  if (resourcesBlock && resourcesBlock.trim()) {
-    const resourceTags: string[] = extractAllXMLTags(resourcesBlock, 'resource');
-    logger.debug(`找到 ${resourceTags.length} 个 <resource> 标签`);
-
-    resources = resourceTags
-      .map((resourceXML: string, idx: number) => {
-        try {
-          const type = unescapeXml((extractXMLTag(resourceXML, 'type') || '').trim());
-          const source = unescapeXml((extractXMLTag(resourceXML, 'source') || '').trim());
-          const caption = unescapeXml((extractXMLTag(resourceXML, 'caption') || '').trim());
-          const segRaw = unescapeXml((extractXMLTag(resourceXML, 'segment_index') || '').trim());
-          const seg = segRaw && /^\d+$/.test(segRaw) ? safeInt(segRaw, -1) : null;
-
-          if (!type || !source) {
-            logger.warn(`resource[${idx}] 缺少必需字段`);
-            return null;
-          }
-
-          const resource: SentraResponseResource = { type, source };
-          if (caption) resource.caption = caption;
-          if (seg && Number.isFinite(seg) && seg > 0) resource.segment_index = seg;
-
-          return ResourceSchema.parse(resource);
-        } catch (e) {
-          const err = e instanceof Error ? e.message : String(e);
-          logger.warn(`resource[${idx}] 解析或验证失败: ${err}`);
-          return null;
-        }
-      })
-      .filter(Boolean) as SentraResponseResource[];
-
-    logger.success(`成功解析并验证 ${resources.length} 个 resources`);
-  } else {
-    logger.debug('无 <resources> 块或为空');
-  }
-
-  // 提取 <send> 指令（回复/艾特控制）
-  const sendBlock = extractXMLTag(responseContent, 'send');
-  let replyMode = 'none';
-  let replyToMessageId = null;
-  let mentionsBySegment: Record<string, Array<string | number>> = {};
+export function applySentraMessageSegmentMessageId(raw: unknown, messageId: unknown): string {
+  const input = typeof raw === 'string' ? raw.trim() : String(raw ?? '').trim();
+  const normalized = normalizeSegmentMessageId(messageId);
+  if (!input || !normalized) return input;
   try {
-    if (sendBlock && sendBlock.trim()) {
-      const rm = (extractXMLTag(sendBlock, 'reply_mode') || '').trim().toLowerCase();
-      if (rm === 'first' || rm === 'always') replyMode = rm; // 默认为 none
-
-      const rid = unescapeXml((extractXMLTag(sendBlock, 'reply_to_message_id') || '').trim());
-      if (rid && /^\d+$/.test(rid)) replyToMessageId = rid;
-
-      const mbsBlock = extractXMLTag(sendBlock, 'mentions_by_segment');
-      if (mbsBlock) {
-        const segFull: string[] = extractAllFullXMLTags(mbsBlock, 'segment') || [];
-        const map: Record<string, string[]> = {};
-        for (const sxml of segFull) {
-          const idx = unescapeXml((extractXmlAttrValue(sxml, 'index') || '').trim());
-          if (!idx || !/^\d+$/.test(idx)) continue;
-          const ids2: string[] = extractAllXMLTags(sxml, 'id') || [];
-          const parsedIds = ids2.map(v => unescapeXml((v || '').trim())).filter(Boolean);
-          if (parsedIds.length > 0) map[idx] = parsedIds;
-        }
-        mentionsBySegment = sanitizeMentionsBySegment(map, textSegments.length || 0);
-      }
+    const parsed = parseSentraMessage(input);
+    if (!parsed || parsed.shouldSkip || !Array.isArray(parsed.message) || parsed.message.length === 0) {
+      return input;
     }
-    } catch (e) {
-    const err = e instanceof Error ? e.message : String(e);
-    logger.warn(`<send> 解析失败: ${err}`);
-    mentionsBySegment = {};
+    const packet: SentraMessagePacket = {
+      message_id: normalized,
+      message: parsed.message
+    };
+    if (parsed.chat_type) packet.chat_type = parsed.chat_type;
+    if (parsed.group_id) packet.group_id = parsed.group_id;
+    if (parsed.user_id) packet.user_id = parsed.user_id;
+    if (parsed.sender_id) packet.sender_id = parsed.sender_id;
+    if (parsed.sender_name) packet.sender_name = parsed.sender_name;
+    return buildSentraMessageBlock(packet);
+  } catch {
+    return input;
   }
+}
 
-  // 提取 <emoji> 标签（可选，最多一个）
-  const emojiBlock = extractXMLTag(responseContent, 'emoji');
-  let emoji: SentraResponseEmoji | null = null;
-
-  if (emojiBlock && emojiBlock.trim()) {
-    try {
-      const source = unescapeXml((extractXMLTag(emojiBlock, 'source') || '').trim());
-      const caption = unescapeXml((extractXMLTag(emojiBlock, 'caption') || '').trim());
-      const segRaw = unescapeXml((extractXMLTag(emojiBlock, 'segment_index') || '').trim());
-      const seg = segRaw && /^\d+$/.test(segRaw) ? safeInt(segRaw, -1) : null;
-
-      if (source) {
-        emoji = { source };
-        if (caption) emoji.caption = caption;
-        if (seg && Number.isFinite(seg) && seg > 0) emoji.segment_index = seg;
-        logger.debug(`找到 <emoji> 标签: ${source.slice(0, 60)}`);
-      } else {
-        logger.warn('<emoji> 标签缺少 <source> 字段');
-      }
-    } catch (e) {
-      const err = e instanceof Error ? e.message : String(e);
-      logger.warn(`<emoji> 解析失败: ${err}`);
-    }
+export function applySentraMessageSegmentMessageIds(
+  raw: unknown,
+  entries: Array<{ segmentIndex?: number; messageId?: string | number | null }> | null | undefined
+): string {
+  const input = typeof raw === 'string' ? raw.trim() : String(raw ?? '').trim();
+  if (!input) return input;
+  const list = Array.isArray(entries) ? entries : [];
+  if (list.length === 0) return input;
+  const mapping = new Map<number, string>();
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const idxRaw = Number((item as { segmentIndex?: unknown }).segmentIndex);
+    if (!Number.isFinite(idxRaw) || idxRaw <= 0) continue;
+    const idx = Math.floor(idxRaw);
+    const id = normalizeSegmentMessageId((item as { messageId?: unknown }).messageId);
+    if (!id) continue;
+    mapping.set(idx, id);
   }
-
-  // 最终验证整体结构
+  if (mapping.size === 0) return input;
   try {
-    const validated = SentraResponseSchema.parse({
-      textSegments,
-      resources,
-      group_id: targetGroupId || undefined,
-      user_id: targetUserId || undefined,
-      replyMode,
-      replyToMessageId: replyToMessageId || undefined,
-      mentionsBySegment
+    const parsed = parseSentraMessage(input);
+    if (!parsed || parsed.shouldSkip || !Array.isArray(parsed.message) || parsed.message.length === 0) {
+      return input;
+    }
+    const nextMessage = parsed.message.map((seg, i) => {
+      const segmentIndex = i + 1;
+      const mapped = mapping.get(segmentIndex);
+      if (!mapped) return seg;
+      const data = seg && seg.data && typeof seg.data === 'object'
+        ? { ...seg.data, message_id: mapped }
+        : { message_id: mapped };
+      return { ...seg, data };
     });
-    //logger.success('协议验证通过');
-    //logger.debug(`textSegments: ${validated.textSegments.length} 段`);
-    //logger.debug(`resources: ${validated.resources.length} 个`);
-    const out = validated as any as ParsedSentraResponse;
-    if (emoji) out.emoji = emoji;
 
-    // 如果既没有有效文本、也没有资源、也没有 emoji，则标记为 shouldSkip，供上层逻辑跳过发送
-    const hasText = Array.isArray(validated.textSegments)
-      && validated.textSegments.some((t) => (t || '').trim());
-    const hasResources = Array.isArray(out.resources) && out.resources.length > 0;
-    const hasEmoji = !!out.emoji;
-
-    if (!hasText && !hasResources && !hasEmoji) {
-      out.shouldSkip = true;
-    }
-
-    return out;
-  } catch (e) {
-    const err = e as { errors?: unknown };
-    logger.error('协议验证失败', err && typeof err === 'object' && 'errors' in err ? err.errors : err);
-    const hasTag = typeof response === 'string' && response.includes('<sentra-response>');
-    let fallback: ParsedSentraResponse;
-
-    if (textSegments.length === 0) {
-      // 解析/验证失败且没有任何有效文本：视为“本轮保持沉默”，由上层跳过发送
-      if (hasTag) {
-        logger.warn('协议验证失败且 <sentra-response> 中没有有效内容，将跳过发送');
-      } else {
-        logger.warn('协议验证失败且缺少 <sentra-response>，将跳过发送');
-      }
-      fallback = { textSegments: [], resources: [], replyMode, replyToMessageId: replyToMessageId || undefined, mentionsBySegment, shouldSkip: true };
-    } else {
-      // 保留已提取的文本段落，但不回退为“原文整段发送”
-      fallback = { textSegments, resources: [], replyMode, replyToMessageId: replyToMessageId || undefined, mentionsBySegment };
-    }
-
-    if (emoji) fallback.emoji = emoji;  // 即使验证失败也保留 emoji
-    return fallback;
+    const packet: SentraMessagePacket = {
+      message: nextMessage
+    };
+    if (parsed.chat_type) packet.chat_type = parsed.chat_type;
+    if (parsed.group_id) packet.group_id = parsed.group_id;
+    if (parsed.user_id) packet.user_id = parsed.user_id;
+    if (parsed.sender_id) packet.sender_id = parsed.sender_id;
+    if (parsed.sender_name) packet.sender_name = parsed.sender_name;
+    return buildSentraMessageBlock(packet);
+  } catch {
+    return input;
   }
 }
 
 /**
- * 转换历史对话为 MCP FC 协议格式
- * 从 user 消息中提取 <sentra-result>，转换为对应的 <sentra-tools> assistant 消息
+ * 杞崲鍘嗗彶瀵硅瘽涓?MCP FC 鍗忚鏍煎紡
+ * 浠?user 娑堟伅涓彁鍙?<sentra-result>锛岃浆鎹负瀵瑰簲鐨?<sentra-tools> assistant 娑堟伅
  * 
- * @param {Array} historyConversations - 原始历史对话数组 [{ role, content }]
- * @returns {Array} 转换后的对话数组（不包含 system）
+ * @param {Array} historyConversations - 鍘熷鍘嗗彶瀵硅瘽鏁扮粍 [{ role, content }]
+ * @returns {Array} 杞崲鍚庣殑瀵硅瘽鏁扮粍锛堜笉鍖呭惈 system锛?
  */
 export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): ChatMessage[] {
   const mcpConversation: ChatMessage[] = [];
@@ -1081,23 +1250,50 @@ export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): 
 
   let bufferedTools = '';
 
-  const pushStandardNoToolPair = (userMsg: ChatMessage) => {
-    const pendingMessages = extractXMLTag(userMsg.content, 'sentra-pending-messages');
-    const uq = extractXMLTag(userMsg.content, 'sentra-user-question') || '';
+  const normalizeTimestampMs = (raw: unknown): number => {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    if (n < 1e11) return Math.floor(n * 1000);
+    if (n > 1e15) return Math.floor(n / 1000);
+    return Math.floor(n);
+  };
 
-    if (uq) {
-      let userContent = '';
-      if (pendingMessages) {
-        userContent += `<sentra-pending-messages>\n${pendingMessages}\n</sentra-pending-messages>\n\n`;
+  const pushWithTimestamp = (role: 'user' | 'assistant', content: unknown, timestampRaw: unknown) => {
+    const text = typeof content === 'string' ? content : String(content ?? '');
+    const row = { role, content: text } as ChatMessage & { timestamp?: number };
+    const ts = normalizeTimestampMs(timestampRaw);
+    if (ts > 0) row.timestamp = ts;
+    mcpConversation.push(row);
+  };
+
+  const extractReasonFromSentraInput = (content: string): string => {
+    const src = typeof content === 'string' ? content : '';
+    if (!src) return '';
+    const inputFull = extractFullXMLTag(src, 'sentra-input') || src;
+    try {
+      const doc = getXmlParser().parse(`<root>${inputFull}</root>`);
+      const inputNode = doc?.root?.['sentra-input'];
+      const current = inputNode?.current_messages;
+      const currentMessage = current?.['sentra-message'] || current?.sentra_message || current;
+      const segments = normalizeToArray(currentMessage?.message?.segment);
+      for (const seg of segments) {
+        const type = String(getTextNode(seg?.type) || '').trim().toLowerCase();
+        if (type !== 'text') continue;
+        const text = String(getTextNode(seg?.data?.text) || '').trim();
+        if (text) return text;
       }
-      userContent += `<sentra-user-question>\n${uq}\n</sentra-user-question>`;
-      mcpConversation.push({ role: 'user', content: userContent });
-    } else {
-      mcpConversation.push(userMsg);
-    }
+    } catch { }
+    const currentXml = extractXMLTag(inputFull, 'current_messages') || '';
+    const fallback = String(extractXMLTag(currentXml, 'text') || extractXMLTag(inputFull, 'text') || '').trim();
+    return fallback;
+  };
 
-    let reasonText = extractXMLTag(uq, 'summary') || extractXMLTag(uq, 'text') || '';
-    reasonText = (reasonText || '').trim();
+  const pushStandardNoToolPair = (userMsg: ChatMessage) => {
+    const userContent = typeof userMsg.content === 'string' ? userMsg.content : '';
+    const ts = normalizeTimestampMs((userMsg as unknown as { timestamp?: unknown })?.timestamp);
+    pushWithTimestamp('user', userContent, ts);
+
+    let reasonText = extractReasonFromSentraInput(userContent).trim();
     if (!reasonText) reasonText = 'No tool required for this message.';
 
     const toolsXML = [
@@ -1122,7 +1318,7 @@ export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): 
       }
     };
     const resultXML = buildSentraResultBlock(ev);
-    mcpConversation.push({ role: 'assistant', content: `${toolsXML}\n\n${resultXML}` });
+    pushWithTimestamp('assistant', `${toolsXML}\n\n${resultXML}`, ts);
   };
 
   const addInvocation = (
@@ -1242,6 +1438,7 @@ export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): 
 
   for (const msg of historyConversations) {
     if (!msg || typeof msg !== 'object') continue;
+    const sourceTimestamp = normalizeTimestampMs((msg as unknown as { timestamp?: unknown })?.timestamp);
     if (msg.role === 'system') {
       skippedCount++;
       continue;
@@ -1249,8 +1446,8 @@ export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): 
 
     const content = typeof msg.content === 'string' ? msg.content : '';
 
-    // Skip assistant natural language responses in MCP context
-    if (msg.role === 'assistant' && content.includes('<sentra-response>')) {
+    // Skip assistant natural language responses in MCP context.
+    if (msg.role === 'assistant' && content.includes('<sentra-message>')) {
       skippedCount++;
       continue;
     }
@@ -1262,19 +1459,20 @@ export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): 
     }
 
     if (msg.role === 'user') {
-      // Legacy combined (result embedded in user message)
-      const hasLegacyResults = content.includes('<sentra-result') || content.includes('<sentra-result-group');
-      if (hasLegacyResults) {
-        const pendingMessages = extractXMLTag(content, 'sentra-pending-messages');
-        const userQuestion = extractXMLTag(content, 'sentra-user-question');
+      const hasInput = content.includes('<sentra-input>');
+      const hasResult = content.includes('<sentra-result') || content.includes('<sentra-result-group');
 
-        if (userQuestion) {
-          let userContent = '';
-          if (pendingMessages) {
-            userContent += `<sentra-pending-messages>\n${pendingMessages}\n</sentra-pending-messages>\n\n`;
-          }
-          userContent += `<sentra-user-question>\n${userQuestion}\n</sentra-user-question>`;
-          mcpConversation.push({ role: 'user', content: userContent });
+      // User context-only turn (<sentra-input>)
+      if (hasInput && !hasResult) {
+        bufferedTools = '';
+        pushWithTimestamp('user', content, sourceTimestamp);
+        continue;
+      }
+
+      // Result callback turn (can be results-only, or input+results in same user message)
+      if (hasResult) {
+        if (hasInput) {
+          pushWithTimestamp('user', content, sourceTimestamp);
         }
 
         let invocations: ToolInvocationArgsContent[] = [];
@@ -1288,41 +1486,23 @@ export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): 
           resultBlocksFull = [];
         }
 
-        let combined = '';
-        if (invocations.length > 0) {
-          combined = buildSentraToolsBatch(invocations);
-          convertedCount += invocations.length;
-        }
-        if (resultBlocksFull.length > 0) {
-          const resultsXML = resultBlocksFull.join('\n\n');
-          combined = combined ? `${combined}\n\n${resultsXML}` : resultsXML;
-        }
-        if (combined) {
-          mcpConversation.push({ role: 'assistant', content: combined });
-        }
-
-        bufferedTools = '';
-        continue;
-      }
-
-      // New format user base context: contains <sentra-user-question> but no <sentra-result>
-      if (content.includes('<sentra-user-question>')) {
-        bufferedTools = '';
-        mcpConversation.push({ role: 'user', content });
-        continue;
-      }
-
-      // New format user results-only message
-      const hasResultOnly = content.includes('<sentra-result') || content.includes('<sentra-result-group');
-      if (hasResultOnly) {
         const groupFullBlocks = extractAllFullXMLTags(content, 'sentra-result-group') || [];
         const singlesFull = extractAllFullXMLTags(content, 'sentra-result') || [];
-        const resultBlocksFull = groupFullBlocks.length > 0 ? groupFullBlocks : singlesFull;
-        const resultsXML = resultBlocksFull.length > 0 ? resultBlocksFull.join('\n\n') : content;
-        const combined = bufferedTools ? `${bufferedTools}\n\n${resultsXML}` : resultsXML;
-        mcpConversation.push({ role: 'assistant', content: combined });
+        const canonicalResultBlocks = resultBlocksFull.length > 0
+          ? resultBlocksFull
+          : (groupFullBlocks.length > 0 ? groupFullBlocks : singlesFull);
+        const resultsXML = canonicalResultBlocks.length > 0 ? canonicalResultBlocks.join('\n\n') : content;
+
+        let toolsXML = bufferedTools;
+        if (!toolsXML && invocations.length > 0) {
+          toolsXML = buildSentraToolsBatch(invocations);
+          convertedCount += invocations.length;
+        }
+
+        const combined = toolsXML ? `${toolsXML}\n\n${resultsXML}` : resultsXML;
+        pushWithTimestamp('assistant', combined, sourceTimestamp);
         bufferedTools = '';
-        convertedCount++;
+        if (invocations.length === 0) convertedCount++;
         continue;
       }
 
@@ -1346,9 +1526,9 @@ export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): 
       : null;
     if (last && last.role === 'user') {
       const c = typeof last.content === 'string' ? last.content : '';
-      const hasUq = c.includes('<sentra-user-question>');
+      const hasInput = c.includes('<sentra-input>');
       const hasRes = c.includes('<sentra-result') || c.includes('<sentra-result-group');
-      if (hasUq && !hasRes) {
+      if (hasInput && !hasRes) {
         const lastOut = mcpConversation.length ? mcpConversation[mcpConversation.length - 1] : null;
         if (!lastOut || lastOut.role !== 'assistant') {
           pushStandardNoToolPair(last);
@@ -1357,9 +1537,7 @@ export function convertHistoryToMCPFormat(historyConversations: ChatMessage[]): 
     }
   } catch { }
 
-  logger.debug(
-    `MCP格式转换: ${historyConversations.length}条 → ${mcpConversation.length}条 (转换${convertedCount}个工具, 跳过${skippedCount}条)`
-  );
+  logger.debug(`MCP format converted: ${historyConversations.length} -> ${mcpConversation.length} (converted=${convertedCount}, skipped=${skippedCount})`);
   return mcpConversation;
 }
 
@@ -1369,12 +1547,22 @@ function inferScalarForParam(text: unknown): string | number | boolean | null {
   if (trimmed === 'true') return true;
   if (trimmed === 'false') return false;
   if (trimmed === 'null') return null;
+  if (/^-?\d+$/.test(trimmed)) {
+    try {
+      const bi = BigInt(trimmed);
+      const max = BigInt(Number.MAX_SAFE_INTEGER);
+      const min = BigInt(Number.MIN_SAFE_INTEGER);
+      if (bi > max || bi < min) {
+        return trimmed;
+      }
+    } catch { }
+  }
   const n = Number(trimmed);
   if (!Number.isNaN(n)) return n;
   return trimmed;
 }
 
-// (string|number|boolean|null|array|object) 渲染为 <parameter> 内部的 XML 行
+// (string|number|boolean|null|array|object) 娓叉煋涓?<parameter> 鍐呴儴鐨?XML 琛?
 function renderTypedValueLinesForParam(value: ParamValue, indentLevel = 3): string[] {
   const lines: string[] = [];
   const pad = '  '.repeat(indentLevel);
@@ -1434,12 +1622,12 @@ function renderTypedValueLinesForParam(value: ParamValue, indentLevel = 3): stri
     return lines;
   }
 
-  // 其他类型统一按字符串处理
+  // 鍏朵粬绫诲瀷缁熶竴鎸夊瓧绗︿覆澶勭悊
   lines.push(`${pad}<string>${valueToXMLString(String(value), 0)}</string>`);
   return lines;
 }
 
-// 构建单个 typed <parameter> 块
+// 鏋勫缓鍗曚釜 typed <parameter> 鍧?
 function buildTypedParameterBlock(name: string, jsValue: ParamValue): string[] {
   const safeName = escapeXmlAttr(String(name));
   const lines = [];
@@ -1489,11 +1677,11 @@ export function buildSentraToolsBlockFromInvocations(invocations: ToolInvocation
 }
 
 /**
- * 从 <args> 内容构建 <sentra-tools> 块（MCP FC 标准格式）
+ * 浠?<args> 鍐呭鏋勫缓 <sentra-tools> 鍧楋紙MCP FC 鏍囧噯鏍煎紡锛?
  * 
- * @param {string} aiName - 工具名称
- * @param {string} argsContent - <args> 标签内的内容
- * @returns {string} <sentra-tools> XML 字符串
+ * @param {string} aiName - 宸ュ叿鍚嶇О
+ * @param {string} argsContent - <args> 鏍囩鍐呯殑鍐呭
+ * @returns {string} <sentra-tools> XML 瀛楃涓?
  */
 function buildSentraToolsFromArgs(aiName: string, argsContent: string): string {
   const xmlLines = ['<sentra-tools>'];
@@ -1513,7 +1701,7 @@ function buildSentraToolsFromArgs(aiName: string, argsContent: string): string {
   return xmlLines.join('\n');
 }
 
-// 批量构建 <sentra-tools>，包含多个 <invoke>
+// 鎵归噺鏋勫缓 <sentra-tools>锛屽寘鍚涓?<invoke>
 function buildSentraToolsBatch(items: ToolInvocationArgsContent[]): string {
   const xmlLines = ['<sentra-tools>'];
   for (const { aiName, argsContent } of items) {
@@ -1531,3 +1719,8 @@ function buildSentraToolsBatch(items: ToolInvocationArgsContent[]): string {
   xmlLines.push('</sentra-tools>');
   return xmlLines.join('\n');
 }
+
+
+
+
+

@@ -14,11 +14,25 @@
           "stepId": {
             "type": "string"
           },
+          "executor": {
+            "type": "string",
+            "enum": ["mcp", "sandbox"],
+            "description": "Execution backend for this step. Use 'mcp' for MCP plugins and 'sandbox' for runtime terminal actions."
+          },
+          "actionRef": {
+            "type": "string",
+            "description": "Optional canonical action identifier. For sandbox terminal actions, use 'terminal.run'."
+          },
           "aiName": { "type": "string" },
           "reason": { 
             "type": "array",
             "items": { "type": "string" },
             "description": "调用该工具的理由（数组格式）。每项应简洁描述使用该工具的目的和必要性，不要包含具体的结果预测或数据猜测。示例：[\"分析图片内容\", \"识别情绪特征\"] 而非 [\"获取三个表情ID\"]。重点说明为什么需要调用，而非预测会得到什么结果。"
+          },
+          "successCriteria": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Step-level success rules. Prefer inheriting from tool skill doc and only override when this step needs stricter criteria."
           },
           "nextStep": { 
             "type": "string",
@@ -27,7 +41,11 @@
           "draftArgs": { "type": "object", "additionalProperties": true },
           "dependsOnStepIds": { "type": "array", "items": { "type": "string" } }
         },
-        "required": ["stepId", "aiName", "reason", "nextStep", "draftArgs"]
+        "required": ["stepId", "reason", "nextStep", "draftArgs"],
+        "anyOf": [
+          { "required": ["aiName"] },
+          { "required": ["executor", "actionRef"] }
+        ]
       }
     }
   },

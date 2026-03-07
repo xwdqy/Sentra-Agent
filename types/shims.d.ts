@@ -40,6 +40,7 @@ declare module 'sentra-mcp' {
     sendAndWaitResult?: (payload: Record<string, unknown>) => Promise<unknown>;
     stream: (params: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>;
     streamToolsXml?: (params: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>;
+    runTerminalTask?: (input: string | Record<string, unknown>, options?: Record<string, unknown>) => Promise<unknown>;
   }
   export default SentraMcpSDK;
 }

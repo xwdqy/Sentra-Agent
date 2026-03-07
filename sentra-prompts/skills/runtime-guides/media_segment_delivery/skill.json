@@ -1,0 +1,46 @@
+{
+  "id": "media_segment_delivery",
+  "uuid": "4fd3d55a-515f-4d90-a82c-08028de31d8d",
+  "title": "Media Segment Delivery",
+  "summary": "Maps artifacts and media intents into native image/file/video/record segments with delivery-safe rules.",
+  "selection": "auto",
+  "runtimeDynamic": true,
+  "when": [
+    "full",
+    "response_only",
+    "router"
+  ],
+  "priority": 210,
+  "deps": [
+    "message_segment_contract"
+  ],
+  "tags": [
+    "protocol",
+    "media_delivery",
+    "response",
+    "qq"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "image",
+      "file",
+      "video",
+      "record",
+      "audio",
+      "artifact",
+      "media",
+      "outputPath",
+      "图片",
+      "文件",
+      "视频",
+      "语音",
+      "音频",
+      "附件",
+      "素材"
+    ],
+    "regex": [
+      "/(image|file|video|record|audio|artifact|media|output\\s*path|图片|文件|视频|语音|音频|附件|素材)/i"
+    ]
+  }
+}

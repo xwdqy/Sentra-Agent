@@ -1,0 +1,45 @@
+{
+  "id": "result_round_bridge",
+  "uuid": "e95f6767-87ad-41f9-ac79-d91de0f65e9b",
+  "title": "Result Round Bridge",
+  "summary": "Bridges sentra-result and sentra-result-group payloads into user-visible progress/final message segments.",
+  "selection": "auto",
+  "runtimeDynamic": true,
+  "when": [
+    "full",
+    "response_only"
+  ],
+  "priority": 180,
+  "deps": [
+    "message_segment_contract",
+    "media_segment_delivery"
+  ],
+  "tags": [
+    "protocol",
+    "result_round",
+    "response",
+    "tool_bridge"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "sentra-result",
+      "sentra-result-group",
+      "result-group",
+      "result round",
+      "tool_result",
+      "tool_result_group",
+      "progress",
+      "final",
+      "realtime_delivery",
+      "结果回合",
+      "结果组",
+      "进度",
+      "最终",
+      "工具结果"
+    ],
+    "regex": [
+      "/(sentra-result(?:-group)?|result-group|result\\s*round|tool_result(?:_group)?|progress|final|realtime_delivery|结果回合|结果组|进度|最终|工具结果)/i"
+    ]
+  }
+}

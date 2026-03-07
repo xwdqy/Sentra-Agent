@@ -3,47 +3,95 @@
   "properties": {
     "success": {
       "type": "boolean",
-      "description": "任务整体是否成功完成。如果所有关键步骤都成功执行且达到预期目标，则为 true；如果有关键步骤失败或未达成目标，则为 false。"
+      "description": "Whether the overall task is successful."
     },
     "summary": {
       "type": "string",
-      "description": "最终总结内容。必须是结构化、清晰的中文总结，包含：1) 任务目标；2) 执行步骤（列出关键步骤及结果，成功或失败）；3) 主要成果（如文件路径、数据结果等）；4) 遇到的问题或限制（如有）；5) 后续建议（可选）。禁止输出空字符串或无意义内容。",
-      "minLength": 10
+      "minLength": 10,
+      "description": "Human-readable final summary."
     },
     "failedSteps": {
       "type": "array",
-      "description": "失败的步骤列表。如果任务中有步骤失败，列出所有失败步骤的 stepId、工具名称和失败原因。如果所有步骤都成功，则为空数组 []。",
       "items": {
         "type": "object",
         "properties": {
-          "stepId": {
-            "type": "string",
-            "description": "稳定步骤ID（唯一身份标识，用于引用/排查）。格式示例：s_01J..."
-          },
-          "displayIndex": {
-            "type": "integer",
-            "description": "展示用步骤序号（从 1 开始，仅用于人类/模型阅读）"
-          },
-          "aiName": {
-            "type": "string",
-            "description": "失败步骤使用的工具名称"
-          },
-          "reason": {
-            "type": "string",
-            "description": "失败的具体原因（如错误信息、缺少权限、参数错误等）"
-          }
+          "stepId": { "type": "string" },
+          "displayIndex": { "type": "integer" },
+          "aiName": { "type": "string" },
+          "reason": { "type": "string" }
         },
-        "required": ["stepId", "reason"]
+        "required": ["stepId", "reason"],
+        "additionalProperties": true
       }
     },
     "highlights": {
       "type": "array",
-      "description": "关键成果列表（可选）。列出任务的主要交付成果，如生成的文件路径、重要数据、分析结论等。",
+      "items": { "type": "string" }
+    },
+    "eventTimeline": {
+      "type": "array",
+      "description": "Key execution events in chronological order.",
       "items": {
-        "type": "string"
+        "type": "object",
+        "properties": {
+          "index": { "type": "integer" },
+          "stepId": { "type": "string" },
+          "aiName": { "type": "string" },
+          "status": { "type": "string" },
+          "event": { "type": "string" }
+        },
+        "required": ["event"],
+        "additionalProperties": true
       }
+    },
+    "issues": {
+      "type": "array",
+      "description": "Execution issues, root causes, and impact.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stepId": { "type": "string" },
+          "aiName": { "type": "string" },
+          "severity": { "type": "string" },
+          "reason": { "type": "string" },
+          "impact": { "type": "string" }
+        },
+        "required": ["reason"],
+        "additionalProperties": true
+      }
+    },
+    "completion": {
+      "type": "object",
+      "description": "Overall completion verdict.",
+      "properties": {
+        "status": { "type": "string" },
+        "goalMet": { "type": "boolean" },
+        "completionLevel": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "unresolvedItems": {
+      "type": "array",
+      "description": "Unresolved items or missing goals.",
+      "items": { "type": "string" }
+    },
+    "nextActions": {
+      "type": "array",
+      "description": "Concrete suggested next actions.",
+      "items": { "type": "string" }
+    },
+    "toolEvidence": {
+      "type": "array",
+      "description": "Tool evidence lines used in summary.",
+      "items": { "type": "string" }
+    },
+    "feedbackEvidence": {
+      "type": "array",
+      "description": "Bot feedback evidence lines used in summary.",
+      "items": { "type": "string" }
     }
   },
-  "required": ["success", "summary"],
+  "required": ["success", "summary", "toolEvidence", "feedbackEvidence"],
   "additionalProperties": false
 }

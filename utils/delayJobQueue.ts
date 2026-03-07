@@ -1,19 +1,16 @@
 import { createLogger } from './logger.js';
+import { tDelayJobQueue } from './i18n/delayJobQueueCatalog.js';
+import type { DelayDueTriggerJob } from './delayRuntimeTypes.js';
 
 const logger = createLogger('DelayJobQueue');
 
 // 内存级延迟任务队列：
-// - 所有任务只保存在当前进程内存中；
-// - 进程重启 / 崩溃后自动丢弃，不再尝试补发；
-// - 与主任务队列、持久化存储彻底解耦。
+// 1) 任务仅保存在当前进程内存。
+// 2) 进程重启/崩溃后任务会丢失，不做补发。
+// 3) 与主任务持久化存储解耦。
 
-type DelayJob = {
-  jobId?: string | number;
-  aiName?: string;
-  createdAt?: number;
-  fireAt?: number;
+type DelayJob = DelayDueTriggerJob & {
   maxLagMs?: number;
-  [key: string]: unknown;
 };
 
 type DelayWorkerOptions = {
@@ -30,7 +27,7 @@ export async function loadAllDelayedJobs(): Promise<DelayJob[]> {
 
 export async function enqueueDelayedJob(job: DelayJob): Promise<DelayJob> {
   if (!job || !job.jobId) {
-    throw new Error('enqueueDelayedJob 需要包含 jobId 的 job 对象');
+    throw new Error('enqueueDelayedJob requires non-empty jobId');
   }
   const now = Date.now();
   const createdAt = Number.isFinite(Number(job.createdAt)) ? Number(job.createdAt) : now;
@@ -39,14 +36,14 @@ export async function enqueueDelayedJob(job: DelayJob): Promise<DelayJob> {
     ...job,
     jobId: String(job.jobId),
     createdAt,
-    fireAt,
+    fireAt
   };
 
   jobs.set(payload.jobId, payload);
-  logger.info('DelayJobQueue: 入队延迟任务', {
+  logger.info(tDelayJobQueue('enqueue'), {
     jobId: payload.jobId,
     aiName: payload.aiName || '',
-    fireAt: payload.fireAt,
+    fireAt: payload.fireAt
   });
 
   return payload;
@@ -56,22 +53,22 @@ async function removeJob(jobId: string | number): Promise<void> {
   if (!jobId) return;
   const jid = String(jobId);
   if (jobs.delete(jid)) {
-    logger.debug('DelayJobQueue: 删除延迟任务', { jobId: jid });
+    logger.debug(tDelayJobQueue('removed'), { jobId: jid });
   }
 }
 
 const workerState = {
-  started: false,
+  started: false
 };
 
 export function startDelayJobWorker({ intervalMs = 1000, runJob, maxLagMs }: DelayWorkerOptions = {}) {
   if (workerState.started) return;
   if (typeof runJob !== 'function') {
-    logger.warn('DelayJobQueue: 未提供 runJob 回调，跳过启动 worker');
+    logger.warn(tDelayJobQueue('worker_start_skipped_missing_run_job'));
     return;
   }
   workerState.started = true;
-  const running = new Set();
+  const running = new Set<string>();
 
   const defaultMaxLagMs = Number.isFinite(Number(maxLagMs)) && Number(maxLagMs) >= 0
     ? Number(maxLagMs)
@@ -92,20 +89,20 @@ export function startDelayJobWorker({ intervalMs = 1000, runJob, maxLagMs }: Del
           continue;
         }
 
-        // 丢弃严重过期的任务（例如进程长时间挂起后恢复），而不是补发
+        // 对严重过期任务直接丢弃（例如进程长时间挂起后恢复）。
         const lagMs = now - fireAt;
         const jobMaxLagMs = Number(job.maxLagMs);
         const limit = Number.isFinite(jobMaxLagMs) && jobMaxLagMs >= 0
           ? jobMaxLagMs
           : defaultMaxLagMs;
         if (limit > 0 && lagMs > limit) {
-          logger.info('DelayJobQueue: 丢弃过期延迟任务', {
+          logger.info(tDelayJobQueue('drop_overdue_job'), {
             jobId: jid,
             aiName: job.aiName || '',
             fireAt,
             now,
             lagMs,
-            maxLagMs: limit,
+            maxLagMs: limit
           });
           await removeJob(jid);
           continue;
@@ -116,16 +113,16 @@ export function startDelayJobWorker({ intervalMs = 1000, runJob, maxLagMs }: Del
         running.add(jid);
         (async () => {
           try {
-            logger.info('DelayJobQueue: 触发延迟任务', {
+            logger.info(tDelayJobQueue('trigger'), {
               jobId: jid,
               aiName: job.aiName || '',
-              fireAt,
+              fireAt
             });
             await runJob(job);
           } catch (e) {
-            logger.warn('DelayJobQueue: 运行延迟任务失败', {
+            logger.warn(tDelayJobQueue('run_job_failed'), {
               jobId: jid,
-              err: String(e),
+              err: String(e)
             });
           } finally {
             await removeJob(jid);
@@ -134,7 +131,7 @@ export function startDelayJobWorker({ intervalMs = 1000, runJob, maxLagMs }: Del
         })();
       }
     } catch (e) {
-      logger.warn('DelayJobQueue: worker tick 异常', { err: String(e) });
+      logger.warn(tDelayJobQueue('worker_tick_failed'), { err: String(e) });
     } finally {
       setTimeout(tick, Math.max(200, intervalMs || 1000));
     }

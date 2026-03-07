@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "properties": {
+    "decision": {
+      "type": "string",
+      "enum": ["pass", "retry_same", "retry_regen", "replan", "fail_fast"],
+      "description": "Step-level action decision."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Concrete reason grounded in tool evidence and success criteria."
+    },
+    "failureClass": {
+      "type": "string",
+      "enum": ["transient", "arg_schema", "tool_failure", "permission", "cancelled", "unsupported", "unknown"],
+      "description": "Failure category when decision is not pass."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence score for this mini evaluation."
+    },
+    "failedCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Explicit failed success-criteria lines."
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Short evidence lines supporting the decision."
+    },
+    "retryHint": {
+      "type": "string",
+      "description": "Optional concise retry hint."
+    }
+  },
+  "required": ["decision", "reason"],
+  "additionalProperties": true
+}

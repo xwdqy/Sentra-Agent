@@ -1,45 +1,46 @@
 # document_read
 
-## 功能
+## Capability
 
-- 读取并解析各种文档和代码文件
-- 支持文档：DOCX、PDF、XLSX、CSV、TXT、JSON、XML、Markdown、HTML
-- 支持代码：Python、JavaScript、TypeScript、Go、Java、C/C++
-- 支持在线链接（http/https）或本地绝对路径
-- 自动检测编码（UTF-8、GBK 等）并转换为纯文本
+- Read and parse documents/code files from local absolute paths or URLs.
+- Supports single input and batch input.
 
-## 实际影响
+## Real-world impact
 
-- 读取文件：不修改本地文件
-- 外部网络请求：访问在线文档链接
+- Reads local files.
+- May fetch remote files over network.
 
-## 使用场景
+## When to use
 
-- 用户要"读/解析/提取"某个文件
-- 能拿到 file/files（本地绝对路径或 URL）
+- User asks to read/parse file content.
 
-## 禁止场景
+## When not to use
 
-- 拿不到文件路径（不要猜）
-- 不支持的文件格式
+- No valid file/url input.
+- Task needs write/mutation behavior.
 
-## 输入
+## Input
 
-- 必填其一：
-  - `file`（单个文件）
-  - `files`（批量数组）
-- 可选：
-  - `encoding`：文本编码（auto 检测失败时指定，如 gbk、shift_jis）
+- One of:
+  - `file`
+  - `files`
+- Optional:
+  - `encoding`
 
-## 输出
+## Output
 
-- 结构化数据：`{ contents: [{ file, content, encoding }] }`
-- 内容为纯文本格式
+- Parsed file list and aggregate counters.
 
-## 失败模式
+## Failure modes
 
-- `INVALID`：缺 file/files
-- `FILE_NOT_FOUND`：文件不存在
-- `INVALID_PATH`：路径不是绝对路径
-- `PARSE_FAILED`：文件解析失败（不支持的格式/损坏）
-- `FETCH_FAILED`：在线链接访问失败
+- `INVALID`
+- `ALL_FAILED`
+- parser/network specific errors per file item
+
+## Success Criteria
+
+- Success requires `result.success === true` and `result.code` in `OK|PARTIAL_SUCCESS`.
+- `result.data.files` must be a non-empty array.
+- `result.data.total`, `result.data.success`, and `result.data.failed` must be numeric and satisfy `success + failed == total`.
+- At least one `data.files[*]` item must include non-empty parsed `content`.
+- For `PARTIAL_SUCCESS`, failed items must carry failure evidence (`error`).

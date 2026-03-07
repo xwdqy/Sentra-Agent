@@ -1,42 +1,59 @@
 # bilibili_search
 
-## 功能
+## Capability
 
-- 搜索 B 站视频并下载到本地，或以自定义音乐卡片形式发送到 QQ 群聊/私聊
+- Search Bilibili videos and either download locally or send as music-card style payload.
+- Supports single keyword and batch keywords.
 
-## 实际影响
+## Real-world impact
 
-- 写本地文件：视频下载到 `artifacts/`，音乐卡片发送到 QQ
-- 外部网络请求：调用 B 站搜索接口
+- External network requests to Bilibili APIs.
+- May write downloaded files to `artifacts/`.
+- May send outbound WS messages when card mode is enabled.
 
-## 使用场景
+## When to use
 
-- 用户要"搜某视频/下某视频/发音乐卡片"
-- 能拿到关键词（keyword/keywords）
+- User asks to search/download/share Bilibili video results.
+- You can provide `keyword` or `keywords`.
 
-## 禁止场景
+## When not to use
 
-- 拿不到关键词（不要猜）
-- 缺少发送目标（user_id/group_id）且 send_as_music_card=true
+- No keyword is available.
+- Send target is missing while send mode is required.
 
-## 输入
+## Input
 
-- 必填其一：
-  - `keyword`（单个关键词）
-  - `keywords`（批量数组）
-- 可选：
-  - `pick`：选择 first 或 random（默认 first）
-  - `user_id` / `group_id`：发送目标
-  - `send_as_music_card`：是否发送音乐卡片
+- One of:
+  - `keyword`
+  - `keywords`
+- Optional:
+  - `pick`
+  - `send_as_music_card`
+  - `user_id` / `group_id`
 
-## 输出
+## Output
 
-- 下载模式：`{ files: [{ path_markdown, filename }] }`
-- 音乐卡片：发送到指定群/私聊
+- Single: video search result object with status and evidence fields.
+- Batch: `{ mode: "batch", results: [...] }`.
 
-## 失败模式
+## Failure modes
 
-- `INVALID`：缺 keyword/keywords
-- `NO_RESULT`：搜不到结果
-- `DOWNLOAD_FAILED`：有结果但下载失败
-- `ERR`：其他异常
+- `INVALID`
+- `TARGET_REQUIRED`
+- `NO_RESULT`
+- `NO_CID`
+- `NO_PLAYURL`
+- `SEND_FAILED`
+- `TIMEOUT`
+- `ERR`
+- `BILIBILI_SEARCH_FAILED`
+
+## Success Criteria
+
+- Single-run success requires `result.success === true`, `result.code === "OK"`, and `data.action === "bilibili_search"`.
+- Base evidence must include non-empty `data.keyword`, `data.bvid`, `data.url`, `data.title`, `data.status`, and `data.timestamp`.
+- `data.status` must be one of: `OK_MUSIC_CARD_SENT`, `OK_LINK_ONLY`, `OK_DOWNLOADED`.
+- If `data.status === "OK_DOWNLOADED"`, require `data.downloaded === true` and local artifact evidence in `data.path_markdown` or `data.video.path_markdown`.
+- If `data.status === "OK_LINK_ONLY"`, require `data.downloaded === false` and non-empty `data.notice`.
+- If `data.status === "OK_MUSIC_CARD_SENT"`, require `data.music_card_sent === true` and concrete send target evidence (`data.send_target`, `data.send_to`).
+- Batch success requires `result.data.mode === "batch"`, non-empty `result.data.results`, and at least one item with `success === true`.

@@ -1,6 +1,20 @@
 import { createLogger } from '../utils/logger.js';
-import { getEnvBool } from '../utils/envHotReloader.js';
-import type { ChatMessage } from '../src/types.js';
+import {
+  createDelayRuntimeSession,
+  getDelayRuntimeSessionSnapshot,
+  markDelayRuntimeSessionDueFired,
+  updateDelayRuntimeSession
+} from '../utils/delayRuntimeSessionStore.js';
+import {
+  type DelayReasonArgs,
+  type DelayReasonCode,
+  DELAY_REASON_CODE,
+  normalizeDelayReasonArgs,
+  normalizeDelayReasonCode
+} from '../utils/delayReasonCodes.js';
+import { DELAY_RUNTIME_KIND } from '../utils/delayRuntimeConstants.js';
+import type { DelayDueTriggerJob, DelayReplayToolResultEvent } from '../utils/delayRuntimeTypes.js';
+import { tDelayJobWorker } from '../utils/i18n/delayJobWorkerCatalog.js';
 
 const logger = createLogger('DelayJobWorker');
 
@@ -11,759 +25,436 @@ type BaseMessage = {
   text?: string;
   summary?: string;
   message_id?: string | number | null;
+  [key: string]: unknown;
 };
 
-type DelaySchedule = {
-  mode?: string;
-  text?: string;
-  targetISO?: string;
-  timezone?: string;
-};
-
-type DelayJob = {
-  aiName?: string;
-  jobId?: string | number;
-  runId?: string;
-  scheduleMode?: string;
-  schedule?: DelaySchedule;
-  plannedStepIndex?: number;
-  type?: string;
-  groupId?: string | number | null;
-  userId?: string | number | null;
-  reason?: string;
-  args?: Record<string, unknown>;
-  delayMs?: number;
-  retryDelayMs?: number;
-  contextForLlmProgress?: string;
-  contextForLlmCompletion?: string;
-  fireAt?: number;
-};
-
-type HistoryEntry = {
-  type?: string;
-  aiName?: string;
-  plannedStepIndex?: number | string;
-  ts?: number | string;
-  args?: Record<string, unknown>;
-};
-
-type ToolCallResult = {
-  success?: boolean;
-  code?: string;
-  error?: string;
-  data?: unknown;
-  provider?: string;
-};
-
-type ChatWithRetryResult = {
-  success: boolean;
-  response?: string | null;
-  noReply?: boolean;
-  reason?: string;
-  retries?: number;
-};
-
-type ChatWithRetryFn = (
-  conversations: ChatMessage[],
-  options: string | { model?: string; __sentraExpectedOutput?: string },
-  groupId?: string
-) => Promise<ChatWithRetryResult>;
-
-type SendAndWaitResultFn = (payload: Record<string, unknown>) => Promise<unknown>;
-type SdkSendAndWaitResultFn = {
-  (payload: Record<string, unknown>): Promise<unknown>;
-  (baseMsg: BaseMessage, reply: string, allowReply: boolean, options?: Record<string, unknown>): Promise<unknown>;
-};
-
-type HistoryStoreLike = {
-  list: (runId: string, start: number, end: number) => Promise<unknown>;
-};
-
-type HistoryManagerLike = {
-  getPendingMessagesContext: (groupIdKey: string, senderId?: string | null) => string;
-  startAssistantMessage: (groupIdKey: string) => Promise<string | number>;
-  cancelConversationPairById: (groupIdKey: string, pairId: string | number) => Promise<void>;
-  appendToAssistantMessage: (groupIdKey: string, reply: string, pairId: string | number) => Promise<void>;
-  finishConversationPair: (groupIdKey: string, pairId: string | number, userContent: string) => Promise<unknown>;
-  promoteScopedConversationsToShared: (groupIdKey: string, senderId: string) => Promise<void>;
-};
-
-type SdkLike = {
-  callTool: (params: { aiName: string; args?: Record<string, unknown>; context?: Record<string, unknown> }) => Promise<unknown>;
-  sendAndWaitResult?: SdkSendAndWaitResultFn;
-  stream?: (params: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>;
+type DelayJob = DelayDueTriggerJob & {
+  reasonCode?: DelayReasonCode | string;
+  reasonArgs?: DelayReasonArgs;
 };
 
 type DelayJobContext = {
-  HistoryStore: HistoryStoreLike;
-  loadMessageCache: (runId: string) => Promise<{ message?: BaseMessage } | null>;
-  enqueueDelayedJob: (job: DelayJob) => Promise<unknown>;
-  sdk: SdkLike;
-  historyManager: HistoryManagerLike;
-  buildSentraResultBlock: (ev: Record<string, unknown>) => string;
-  buildSentraUserQuestionBlock: (msg: BaseMessage) => string;
-  getDailyContextMemoryXml: (groupIdKey: string) => Promise<string>;
-  personaManager?: { formatPersonaForContext: (senderId: string) => string };
-  emo?: { userAnalytics: (senderId: string, options: { days: number }) => Promise<unknown> };
-  buildSentraEmoSection: (ua: unknown) => string;
-  WORLDBOOK_XML?: string;
-  AGENT_PRESET_XML?: string;
-  baseSystem?: string | ((requiredOutput: string) => Promise<unknown> | unknown);
-  CONTEXT_MEMORY_ENABLED?: boolean | (() => boolean);
-  MAIN_AI_MODEL?: string | (() => string);
-  triggerContextSummarizationIfNeeded: (payload: { groupId: string; chatType: string; userId: string }) => Promise<unknown>;
-  triggerPresetTeachingIfNeeded: (payload: {
-    groupId: string;
-    chatType: string;
-    userId: string;
-    userContent: string;
-    assistantContent: string;
-  }) => Promise<unknown>;
-  chatWithRetry: ChatWithRetryFn;
-  smartSend?: (
-    baseMsg: BaseMessage,
-    reply: string,
-    sendAndWaitResult: SendAndWaitResultFn,
-    allowReply: boolean,
-    options?: { hasTool?: boolean }
-  ) => Promise<unknown>;
-  sendAndWaitResult?: SendAndWaitResultFn;
-  randomUUID: () => string;
-  getActiveTaskCount?: (senderId?: string) => number;
-  triggerTaskCompletionAnalysis?: (payload: Record<string, unknown>) => Promise<unknown>;
-  agent?: unknown;
-  socialContextManager?: { getXml: () => Promise<string> } | null;
+  loadMessageCache?: (runId: string) => Promise<{ message?: BaseMessage } | null>;
+  dispatchToMainPipeline?: (msg: BaseMessage & Record<string, unknown>, taskId?: string | null) => Promise<void>;
+  dispatchRuntimeEvent?: (event: {
+    type: 'delay_due_triggered';
+    payload: Record<string, unknown>;
+  }) => Promise<void>;
+  loadDelayRuntimeSessionFromRuntimeStore?: (params: {
+    delaySessionId?: string;
+    runId?: string;
+    orchestratorRunId?: string;
+  }) => Promise<Record<string, unknown> | null>;
+  persistDelayRuntimeSessionToRuntimeStore?: (params: {
+    runId?: string;
+    orchestratorRunId?: string;
+    session: Record<string, unknown>;
+    eventType: string;
+  }) => Promise<void>;
+  randomUUID?: () => string;
+  [key: string]: unknown;
 };
 
-function normalizeReplyText(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (value == null) return '';
-  return String(value);
+type DelayRuntimeSessionFromStore = {
+  sessionId: string;
+  createdAt: number;
+  fireAt: number;
+  dueFiredAt: number;
+  completedAt: number;
+  runId: string;
+  type: string;
+  groupId: string;
+  userId: string;
+  senderId: string;
+  delayWhenText: string;
+  delayTargetISO: string;
+  reason: string;
+  reasonCode: string;
+  reasonArgs: DelayReasonArgs;
+  deferredResponseXml: string;
+  bufferedEvents: DelayReplayToolResultEvent[];
+  baseMessage: BaseMessage | null;
+  replayCursor: {
+    nextOffset: number;
+    totalEvents: number;
+    status: string;
+    lastReplayRunId: string;
+    updatedAt: number;
+  };
+  checkpointRunId: string;
+  orchestratorRunId: string;
+  parentRunId: string;
+  updatedAt: number;
+};
+
+function toFiniteInt(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function normalizeDelayRuntimeSessionFromStore(raw: unknown): DelayRuntimeSessionFromStore | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const src = raw as Record<string, unknown>;
+  const sessionId = String(src.sessionId || '').trim();
+  if (!sessionId) return null;
+  const bufferedEvents = normalizeDeferredToolEvents(src.bufferedEvents);
+  const reasonArgs = normalizeDelayReasonArgs(src.reasonArgs);
+  const baseMessage = (src.baseMessage && typeof src.baseMessage === 'object' && !Array.isArray(src.baseMessage))
+    ? { ...(src.baseMessage as Record<string, unknown>) } as BaseMessage
+    : null;
+  const replayCursorRaw = (src.replayCursor && typeof src.replayCursor === 'object' && !Array.isArray(src.replayCursor))
+    ? (src.replayCursor as Record<string, unknown>)
+    : {};
+  return {
+    sessionId,
+    createdAt: toFiniteInt(src.createdAt, 0),
+    fireAt: toFiniteInt(src.fireAt, 0),
+    dueFiredAt: toFiniteInt(src.dueFiredAt, 0),
+    completedAt: toFiniteInt(src.completedAt, 0),
+    runId: String(src.runId || '').trim(),
+    type: String(src.type || '').trim(),
+    groupId: String(src.groupId || '').trim(),
+    userId: String(src.userId || '').trim(),
+    senderId: String(src.senderId || '').trim(),
+    delayWhenText: String(src.delayWhenText || '').trim(),
+    delayTargetISO: String(src.delayTargetISO || '').trim(),
+    reason: String(src.reason || '').trim(),
+    reasonCode: String(src.reasonCode || '').trim(),
+    reasonArgs,
+    deferredResponseXml: String(src.deferredResponseXml || '').trim(),
+    bufferedEvents,
+    baseMessage,
+    replayCursor: {
+      nextOffset: toFiniteInt(replayCursorRaw.nextOffset, 0),
+      totalEvents: toFiniteInt(replayCursorRaw.totalEvents, bufferedEvents.length),
+      status: String(replayCursorRaw.status || '').trim(),
+      lastReplayRunId: String(replayCursorRaw.lastReplayRunId || '').trim(),
+      updatedAt: toFiniteInt(replayCursorRaw.updatedAt, 0)
+    },
+    checkpointRunId: String(src.checkpointRunId || '').trim(),
+    orchestratorRunId: String(src.orchestratorRunId || '').trim(),
+    parentRunId: String(src.parentRunId || '').trim(),
+    updatedAt: toFiniteInt(src.updatedAt, 0)
+  };
+}
+
+function normalizeDeferredToolEvents(raw: unknown): DelayReplayToolResultEvent[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const out: DelayReplayToolResultEvent[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const src = item as Record<string, unknown>;
+    const normalized: DelayReplayToolResultEvent = {
+      ...src,
+      type: typeof src.type === 'string' ? src.type : 'tool_result'
+    };
+    if (Array.isArray(src.events)) {
+      normalized.events = src.events
+        .filter((x) => x && typeof x === 'object')
+        .map((x) => ({ ...(x as Record<string, unknown>) }));
+    }
+    out.push(normalized);
+  }
+
+  return out;
+}
+
+function buildDelayDueRootDirectiveXml(whenTextRaw: unknown, targetIsoRaw: unknown): string {
+  const esc = (v: unknown) =>
+    String(v ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  const whenText = String(whenTextRaw || '').trim();
+  const targetIso = String(targetIsoRaw || '').trim();
+  const objective = whenText || targetIso
+    ? `The delayed task is now due (when="${whenText}", target_iso="${targetIso}"). Continue from current progress and report now.`
+    : 'The delayed task is now due. Continue from current progress and report now.';
+
+  return [
+    '<sentra-root-directive>',
+    '  <id>delay_due_runtime_v1</id>',
+    '  <type>delay_due</type>',
+    '  <scope>single_turn</scope>',
+    `  <objective>${esc(objective)}</objective>`,
+    '  <constraints>',
+    '    <item>This is due-time execution. Do not send another pre-delay acknowledgement.</item>',
+    '    <item>If tool results are partial, replay them in original order and then continue normal runtime flow.</item>',
+    '    <item>If no tool result is available yet, treat this as due-triggered commitment execution and deliver the promised reply now.</item>',
+    '    <item>Produce user-facing sentra-message output only.</item>',
+    '  </constraints>',
+    '</sentra-root-directive>'
+  ].join('\n');
 }
 
 export function createDelayJobRunJob(ctx: DelayJobContext) {
-  const {
-    HistoryStore,
-    loadMessageCache,
-    enqueueDelayedJob,
-    sdk,
-    historyManager,
-    buildSentraResultBlock,
-    buildSentraUserQuestionBlock,
-    getDailyContextMemoryXml,
-    personaManager,
-    emo,
-    buildSentraEmoSection,
-    WORLDBOOK_XML,
-    AGENT_PRESET_XML,
-    baseSystem,
-    CONTEXT_MEMORY_ENABLED,
-    MAIN_AI_MODEL,
-    triggerContextSummarizationIfNeeded,
-    triggerPresetTeachingIfNeeded,
-    chatWithRetry,
-    smartSend,
-    sendAndWaitResult,
-    randomUUID,
-    triggerTaskCompletionAnalysis
-  } = ctx;
-
-  const resolveBaseSystem = async (requiredOutput: string): Promise<string> => {
-    try {
-      if (typeof baseSystem === 'function') {
-        const v = await baseSystem(requiredOutput);
-        return typeof v === 'string' ? v : String(v ?? '');
-      }
-      return typeof baseSystem === 'string' ? baseSystem : String(baseSystem ?? '');
-    } catch {
-      return '';
-    }
-  };
-
-  function getContextMemoryEnabled() {
-    try {
-      return typeof CONTEXT_MEMORY_ENABLED === 'function'
-        ? !!CONTEXT_MEMORY_ENABLED()
-        : !!CONTEXT_MEMORY_ENABLED;
-    } catch {
-      return false;
-    }
-  }
-
-  function getMainAiModel() {
-    try {
-      const v = typeof MAIN_AI_MODEL === 'function' ? MAIN_AI_MODEL() : MAIN_AI_MODEL;
-      return typeof v === 'string' && v.trim() ? v.trim() : 'gpt-3.5-turbo';
-    } catch {
-      return 'gpt-3.5-turbo';
-    }
-  }
-
-  async function buildDelaySystemContent(groupIdKey: string, senderId: string): Promise<string> {
-    let personaXml = '';
-    if (personaManager && senderId) {
-      try {
-        personaXml = personaManager.formatPersonaForContext(senderId);
-      } catch { }
-    }
-    let emoXml = '';
-    try {
-      const emoEnabled = getEnvBool('SENTRA_EMO_ENABLED', false);
-      if (emoEnabled && emo && senderId) {
-        const ua = await emo.userAnalytics(senderId, { days: 7 });
-        emoXml = buildSentraEmoSection(ua);
-      }
-    } catch { }
-    let memoryXml = '';
-    if (getContextMemoryEnabled()) {
-      try {
-        memoryXml = await getDailyContextMemoryXml(groupIdKey);
-      } catch { }
-    }
-    const worldbookXml = WORLDBOOK_XML || '';
-    const agentPresetXml = AGENT_PRESET_XML || '';
-
-    const baseSystemText = await resolveBaseSystem('must_be_sentra_response');
-
-    let socialXml = '';
-    try {
-      if (ctx && ctx.socialContextManager && typeof ctx.socialContextManager.getXml === 'function') {
-        socialXml = await ctx.socialContextManager.getXml();
-      }
-    } catch { }
-
-    const parts = [baseSystemText, personaXml, emoXml, memoryXml, socialXml, worldbookXml, agentPresetXml].filter(Boolean);
-    return parts.join('\n\n');
-  }
-
-  async function sendDelayedReply(baseMsg: BaseMessage, reply: string, hasToolFlag = true): Promise<void> {
-    if (!reply) return;
-    try {
-      if (typeof smartSend === 'function' && typeof sendAndWaitResult === 'function') {
-        const allowReply = true;
-        await smartSend(baseMsg, reply, sendAndWaitResult, allowReply, { hasTool: hasToolFlag });
-      } else {
-        logger.warn('DelayJobWorker: 缺少 smartSend/sendAndWaitResult，无法发送延迟任务回复', {
-          type: baseMsg?.type,
-          group_id: baseMsg?.group_id ?? undefined,
-          sender_id: baseMsg?.sender_id ?? undefined
-        });
-      }
-    } catch (e) {
-      const gk = baseMsg?.group_id ? `G:${baseMsg.group_id}` : `U:${baseMsg?.sender_id || ''}`;
-      logger.warn('DelayJobWorker: 发送延迟任务回复失败', { err: String(e), groupId: gk });
-    }
-  }
-
-  function buildConversationId(baseMsg: BaseMessage, senderId: string): string | null {
-    const uid = String(senderId || baseMsg?.sender_id || '').trim();
-    if (!uid) return null;
-    const gid = baseMsg?.group_id != null ? String(baseMsg.group_id).trim() : '';
-    if (gid) return `group_${gid}_sender_${uid}`;
-    return `private_${uid}`;
-  }
-
-  function triggerCompletionAnalysisSafe(payload: Record<string, unknown>): void {
-    try {
-      if (typeof triggerTaskCompletionAnalysis !== 'function') return;
-      triggerTaskCompletionAnalysis(payload).catch((e) => {
-        logger.debug('DelayJobWorker: TaskCompletionAnalysis failed', { err: String(e) });
-      });
-    } catch (e) {
-      logger.debug('DelayJobWorker: TaskCompletionAnalysis error', { err: String(e) });
-    }
-  }
+  const loadMessageCache = typeof ctx.loadMessageCache === 'function' ? ctx.loadMessageCache : null;
+  const dispatchToMainPipeline = typeof ctx.dispatchToMainPipeline === 'function'
+    ? ctx.dispatchToMainPipeline
+    : null;
+  const dispatchRuntimeEvent = typeof ctx.dispatchRuntimeEvent === 'function'
+    ? ctx.dispatchRuntimeEvent
+    : null;
+  const loadDelayRuntimeSessionFromRuntimeStore = typeof ctx.loadDelayRuntimeSessionFromRuntimeStore === 'function'
+    ? ctx.loadDelayRuntimeSessionFromRuntimeStore
+    : null;
+  const persistDelayRuntimeSessionToRuntimeStore = typeof ctx.persistDelayRuntimeSessionToRuntimeStore === 'function'
+    ? ctx.persistDelayRuntimeSessionToRuntimeStore
+    : null;
+  const randomUUID = typeof ctx.randomUUID === 'function'
+    ? ctx.randomUUID
+    : () => `${Date.now()}_${Math.random().toString(16).substring(2)}`;
 
   return async function runJob(job: DelayJob): Promise<void> {
     try {
-      const aiName = job && job.aiName;
-      if (!aiName) {
-        logger.warn('DelayJobWorker: job 缺少 aiName，跳过', { jobId: job && job.jobId });
+      if (!job || typeof job !== 'object') return;
+      if (!dispatchRuntimeEvent && !dispatchToMainPipeline) {
+        logger.warn(tDelayJobWorker('dispatch_missing_skip'), {
+          jobId: job.jobId || null
+        });
         return;
       }
 
-      const runId = job && job.runId;
-      const scheduleModeRaw = job && job.scheduleMode;
-      const scheduleMode = typeof scheduleModeRaw === 'string'
-        ? scheduleModeRaw
-        : (job && job.schedule && job.schedule.mode) || undefined;
-      const scheduleModeNorm = typeof scheduleMode === 'string' ? scheduleMode.toLowerCase() : '';
-      const isImmediateSendOnly = scheduleModeNorm === 'immediate_exec';
-      const plannedStepIndex = Number.isFinite(job && job.plannedStepIndex)
-        ? Number(job.plannedStepIndex)
-        : 0;
+      const runId = typeof job.runId === 'string' ? job.runId.trim() : '';
+      const replayKind = String(job.kind || '').trim().toLowerCase();
+      const delaySessionId = String(job.delaySessionId || job.jobId || '').trim();
+      let effectiveRunId = runId;
+      let deferredResponseXml = typeof job.deferredResponseXml === 'string' ? job.deferredResponseXml : '';
+      let deferredToolResultEvents = normalizeDeferredToolEvents(job.deferredToolResultEvents);
+      let hasTool = job.hasTool === true || deferredToolResultEvents.length > 0;
+      let delayWhenText = typeof job.delayWhenText === 'string' ? job.delayWhenText : '';
+      let delayTargetISO = typeof job.delayTargetISO === 'string' ? job.delayTargetISO : '';
+      let reasonCode = normalizeDelayReasonCode(
+        typeof job.reasonCode === 'string' && job.reasonCode.trim()
+          ? job.reasonCode.trim()
+          : (typeof job.reason === 'string' && job.reason.trim() ? job.reason.trim() : DELAY_REASON_CODE.dueReplay),
+        DELAY_REASON_CODE.dueReplay
+      );
+      let reasonArgs = normalizeDelayReasonArgs(job.reasonArgs);
+      let reason = typeof job.reason === 'string' && job.reason.trim()
+        ? job.reason.trim()
+        : reasonCode;
+      let baseMessageFromSession: BaseMessage | null = null;
+      let sessionReplayCursorForDispatch: Record<string, unknown> | null = null;
+      const orchestratorRunId = String((job as Record<string, unknown>)?.orchestratorRunId || '').trim();
 
-      let cacheMsg: BaseMessage | null = null;
-      if (runId) {
-        try {
-          const cache = await loadMessageCache(runId);
-          cacheMsg = cache && cache.message ? cache.message : null;
-        } catch (e) {
-          logger.debug('DelayJobWorker: 读取消息缓存失败', { runId, err: String(e) });
-        }
-      }
-
-      const fallbackSenderId = job && job.userId ? String(job.userId) : '';
-      const fallbackMsg: BaseMessage = {
-        type: (job && job.type) || 'private',
-        sender_id: fallbackSenderId,
-        text: (job && job.reason) || '',
-        summary: (job && job.reason) || ''
-      };
-      if (job && job.groupId) {
-        fallbackMsg.group_id = job.groupId;
-      }
-      const baseMsg: BaseMessage = cacheMsg || fallbackMsg;
-
-      const senderId = String(baseMsg.sender_id || fallbackSenderId || '');
-      const groupIdKey = baseMsg.group_id ? `G:${baseMsg.group_id}` : `U:${senderId}`;
-      const systemContent = await buildDelaySystemContent(groupIdKey, senderId);
-      const contextXml = historyManager.getPendingMessagesContext(groupIdKey, senderId);
-      const contextForLlmProgress = job && typeof job.contextForLlmProgress === 'string' ? job.contextForLlmProgress : '';
-      const contextForLlmCompletion = job && typeof job.contextForLlmCompletion === 'string' ? job.contextForLlmCompletion : '';
-      const chatType = baseMsg.group_id ? 'group' : 'private';
-      const userIdForMemory = senderId || '';
-      const conversationId = buildConversationId(baseMsg, senderId);
-
-      if (isImmediateSendOnly && runId) {
-      let history: HistoryEntry[] = [];
-      try {
-          const list = await HistoryStore.list(runId, 0, -1);
-          if (Array.isArray(list)) {
-            history = list as HistoryEntry[];
-          }
-        } catch (e) {
-          logger.debug('DelayJobWorker: 读取 HistoryStore 失败', { runId, err: String(e) });
-        }
-
-        let toolEntry: HistoryEntry | null = null;
-        if (Array.isArray(history) && history.length > 0) {
-          const candidates = history.filter(
-            (x) =>
-              x &&
-              x.type === 'tool_result' &&
-              x.aiName === aiName &&
-              Number(x.plannedStepIndex ?? 0) === plannedStepIndex
-          );
-          if (candidates.length > 0) {
-            candidates.sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
-            const last = candidates[candidates.length - 1];
-            toolEntry = last || null;
-          }
-        }
-
-        if (!toolEntry) {
-          const scheduleInfo = job && job.schedule ? job.schedule : {};
-          const delayMs = Number.isFinite(job && job.delayMs)
-            ? Number(job.delayMs)
-            : Number(job && job.delayMs ? job.delayMs : 0) || 0;
-
-          const progressEv = {
-            type: 'tool_result',
-            aiName: 'schedule_progress',
-            plannedStepIndex,
-            executionIndex: -1,
-            reason:
-              (job && job.reason)
-                ? job.reason
-                : (scheduleInfo && scheduleInfo.text)
-                  ? `正在执行定时任务 ${scheduleInfo.text}`
-                  : '定时任务仍在执行中',
-            nextStep: '',
-            args: {
-              original_aiName: aiName,
-              status: 'in_progress',
-              elapsedMs: 0,
-              delayMs,
-              schedule: scheduleInfo
-            },
-            result: {
-              success: true,
-              code: 'IN_PROGRESS',
-              provider: 'system',
-              data: {
-                original_aiName: aiName,
-                kind: 'delay_progress',
-                status: 'in_progress',
-                delayMs,
-                elapsedMs: 0,
-                schedule_text: scheduleInfo && scheduleInfo.text,
-                schedule_targetISO: scheduleInfo && scheduleInfo.targetISO,
-                schedule_timezone: scheduleInfo && scheduleInfo.timezone
-              }
-            },
-            elapsedMs: 0,
-            dependsOn: [],
-            dependedBy: [],
-            groupId: null,
-            groupSize: 1,
-            toolMeta: { provider: 'system' }
-          };
-
-          let progressXml;
-          try {
-            progressXml = buildSentraResultBlock(progressEv);
-          } catch (e) {
-            logger.warn('DelayJobWorker: 构建进度 <sentra-result> 失败，回退 JSON', {
-              err: String(e)
-            });
-            progressXml = JSON.stringify(progressEv);
-          }
-
-          const userQuestionXml = buildSentraUserQuestionBlock(baseMsg);
-          const combinedUserQuestion = contextForLlmProgress
-            ? contextForLlmProgress
-            : (contextXml
-              ? `${contextXml}\n\n${userQuestionXml}`
-              : userQuestionXml);
-          const fullUserContent = `${progressXml}\n\n${combinedUserQuestion}`;
-
-          const conversations: ChatMessage[] = [
-            { role: 'system', content: systemContent },
-            { role: 'user', content: fullUserContent }
-          ];
-
-          const progressPairId = await historyManager.startAssistantMessage(groupIdKey);
-
-          const llmRes = await chatWithRetry(
-            conversations,
-            { model: getMainAiModel(), __sentraExpectedOutput: 'sentra_response' },
-            groupIdKey
-          );
-
-          if (!llmRes || !llmRes.success) {
-            logger.error('DelayJobWorker: AI 生成延迟进度回复失败', {
-              groupId: groupIdKey,
-              reason: llmRes && llmRes.reason,
-              retries: llmRes && llmRes.retries
-            });
+      if (replayKind === DELAY_RUNTIME_KIND.dueTriggerJob && delaySessionId) {
+        let session = getDelayRuntimeSessionSnapshot(delaySessionId);
+        if (!session && loadDelayRuntimeSessionFromRuntimeStore) {
+          const loaded = await loadDelayRuntimeSessionFromRuntimeStore({
+            delaySessionId,
+            runId: effectiveRunId || '',
+            orchestratorRunId
+          });
+          const normalizedLoaded = normalizeDelayRuntimeSessionFromStore(loaded);
+          if (normalizedLoaded) {
             try {
-              await historyManager.cancelConversationPairById(groupIdKey, progressPairId);
+              createDelayRuntimeSession({
+                sessionId: normalizedLoaded.sessionId,
+                fireAt: normalizedLoaded.fireAt,
+                runId: normalizedLoaded.runId || effectiveRunId || '',
+                type: normalizedLoaded.type || (job.type || 'private'),
+                groupId: normalizedLoaded.groupId || job.groupId || null,
+                userId: normalizedLoaded.userId || job.userId || null,
+                senderId: normalizedLoaded.senderId || job.userId || null,
+                delayWhenText: normalizedLoaded.delayWhenText || '',
+                delayTargetISO: normalizedLoaded.delayTargetISO || '',
+                reason: normalizedLoaded.reason || normalizedLoaded.reasonCode || '',
+                reasonCode: normalizedLoaded.reasonCode || '',
+                reasonArgs: normalizedLoaded.reasonArgs,
+                deferredResponseXml: normalizedLoaded.deferredResponseXml || '',
+                baseMessage: normalizedLoaded.baseMessage
+              });
+              updateDelayRuntimeSession(normalizedLoaded.sessionId, {
+                bufferedEvents: normalizedLoaded.bufferedEvents,
+                dueFiredAt: normalizedLoaded.dueFiredAt > 0 ? normalizedLoaded.dueFiredAt : null,
+                completedAt: normalizedLoaded.completedAt > 0 ? normalizedLoaded.completedAt : null,
+                replayCursor: normalizedLoaded.replayCursor
+              });
+              session = getDelayRuntimeSessionSnapshot(delaySessionId);
             } catch (e) {
-              logger.debug('DelayJobWorker: 取消进度对话对失败', {
-                groupId: groupIdKey,
+              logger.debug(tDelayJobWorker('due_trigger_session_missing'), {
+                sessionId: delaySessionId,
+                runId: effectiveRunId || null,
                 err: String(e)
               });
             }
-          } else {
-            const reply = normalizeReplyText(llmRes.response);
-            const noReply = !!llmRes.noReply;
-
-            await historyManager.appendToAssistantMessage(
-              groupIdKey,
-              reply,
-              progressPairId
-            );
-
-            const savedProgress = await historyManager.finishConversationPair(
-              groupIdKey,
-              progressPairId,
-              fullUserContent
-            );
-            if (!savedProgress) {
-              logger.warn(
-                `保存进度对话对失败: ${groupIdKey} pairId ${String(progressPairId).substring(0, 8)}`
-              );
-            } else {
-              if (String(groupIdKey || '').startsWith('G:') && senderId) {
-                try {
-                  await historyManager.promoteScopedConversationsToShared(groupIdKey, senderId);
-                } catch { }
-              }
-              triggerContextSummarizationIfNeeded({
-                groupId: groupIdKey,
-                chatType,
-                userId: userIdForMemory
-              }).catch((e) => {
-                logger.debug(`ContextMemory: 异步摘要触发失败 ${groupIdKey}`, {
-                  err: String(e)
-                });
-              });
-              triggerPresetTeachingIfNeeded({
-                groupId: groupIdKey,
-                chatType,
-                userId: userIdForMemory,
-                userContent: fullUserContent,
-                assistantContent: reply
-              }).catch((e) => {
-                logger.debug(`PresetTeaching: 异步教导触发失败 ${groupIdKey}`, {
-                  err: String(e)
-                });
-              });
-            }
-
-            if (!noReply) {
-              const allowReply = true;
-              await sdk && sdk.sendAndWaitResult
-                ? sdk.sendAndWaitResult(baseMsg, reply, allowReply, { hasTool: true })
-                : null;
-            } else {
-              logger.info('DelayJobWorker: 模型选择对延迟进度保持沉默', { groupId: groupIdKey });
-            }
           }
-
-          const retryDelayMsBase =
-            Number.isFinite(job && job.retryDelayMs) && Number(job.retryDelayMs) > 0
-              ? Number(job.retryDelayMs)
-              : 5000;
-          const retryDelayMs = Math.max(1000, Math.min(retryDelayMsBase, 60000));
-          const nextFireAt = Date.now() + retryDelayMs;
-
-          const nextJob = {
-            ...job,
-            jobId: job && job.jobId ? String(job.jobId) + '_retry_' + Date.now() : randomUUID(),
-            fireAt: nextFireAt
-          };
-
-          await enqueueDelayedJob(nextJob);
-          return;
         }
-
-        const ev = toolEntry;
-        let resultXml;
-        try {
-          resultXml = buildSentraResultBlock(ev);
-        } catch (e) {
-          logger.warn('DelayJobWorker: 构建 <sentra-result> 失败，回退 JSON', { err: String(e) });
-          resultXml = JSON.stringify(ev);
-        }
-
-        // 当已有 tool_result 时，跳过冗余的 <sentra-user-question>，避免误导模型
-        // 明确标记任务已到期 (isDue=true)，让模型知道该发送最终通知了
-        const fullUserContent = resultXml;
-
-        const conversations: ChatMessage[] = [
-          { role: 'system', content: systemContent },
-          { role: 'user', content: fullUserContent }
-        ];
-
-        const pairId = await historyManager.startAssistantMessage(groupIdKey);
-
-        const llmRes = await chatWithRetry(
-          conversations,
-          { model: getMainAiModel(), __sentraExpectedOutput: 'sentra_response' },
-          groupIdKey
-        );
-
-        if (!llmRes || !llmRes.success) {
-          logger.error('DelayJobWorker: AI 生成延迟任务回复失败', {
-            groupId: groupIdKey,
-            reason: llmRes && llmRes.reason,
-            retries: llmRes && llmRes.retries
-          });
-          try {
-            await historyManager.cancelConversationPairById(groupIdKey, pairId);
-          } catch (e) {
-            logger.debug('DelayJobWorker: 取消延迟任务对话对失败', {
-              groupId: groupIdKey,
-              err: String(e)
-            });
-          }
-          return;
-        }
-
-        const reply = normalizeReplyText(llmRes.response);
-        const noReply = !!llmRes.noReply;
-
-        await historyManager.appendToAssistantMessage(groupIdKey, reply, pairId);
-
-        const savedPair = await historyManager.finishConversationPair(
-          groupIdKey,
-          pairId,
-          fullUserContent
-        );
-        if (!savedPair) {
-          logger.warn(
-            `保存延迟任务对话对失败: ${groupIdKey} pairId ${String(pairId).substring(0, 8)}`
-          );
-        } else {
-          if (String(groupIdKey || '').startsWith('G:') && senderId) {
+        if (session) {
+          const dueFiredAt = Date.now();
+          const marked = markDelayRuntimeSessionDueFired(delaySessionId, dueFiredAt);
+          const sessionAfterDue = marked || session;
+          if (sessionAfterDue && persistDelayRuntimeSessionToRuntimeStore) {
             try {
-              await historyManager.promoteScopedConversationsToShared(groupIdKey, senderId);
-            } catch { }
+              await persistDelayRuntimeSessionToRuntimeStore({
+                runId: String(sessionAfterDue.runId || effectiveRunId || '').trim(),
+                orchestratorRunId: String(orchestratorRunId || '').trim(),
+                session: {
+                  ...sessionAfterDue,
+                  checkpointRunId: String((session as unknown as Record<string, unknown>)?.checkpointRunId || ''),
+                  orchestratorRunId: String(orchestratorRunId || (session as unknown as Record<string, unknown>)?.orchestratorRunId || '')
+                },
+                eventType: 'delay_runtime_due_fired'
+              });
+            } catch (e) {
+              logger.debug(tDelayJobWorker('run_job_failed'), {
+                err: String(e),
+                sessionId: delaySessionId,
+                runId: effectiveRunId || null
+              });
+            }
           }
-          triggerContextSummarizationIfNeeded({
-            groupId: groupIdKey,
-            chatType,
-            userId: userIdForMemory
-          }).catch((e) => {
-            logger.debug(`ContextMemory: 异步摘要触发失败 ${groupIdKey}`, {
-              err: String(e)
-            });
+          effectiveRunId = String(session.runId || effectiveRunId || '').trim();
+          if (Array.isArray(session.bufferedEvents) && session.bufferedEvents.length > 0) {
+            deferredToolResultEvents = normalizeDeferredToolEvents(session.bufferedEvents);
+          }
+          deferredResponseXml = String(session.deferredResponseXml || deferredResponseXml || '');
+          hasTool = deferredToolResultEvents.length > 0 || hasTool;
+          delayWhenText = String(session.delayWhenText || delayWhenText || '');
+          delayTargetISO = String(session.delayTargetISO || delayTargetISO || '');
+          reasonCode = normalizeDelayReasonCode(
+            session.reasonCode || session.reason || reasonCode,
+            DELAY_REASON_CODE.dueReplay
+          );
+          reasonArgs = normalizeDelayReasonArgs(session.reasonArgs);
+          reason = String(session.reason || reasonCode || reason || DELAY_REASON_CODE.dueReplay);
+          baseMessageFromSession = session.baseMessage && typeof session.baseMessage === 'object'
+            ? session.baseMessage as BaseMessage
+            : null;
+          sessionReplayCursorForDispatch = session.replayCursor && typeof session.replayCursor === 'object'
+            ? { ...(session.replayCursor as Record<string, unknown>) }
+            : null;
+          logger.info(tDelayJobWorker('due_trigger_session_loaded'), {
+            sessionId: delaySessionId,
+            runId: effectiveRunId || null,
+            bufferedEvents: Array.isArray(session.bufferedEvents) ? session.bufferedEvents.length : 0,
+            hasDeferredResponse: !!String(session.deferredResponseXml || '').trim(),
+            completedAt: session.completedAt || null,
+            fireAt: session.fireAt || null
           });
-          triggerPresetTeachingIfNeeded({
-            groupId: groupIdKey,
-            chatType,
-            userId: userIdForMemory,
-            userContent: fullUserContent,
-            assistantContent: reply
-          }).catch((e) => {
-            logger.debug(`PresetTeaching: 异步教导触发失败 ${groupIdKey}`, {
-              err: String(e)
-            });
+        } else {
+          logger.warn(tDelayJobWorker('due_trigger_session_missing'), {
+            sessionId: delaySessionId,
+            jobId: job.jobId || null,
+            runId: effectiveRunId || null
           });
         }
-
-        if (noReply) {
-          logger.info('DelayJobWorker: 模型选择对延迟任务保持沉默', { groupId: groupIdKey });
-          return;
-        }
-
-        await sendDelayedReply(baseMsg, reply, true);
-        triggerCompletionAnalysisSafe({
-          agent: ctx?.agent || ctx?.sdk,
-          groupId: groupIdKey,
-          conversationId,
-          userId: senderId,
-          userObjective: (job && job.reason) || '',
-          toolInvocations: [{ aiName, args: toolEntry?.args || {} }],
-          toolResultEvents: [toolEntry],
-          finalResponse: reply,
-          hasToolCalled: true
+      } else if (replayKind === DELAY_RUNTIME_KIND.dueTriggerJob && !delaySessionId) {
+        logger.warn(tDelayJobWorker('due_trigger_missing_session_id'), {
+          jobId: job.jobId || null,
+          runId: effectiveRunId || null
         });
-        return;
       }
 
-      const toolArgs = job && job.args && typeof job.args === 'object' ? job.args : {};
-      const startedAt = Date.now();
-      let toolRes: ToolCallResult;
-      try {
-        const contextForTool = {
-          source: 'delay_queue',
-          runId: job && job.runId ? String(job.runId) : undefined,
-        };
-        toolRes = (await sdk.callTool({ aiName, args: toolArgs, context: contextForTool })) as ToolCallResult;
-      } catch (e) {
-        toolRes = { success: false, code: 'ERROR', error: String(e), data: null };
+      let cacheMsg: BaseMessage | null = null;
+      if (effectiveRunId && loadMessageCache) {
+        try {
+          const cache = await loadMessageCache(effectiveRunId);
+          cacheMsg = cache && cache.message ? cache.message : null;
+        } catch (e) {
+          logger.debug(tDelayJobWorker('load_message_cache_failed'), { runId: effectiveRunId, err: String(e) });
+        }
       }
-      const elapsedMs = Date.now() - startedAt;
 
-      const ev = {
-        type: 'tool_result',
-        aiName,
-        plannedStepIndex,
-        resultStatus: 'final',
-        executionIndex: -1,
-        reason: (job && job.reason) || '延迟任务到期自动执行',
-        nextStep: '',
-        args: toolArgs,
-        result: toolRes,
-        completion: {
-          state: 'completed',
-          mustAnswerFromResult: true,
-          instruction: 'Tool execution has finished for this step. Answer the user based on the tool result and extracted files/resources.'
-        },
-        elapsedMs,
-        dependsOn: [],
-        dependedBy: [],
-        groupId: null,
-        groupSize: 1,
-        toolMeta: { provider: (toolRes && toolRes.provider) || 'delay_queue' }
+      const fallbackSenderId = String(job.userId || '').trim();
+      const fallbackType = typeof job.type === 'string' && job.type.trim()
+        ? job.type.trim()
+        : (job.groupId != null ? 'group' : 'private');
+
+      const baseMsg: BaseMessage = cacheMsg || baseMessageFromSession || {
+        type: fallbackType,
+        sender_id: fallbackSenderId,
+        ...(job.groupId != null ? { group_id: job.groupId } : {}),
+        text: typeof reason === 'string' ? reason : '',
+        summary: typeof reason === 'string' ? reason : ''
       };
 
-      let resultXml;
-      try {
-        resultXml = buildSentraResultBlock(ev);
-      } catch (e) {
-        logger.warn('DelayJobWorker: 构建 <sentra-result> 失败，回退 JSON', { err: String(e) });
-        resultXml = JSON.stringify(ev);
-      }
-
-      // 到点执行完成：只注入最终 <sentra-result>，避免再次注入 pending/user-question 误导模型重复“承诺/计划”。
-      const fullUserContent = resultXml;
-
-      const conversations: ChatMessage[] = [
-        { role: 'system', content: systemContent },
-        { role: 'user', content: fullUserContent }
-      ];
-
-      const pairId = await historyManager.startAssistantMessage(groupIdKey);
-
-      const llmRes = await chatWithRetry(
-        conversations,
-        { model: getMainAiModel(), __sentraExpectedOutput: 'sentra_response' },
-        groupIdKey
-      );
-
-      if (!llmRes || !llmRes.success) {
-        logger.error('DelayJobWorker: AI 生成延迟任务回复失败', {
-          groupId: groupIdKey,
-          reason: llmRes && llmRes.reason,
-          retries: llmRes && llmRes.retries
+      const senderId = String(baseMsg.sender_id || fallbackSenderId || '').trim();
+      if (!senderId) {
+        logger.warn(tDelayJobWorker('missing_sender_skip'), {
+          jobId: job.jobId || null,
+          runId: effectiveRunId || null
         });
-        try {
-          await historyManager.cancelConversationPairById(groupIdKey, pairId);
-        } catch (e) {
-          logger.debug('DelayJobWorker: 取消延迟任务对话对失败', {
-            groupId: groupIdKey,
-            err: String(e)
-          });
-        }
         return;
       }
 
-      const reply = normalizeReplyText(llmRes.response);
-      const noReply = !!llmRes.noReply;
-
-      await historyManager.appendToAssistantMessage(groupIdKey, reply, pairId);
-
-      const savedPair = await historyManager.finishConversationPair(
-        groupIdKey,
-        pairId,
-        fullUserContent
-      );
-      if (!savedPair) {
-        logger.warn(
-          `保存延迟任务对话对失败: ${groupIdKey} pairId ${String(pairId).substring(0, 8)}`
-        );
-      } else {
-        if (String(groupIdKey || '').startsWith('G:') && senderId) {
-          try {
-            await historyManager.promoteScopedConversationsToShared(groupIdKey, senderId);
-          } catch { }
-        }
-        triggerContextSummarizationIfNeeded({
-          groupId: groupIdKey,
-          chatType,
-          userId: userIdForMemory
-        }).catch((e) => {
-          logger.debug(`ContextMemory: 异步摘要触发失败 ${groupIdKey}`, {
-            err: String(e)
-          });
-        });
-        triggerPresetTeachingIfNeeded({
-          groupId: groupIdKey,
-          chatType,
-          userId: userIdForMemory,
-          userContent: fullUserContent,
-          assistantContent: reply
-        }).catch((e) => {
-          logger.debug(`PresetTeaching: 异步教导触发失败 ${groupIdKey}`, {
-            err: String(e)
-          });
-        });
-      }
-
-      if (noReply) {
-        logger.info('DelayJobWorker: 模型选择对延迟任务保持沉默', { groupId: groupIdKey });
-        return;
-      }
-
-      await sendDelayedReply(baseMsg, reply, true);
-      triggerCompletionAnalysisSafe({
-        agent: ctx?.agent || ctx?.sdk,
-        groupId: groupIdKey,
-        conversationId,
-        userId: senderId,
-        userObjective: (job && job.reason) || '',
-        toolInvocations: [{ aiName, args: toolArgs }],
-        toolResultEvents: [ev],
-        finalResponse: reply,
-        hasToolCalled: true
+      logger.info(tDelayJobWorker('dispatch_due_replay'), {
+        jobId: String(job.jobId || ''),
+        runId: effectiveRunId || null,
+        sessionId: delaySessionId || null,
+        senderId,
+        groupId: baseMsg.group_id ?? job.groupId ?? null,
+        hasTool,
+        hasDeferredResponse: !!String(deferredResponseXml || '').trim(),
+        reasonCode,
+        replayEvents: deferredToolResultEvents.length,
+        replayKind: replayKind || DELAY_RUNTIME_KIND.dueReplayPayload
       });
-      return;
+      if (dispatchRuntimeEvent) {
+        await dispatchRuntimeEvent({
+          type: 'delay_due_triggered',
+          payload: {
+            runId: effectiveRunId || randomUUID(),
+            delaySessionId: delaySessionId || undefined,
+            reason,
+            reasonCode,
+            reasonArgs,
+            hasTool,
+            delayWhenText,
+            delayTargetISO,
+            deferredResponseXml,
+            deferredToolResultEvents,
+            replayCursor: sessionReplayCursorForDispatch
+              ? { ...sessionReplayCursorForDispatch }
+              : ((job.replayCursor && typeof job.replayCursor === 'object')
+                ? { ...(job.replayCursor as Record<string, unknown>) }
+                : undefined),
+            baseMessage: {
+              ...baseMsg,
+              sender_id: senderId,
+              type: String(baseMsg.type || fallbackType || 'private'),
+              ...(job.groupId != null ? { group_id: job.groupId } : {})
+            },
+            jobId: String(job.jobId || randomUUID()),
+            userId: String(job.userId || senderId || '').trim(),
+            groupId: job.groupId ?? baseMsg.group_id ?? null,
+            type: String(baseMsg.type || fallbackType || 'private'),
+            orchestratorRunId
+          }
+        });
+        return;
+      }
+      if (dispatchToMainPipeline) {
+        const dueRootDirective = buildDelayDueRootDirectiveXml(delayWhenText, delayTargetISO);
+        const dueMsg: BaseMessage & Record<string, unknown> = {
+          ...baseMsg,
+          type: String(baseMsg.type || fallbackType || 'private'),
+          sender_id: senderId,
+          ...(job.groupId != null ? { group_id: job.groupId } : {}),
+          _replyAction: 'action',
+          _sentraRootDirectiveXml: dueRootDirective,
+          _delayReplay: {
+            kind: DELAY_RUNTIME_KIND.dueReplayPayload,
+            jobId: String(job.jobId || randomUUID()),
+            runId: effectiveRunId || randomUUID(),
+            delaySessionId: delaySessionId || undefined,
+            reason,
+            reasonCode,
+            reasonArgs,
+            hasTool,
+            delayWhenText,
+            delayTargetISO,
+            deferredResponseXml,
+            deferredToolResultEvents
+          }
+        };
+        await dispatchToMainPipeline(dueMsg, null);
+      }
     } catch (e) {
-      logger.warn('DelayJobWorker: 处理延迟任务异常', { err: String(e) });
+      logger.warn(tDelayJobWorker('run_job_failed'), { err: String(e) });
     }
   };
 }

@@ -10,6 +10,7 @@
     "start": "set MODE=reverse&& set ENABLE_TEST_PLUGIN=true&& ts-node src/main.ts"
   },
   "dependencies": {
+    "fast-xml-parser": "^4.5.3",
     "dotenv": "^16.4.5",
     "eventemitter3": "^5.0.1",
     "chalk": "^4.1.2",

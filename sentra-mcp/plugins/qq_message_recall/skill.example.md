@@ -11,13 +11,21 @@
 
 ## When to use
 
-- 用户明确要求撤回某条消息，且你能拿到真实 `message_id`（通常来自上游消息事件/日志/引用）。
+- 目标与工具能力一致：QQ平台：撤回消息
+- 可提供必需入参：`message_id`。
+- 你明确接受该操作可能产生的副作用（发送/修改/写入/生成）。
 
-## When NOT to use
+## When not to use
 
-- 拿不到真实 `message_id`（不要用占位符）。
-- 消息可能已超出可撤回时间窗口（需要给用户预期）。
+- 缺少必需入参时不要调用：`message_id`。
+- 仅希望查询信息、且不希望产生副作用时，不要调用。
 
+## Success Criteria
+
+- Must have `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be non-empty, `data.request.requestId` must be present, and `data.request.args` must match this call (`message_id`).
+- `data.response` must be present (non-null object/string), proving RPC was sent and acknowledged.
+- Retry guidance: timeout/network may retry once with same args; input/schema errors should regenerate args; business rejection should replan.
 ## Input
 
 - Required:

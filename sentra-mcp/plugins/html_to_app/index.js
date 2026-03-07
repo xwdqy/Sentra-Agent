@@ -1402,3 +1402,6 @@ export default async function handler(args = {}, options = {}) {
     return fail(e, isTimeout ? 'TIMEOUT' : 'GENERATION_ERROR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { stage: 'handler' }) });
   }
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);
