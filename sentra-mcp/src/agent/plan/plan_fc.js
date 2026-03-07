@@ -5,22 +5,45 @@ import { z } from 'zod';
 import { buildPlanningManifest, manifestToBulletedText, manifestToXmlToolsCatalog } from './manifest.js';
 import { rerankManifest } from './router.js';
 import { getPreThought } from '../stages/prethought.js';
-import { upsertPlanMemory, searchPlanMemories } from '../../memory/index.js';
-import { loadPrompt, renderTemplate, composeSystem } from '../prompts/loader.js';
+import { loadPrompt, renderTemplate, composeSystem, pickLocalizedPrompt } from '../prompts/loader.js';
 import { compactMessages } from '../utils/messages.js';
 import { clip } from '../../utils/text.js';
 import { buildPlanFunctionCallInstruction, parseFunctionCalls, buildFCPolicy, buildFunctionCallInstruction, formatSentraResult } from '../../utils/fc.js';
 import { HistoryStore } from '../../history/store.js';
 import { isRunCancelled } from '../../bus/runCancel.js';
+import { mapAndFilterPlanSteps } from '../controllers/plan_step_controller.js';
+import {
+  TERMINAL_RUNTIME_AI_NAME,
+  pinTerminalRuntimeInManifest
+} from '../../runtime/terminal/spec.js';
 
 function now() { return Date.now(); }
+function isTimeoutLikeErrorText(value) {
+  const text = String(value || '').toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes('timeout') ||
+    text.includes('timed out') ||
+    text.includes('abort') ||
+    text.includes('aborted')
+  );
+}
+
+function escapeXmlText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
 // zod schema for emit_plan arguments decoded from FC <sentra-tools>
-// reason 最终仍要求是 string[]，但为了避免模型偶尔输出纯字符串
-// 直接导致整份计划被丢弃，这里用 preprocess 把 string 自动收敛为 [string]。
 const PlanStepSchema = z.object({
   stepId: z.string().min(1),
-  aiName: z.string().min(1),
+  executor: z.enum(['mcp', 'sandbox']).optional(),
+  actionRef: z.string().optional(),
+  aiName: z.string().optional().default(''),
   reason: z.preprocess(
     (v) => {
       if (Array.isArray(v)) return v;
@@ -42,20 +65,137 @@ const EmitPlanSchema = z.object({
   steps: z.array(PlanStepSchema).optional().default([]),
 }).passthrough();
 
-/**
- * 规范化 reason：仅支持数组格式
- * - 数组：过滤并清理每项
- * - 其他：返回空数组（不兼容旧字符串格式）
- */
-function normalizeReason(reason) {
-  if (Array.isArray(reason)) {
-    return reason.filter(r => typeof r === 'string' && r.trim()).map(r => r.trim());
-  }
-  // 不再兼容字符串格式，直接返回空数组
-  return [];
+// no bootstrap fallback; rely on retries
+
+function buildAdaptiveEvalContextForPlan(previousEval) {
+  const ev = (previousEval && typeof previousEval === 'object') ? previousEval : null;
+  if (!ev) return null;
+  const missingGoals = Array.isArray(ev.missingGoals)
+    ? ev.missingGoals.map((x) => String(x || '').trim()).filter(Boolean)
+    : [];
+  const failedSteps = Array.isArray(ev.failedSteps)
+    ? ev.failedSteps
+      .map((x) => {
+        const item = (x && typeof x === 'object') ? x : {};
+        const stepId = String(item.stepId || '').trim();
+        const aiName = String(item.aiName || '').trim();
+        const reason = String(item.reason || '').trim();
+        if (!stepId && !aiName && !reason) return null;
+        const displayIndexRaw = Number(item.displayIndex);
+        return {
+          ...(stepId ? { stepId } : {}),
+          ...(aiName ? { aiName } : {}),
+          ...(Number.isFinite(displayIndexRaw) ? { displayIndex: Math.floor(displayIndexRaw) } : {}),
+          ...(reason ? { reason } : {}),
+        };
+      })
+      .filter(Boolean)
+    : [];
+  return {
+    success: ev.success === true,
+    incomplete: ev.incomplete === true,
+    nextAction: String(ev.nextAction || '').trim().toLowerCase() || undefined,
+    completionLevel: String(ev.completionLevel || '').trim().toLowerCase() || undefined,
+    summary: String(ev.summary || '').trim(),
+    missingGoals,
+    failedSteps,
+  };
 }
 
-// no bootstrap fallback; rely on retries
+function buildResultForAdaptiveHistory(item = {}) {
+  const result = (item?.result && typeof item.result === 'object') ? item.result : {};
+  const actionResult = (item?.actionResult && typeof item.actionResult === 'object') ? item.actionResult : {};
+  const evidence = Array.isArray(actionResult?.evidence) && actionResult.evidence.length
+    ? actionResult.evidence
+    : (Array.isArray(result?.evidence) ? result.evidence : []);
+  const out = {
+    success: result.success === true,
+    code: String(result.code || ''),
+    provider: String(result.provider || actionResult?.output?.provider || '')
+  };
+  if (evidence.length > 0) {
+    out.data = { evidence: evidence.slice(0, 6) };
+  } else if (typeof result?.message === 'string' && result.message.trim()) {
+    out.data = { message: result.message.trim().slice(0, 360) };
+  }
+  return out;
+}
+
+function buildAdaptivePlanningMessages({ context = {}, toolResults = [] }) {
+  const roundRaw = Number(context?.adaptiveRound || 0);
+  const adaptiveRound = Number.isFinite(roundRaw) ? Math.max(0, Math.floor(roundRaw)) : 0;
+  const previousEvalCtx = buildAdaptiveEvalContextForPlan(context?.previousEval);
+  if (adaptiveRound <= 0 && !previousEvalCtx) return [];
+
+  const evalPayload = previousEvalCtx || {
+    success: undefined,
+    incomplete: undefined,
+    nextAction: String(context?.adaptiveAction || '').trim().toLowerCase() || undefined,
+    completionLevel: undefined,
+    summary: '',
+    missingGoals: [],
+    failedSteps: [],
+  };
+
+  const messages = [];
+  const list = Array.isArray(toolResults) ? toolResults : [];
+  for (const h of list) {
+    const item = (h && typeof h === 'object') ? h : {};
+    const xml = formatSentraResult({
+      stepIndex: Number(item.plannedStepIndex ?? item.stepIndex ?? 0),
+      stepId: item?.stepId,
+      aiName: item.aiName,
+      reason: item.reason,
+      args: item.args || {},
+      result: buildResultForAdaptiveHistory(item),
+    });
+    if (!String(xml || '').trim()) continue;
+    messages.push({ role: 'user', content: xml });
+    messages.push({
+      role: 'assistant',
+      content:
+        `<sentra-message><chat_type>system_task</chat_type><message><segment index="1"><type>text</type><data><text>Recorded tool result for replanning context. step_id=${escapeXmlText(item?.stepId || '')}; tool=${escapeXmlText(item?.aiName || '')}.</text></data></segment></message></sentra-message>`
+    });
+  }
+
+  const missingGoals = Array.isArray(evalPayload.missingGoals) ? evalPayload.missingGoals : [];
+  const failedSteps = Array.isArray(evalPayload.failedSteps) ? evalPayload.failedSteps : [];
+  const missingXml = missingGoals
+    .map((g, idx) => `    <goal index="${idx + 1}">${escapeXmlText(g)}</goal>`)
+    .join('\n');
+  const failedXml = failedSteps
+    .map((s, idx) => [
+      `    <step index="${idx + 1}">`,
+      `      <step_id>${escapeXmlText(s?.stepId || '')}</step_id>`,
+      `      <ai_name>${escapeXmlText(s?.aiName || '')}</ai_name>`,
+      `      <display_index>${escapeXmlText(s?.displayIndex ?? '')}</display_index>`,
+      `      <reason>${escapeXmlText(s?.reason || '')}</reason>`,
+      '    </step>'
+    ].join('\n'))
+    .join('\n');
+
+  const evalXml = [
+    '<sentra-adaptive-eval>',
+    `  <run_id>${escapeXmlText(context?.runId || 'unknown')}</run_id>`,
+    `  <adaptive_round>${adaptiveRound}</adaptive_round>`,
+    `  <success>${escapeXmlText(evalPayload.success ?? '')}</success>`,
+    `  <incomplete>${escapeXmlText(evalPayload.incomplete ?? '')}</incomplete>`,
+    `  <next_action>${escapeXmlText(evalPayload.nextAction || '')}</next_action>`,
+    `  <completion_level>${escapeXmlText(evalPayload.completionLevel || '')}</completion_level>`,
+    `  <summary>${escapeXmlText(evalPayload.summary || '')}</summary>`,
+    '  <missing_goals>',
+    missingXml,
+    '  </missing_goals>',
+    '  <failed_steps>',
+    failedXml,
+    '  </failed_steps>',
+    '</sentra-adaptive-eval>',
+    '<root>Replan from these result-history messages. Reuse already successful outputs. Fix failed steps by reason. Only add missing goals; do not repeat completed deliverables.</root>'
+  ].join('\n');
+
+  messages.push({ role: 'user', content: evalXml });
+  return compactMessages(messages);
+}
 
 async function generateSinglePlan({
   baseMessages,
@@ -67,6 +207,7 @@ async function generateSinglePlan({
   policyText,
   planInstrText,
   model,
+  signal,
 }) {
   const validNames = new Set(allowedAiNames || []);
   let steps = [];
@@ -75,12 +216,10 @@ async function generateSinglePlan({
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     let reinforce = '';
     if (attempt > 1) {
-      // 若上轮存在结构化 schema 错误，优先使用 FC 规划修复提示（英文），
-      // 携带错误详情与上一轮的 <sentra-tools> 原始片段，引导模型按协议重写 emit_plan。
       if (Array.isArray(lastSchemaErrors) && lastSchemaErrors.length > 0) {
         try {
           const pfFix = await loadPrompt('fc_plan_fix');
-          const tplFix = pfFix.en || pfFix.user || pfFix.zh;
+          const tplFix = pickLocalizedPrompt(pfFix, 'en') || pfFix.user || '';
           reinforce = renderTemplate(tplFix, {
             errors: JSON.stringify(lastSchemaErrors || [], null, 2),
             previous_xml: String(lastContent || '').slice(0, 4000),
@@ -88,11 +227,10 @@ async function generateSinglePlan({
         } catch { }
       }
 
-      // 若没有结构化错误信息可用，则退回到通用强化提示
       if (!reinforce) {
         try {
           const pfRe = await loadPrompt('fc_reinforce_plan');
-          const tplRe = pfRe.en || pfRe.zh;
+          const tplRe = pickLocalizedPrompt(pfRe, 'en');
           reinforce = renderTemplate(tplRe, {
             allowed_list: (allowedAiNames || []).join(', ') || '(none)',
             attempt: String(attempt),
@@ -116,6 +254,7 @@ async function generateSinglePlan({
       temperature: planningTemp,
       top_p,
       timeoutMs: getStageTimeoutMs('plan'),
+      signal,
       apiKey: provider.apiKey,
       baseURL: provider.baseURL,
       model: planModel,
@@ -126,6 +265,7 @@ async function generateSinglePlan({
     const calls = parseFunctionCalls(String(content), {});
     const call = calls.find((c) => String(c.name) === 'emit_plan') || calls[0];
     let candidate = [];
+    let rawCandidate = [];
     try {
       const rawArgs = call?.arguments || {};
       let parsed = {};
@@ -133,7 +273,7 @@ async function generateSinglePlan({
         const zres = EmitPlanSchema.safeParse(rawArgs);
         if (!zres.success) {
           const issues = zres.error?.issues || [];
-          logger.warn?.('FC emit_plan schema 校验失败，将回退到空计划', {
+          logger.warn?.('FC emit_plan schema validation failed', {
             label: 'PLAN',
             errors: issues.map((it) => ({ path: it.path, message: it.message })) || [],
           });
@@ -149,41 +289,34 @@ async function generateSinglePlan({
       }
 
       const stepsArr = Array.isArray(parsed?.steps) ? parsed.steps : [];
-
-      candidate = stepsArr.map((s) => ({
-        stepId: s?.stepId,
-        aiName: s?.aiName,
-        reason: normalizeReason(s?.reason),
-        nextStep: s?.nextStep || '',
-        draftArgs: s?.draftArgs || {},
-        dependsOnStepIds: Array.isArray(s?.dependsOnStepIds) ? s.dependsOnStepIds : undefined,
-      }));
+      rawCandidate = Array.isArray(stepsArr) ? stepsArr : [];
+      candidate = mapAndFilterPlanSteps(stepsArr, {
+        allowedMcpAiNamesSet: validNames
+      });
     } catch { }
+    const filtered = candidate;
 
-    const filtered = validNames.size ? candidate.filter((s) => s.aiName && validNames.has(s.aiName)) : candidate;
-
-    // 若 emit_plan 产出了步骤，但全部因 aiName 不在允许列表而被过滤，则构造“伪 schema 错误”
-    // 交给 fc_plan_fix 提示词使用，用于显式提醒模型不要发明 schedule_progress / timer 等非法工具名。
     if (
       filtered.length === 0 &&
-      candidate.length > 0 &&
+      Array.isArray(rawCandidate) &&
+      rawCandidate.length > 0 &&
       validNames.size > 0 &&
       (allowedAiNames || []).length > 0
     ) {
       const invalidIssues = [];
       const invalidNames = [];
-      for (let idx = 0; idx < candidate.length; idx++) {
-        const name = candidate[idx]?.aiName;
+      for (let idx = 0; idx < rawCandidate.length; idx++) {
+        const name = rawCandidate[idx]?.aiName;
         if (typeof name === 'string' && name && !validNames.has(name)) {
           invalidNames.push(name);
           invalidIssues.push({
             path: ['steps', idx, 'aiName'],
-            message: `aiName "${name}" is not in allowed list: ${(allowedAiNames || []).join(', ')}. You MUST choose aiName strictly from this allowed list and MUST NOT invent new tool names (for example schedule_* or timer). Any scheduling / time-delay semantics must be expressed via a schedule field inside draftArgs of a valid tool, not as a separate scheduling tool.`,
+            message: `aiName "${name}" is not in allowed list: ${(allowedAiNames || []).join(', ')}. You MUST choose aiName strictly from this allowed list and MUST NOT invent new tool names.`,
           });
         }
       }
       if (invalidIssues.length > 0) {
-        logger.warn?.('FC emit_plan 产出的步骤全部使用了不在允许列表中的 aiName，将视为规划错误', {
+        logger.warn?.('FC emit_plan schema has invalid aiName values; forcing allowed list', {
           label: 'PLAN',
           invalidAiNames: invalidNames,
           allowedAiNames,
@@ -216,11 +349,9 @@ async function selectBestPlan({ objective, manifest, candidates, context }) {
       { role: 'user', content: renderTemplate(pa.user_candidates, { candidatesList }) },
       { role: 'user', content: pa.user_request },
     ]);
-    // 审核开关：关闭时直接选择 #0
     if (!config.planner?.auditEnable) {
       return { index: 0, audit: 'audit disabled' };
     }
-    // 构造 select_plan 函数调用指令（FC sentra-tools）
     const selectPlanSchema = {
       type: 'object',
       properties: {
@@ -244,7 +375,7 @@ async function selectBestPlan({ objective, manifest, candidates, context }) {
       additionalProperties: true
     };
     const policyText = await buildFCPolicy();
-    const instr = await buildFunctionCallInstruction({ name: 'select_plan', parameters: selectPlanSchema, locale: 'zh-CN' });
+    const instr = await buildFunctionCallInstruction({ name: 'select_plan', parameters: selectPlanSchema, locale: 'en' });
     const messages = compactMessages([...base, { role: 'user', content: [policyText, instr].join('\n\n') }]);
 
     const fc = config.fcLlm || {};
@@ -273,99 +404,134 @@ async function selectBestPlan({ objective, manifest, candidates, context }) {
     idx = Math.max(0, Math.min(candidates.length - 1, idx));
     return { index: idx, audit: reason };
   } catch (e) {
-    logger.warn?.('FC 多计划审核失败，回退到候选#0', { label: 'PLAN', error: String(e) });
+    logger.warn?.('FC plan generation failed; fallback to default candidate 0', { label: 'PLAN', error: String(e) });
     return { index: 0, audit: '' };
   }
 }
 
 export async function generatePlanViaFC(objective, mcpcore, context = {}, conversation) {
-  let manifest = buildPlanningManifest(mcpcore);
+  let manifest = pinTerminalRuntimeInManifest(buildPlanningManifest(mcpcore), { insertIfMissing: true });
+  let rerankScoreByAiName = {};
+  const externalReasons = Array.isArray(context?.externalReasons)
+    ? context.externalReasons
+      .map((x) => String(x || '').trim())
+      .filter(Boolean)
+    : [];
   const usePT = !!config.flags?.planUsePreThought;
   const preThought = usePT ? (await getPreThought(objective, manifest, conversation)) : '';
 
   const nowMs = () => Date.now();
 
-  // Judge 白名单过滤：如果 Judge 已经明确选择了需要调用的工具，则优先收敛到这部分工具。
-  // 目的：减少规划阶段看到全量工具导致的“污染/跑偏”，并提升速度与稳定性。
   try {
     const judgeToolNames = (context?.judge && Array.isArray(context.judge.toolNames))
       ? context.judge.toolNames
       : (Array.isArray(context?.judgeToolNames) ? context.judgeToolNames : []);
     const judgeToolSet = new Set((judgeToolNames || []).filter(Boolean));
+    const reservedAiNames = new Set([TERMINAL_RUNTIME_AI_NAME]);
     if (judgeToolSet.size > 0) {
-      const filtered = (manifest || []).filter((m) => m && m.aiName && judgeToolSet.has(m.aiName));
+      const filtered = (manifest || []).filter((m) => m && m.aiName && (judgeToolSet.has(m.aiName) || reservedAiNames.has(m.aiName)));
       if (filtered.length > 0) {
-        manifest = filtered;
+        manifest = pinTerminalRuntimeInManifest(filtered, { insertIfMissing: true });
       }
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：Judge 白名单过滤', { label: 'PLAN', selectedCount: judgeToolSet.size, manifestCount: manifest.length });
+        logger.info('FC plan: judge tool whitelist applied', {
+          label: 'PLAN',
+          selectedCount: judgeToolSet.size,
+          manifestCount: manifest.length
+        });
       }
     }
   } catch (e) {
-    logger.warn?.('FC 规划：Judge 白名单过滤失败（忽略并继续）', { label: 'PLAN', error: String(e) });
+    logger.warn?.('FC plan: judge whitelist filtering failed', { label: 'PLAN', error: String(e) });
   }
 
-  // 中文：在 FC 规划前执行工具重排序（仅使用 objective）
+  // Rerank tools by objective when enabled
   try {
     if (objective && (config.rerank?.enable !== false)) {
       const tRerank0 = nowMs();
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：RERANK begin', { label: 'RERANK' });
+        logger.info('FC rerank begin', {
+          label: 'RERANK',
+          hasExternalReasons: externalReasons.length > 0,
+          externalReasonCount: externalReasons.length
+        });
       }
       const ranked = await rerankManifest({
         manifest,
         objective,
-        candidateK: config.rerank?.candidateK,
-        topN: config.rerank?.topN
+        externalReasons
       });
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：RERANK end', { label: 'RERANK', ms: nowMs() - tRerank0 });
+        logger.info('FC rerank end', { label: 'RERANK', ms: nowMs() - tRerank0 });
       }
       if (Array.isArray(ranked?.manifest) && ranked.manifest.length) {
-        manifest = ranked.manifest;
+        manifest = pinTerminalRuntimeInManifest(ranked.manifest, { insertIfMissing: true });
+        if (Array.isArray(ranked?.details) && ranked.details.length) {
+          rerankScoreByAiName = Object.fromEntries(
+            ranked.details
+              .filter((d) => d && typeof d.aiName === 'string' && d.aiName.trim())
+              .map((d) => [String(d.aiName).trim(), {
+                final: Number(d.final || 0),
+                intent: Number(d.intent || 0),
+                trust: Number(d.trust || 0),
+                relevance: Number(d.relevance || 0),
+                probability: Number(d.probability || 0),
+                keywordHitRatio: Number(d.keywordHitRatio || 0),
+                regexHitRatio: Number(d.regexHitRatio || 0),
+                rank: Number(d.rank || 0)
+              }])
+          );
+        }
         if (config.flags.enableVerboseSteps) {
-          const tops = manifest.slice(0, Math.min(5, manifest.length)).map(x => x.aiName);
-          logger.info('FC 规划前重排序Top工具', { label: 'RERANK', top: tops });
+          const tools = manifest.map((x) => x.aiName).filter(Boolean);
+          logger.info('FC rerank allowed tools', { label: 'RERANK', tools, total: tools.length });
         }
       }
     }
   } catch (e) {
-    logger.warn?.('FC 规划前重排序失败（忽略并继续）', { label: 'RERANK', error: String(e) });
-  }
-  const allowedAiNames = (manifest || []).map((m) => m.aiName).filter(Boolean);
-  if (config.flags.enableVerboseSteps) {
-    logger.info('FC 规划：允许工具数量', { label: 'PLAN', allowedCount: allowedAiNames.length });
+    logger.warn?.('FC rerank failed', { label: 'RERANK', error: String(e) });
   }
 
-  // 历史规划参考
-  let planMemoryMsgs = [];
-  if (config.memory?.enable) {
-    try {
-      const tMem0 = nowMs();
-      if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：MEM search begin', { label: 'MEM' });
-      }
-      const mems = await searchPlanMemories({ objective });
-      if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：MEM search end', { label: 'MEM', ms: nowMs() - tMem0 });
-      }
-      if (Array.isArray(mems) && mems.length) {
-        const lines = mems.map((m, idx) => `#${idx + 1} (score=${m.score.toFixed(2)}):\n${m.text}`).join('\n\n');
-        planMemoryMsgs.push({ role: 'assistant', content: `历史规划参考:\n${lines}` });
-        if (config.flags.enableVerboseSteps) {
-          logger.info('检索到历史规划参考', { label: 'MEM', hits: mems.length, topScore: Number(mems[0]?.score?.toFixed?.(2) || 0), minScore: config.memory.minScore });
-        }
-      }
-    } catch { }
+  try {
+    if (Array.isArray(manifest) && manifest.length > 0 && rerankScoreByAiName && typeof rerankScoreByAiName === 'object') {
+      manifest = manifest.map((m, idx) => {
+        if (!m || !m.aiName) return m;
+        const key = String(m.aiName).trim();
+        const rr = (key && Object.prototype.hasOwnProperty.call(rerankScoreByAiName, key))
+          ? rerankScoreByAiName[key]
+          : null;
+        if (!rr || typeof rr !== 'object') return m;
+        const rankRaw = Number(rr.rank);
+        const rank = (Number.isFinite(rankRaw) && rankRaw > 0) ? Math.floor(rankRaw) : (idx + 1);
+        return {
+          ...m,
+          rerank: {
+            rank,
+            probability: Number(rr.probability || 0),
+            final: Number(rr.final || 0),
+            intent: Number(rr.intent || 0),
+            relevance: Number(rr.relevance || 0),
+            trust: Number(rr.trust || 0)
+          }
+        };
+      });
+    }
+  } catch { }
+
+  manifest = pinTerminalRuntimeInManifest(manifest, { insertIfMissing: true });
+
+  const allowedAiNames = (manifest || []).map((m) => m.aiName).filter(Boolean);
+  if (config.flags.enableVerboseSteps) {
+    logger.info('FC allowed tools prepared', { label: 'PLAN', allowedCount: allowedAiNames.length });
   }
 
   const tPrompt0 = nowMs();
   if (config.flags.enableVerboseSteps) {
-    logger.info('FC 规划：loadPrompt(emit_plan) begin', { label: 'PLAN' });
+    logger.info('FC emit_plan prompt build begin', { label: 'PLAN' });
   }
   const ep = await loadPrompt('emit_plan');
   if (config.flags.enableVerboseSteps) {
-    logger.info('FC 规划：loadPrompt(emit_plan) end', { label: 'PLAN', ms: nowMs() - tPrompt0 });
+    logger.info('FC emit_plan prompt build end', { label: 'PLAN', ms: nowMs() - tPrompt0 });
   }
   const overlays = (context?.promptOverlays || context?.overlays || {});
   const overlayGlobal = overlays.global?.system || overlays.global || '';
@@ -375,45 +541,52 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
     ep.concurrency_hint || ''
   ].filter(Boolean).join('\n\n');
   const policyText = await buildFCPolicy();
-  const planInstrText = await buildPlanFunctionCallInstruction({ allowedAiNames, locale: 'zh-CN' });
+  const planInstrText = await buildPlanFunctionCallInstruction({ allowedAiNames, locale: 'en' });
 
-  // 从相同 runId 复用执行历史（Sentra XML），避免在上游拼接历史
   let historyMessages = [];
+  let toolResultsForAdaptive = [];
   try {
     const runId = context?.runId;
     if (runId) {
       const tHist0 = nowMs();
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：HistoryStore.list begin', { label: 'HISTORY', runId });
+        logger.info('FC historyStore.list begin', { label: 'HISTORY', runId });
       }
       const history = await HistoryStore.list(runId, 0, -1);
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：HistoryStore.list end', { label: 'HISTORY', runId, ms: nowMs() - tHist0, items: Array.isArray(history) ? history.length : 0 });
+        logger.info('FC historyStore.list end', { label: 'HISTORY', runId, ms: nowMs() - tHist0, items: Array.isArray(history) ? history.length : 0 });
       }
-      const toolResults = (history || []).filter(h => h.type === 'tool_result');
-      if (toolResults.length > 0) {
-        const xml = toolResults.map(h => formatSentraResult({
-          stepIndex: Number(h.plannedStepIndex ?? h.stepIndex ?? 0),
-          stepId: h?.stepId,
-          aiName: h.aiName,
-          reason: h.reason,
-          args: h.args || {},
-          result: h.result || {}
-        })).join('\n\n');
-        if (xml.trim()) {
-          historyMessages.push({ role: 'assistant', content: xml });
+      toolResultsForAdaptive = (history || []).filter(h => h.type === 'tool_result');
+      if (toolResultsForAdaptive.length > 0) {
+        for (const h of toolResultsForAdaptive) {
+          const xml = formatSentraResult({
+            stepIndex: Number(h.plannedStepIndex ?? h.stepIndex ?? 0),
+            stepId: h?.stepId,
+            aiName: h.aiName,
+            reason: h.reason,
+            args: h.args || {},
+            result: buildResultForAdaptiveHistory(h)
+          });
+          if (!String(xml || '').trim()) continue;
+          historyMessages.push({ role: 'user', content: xml });
+          historyMessages.push({
+            role: 'assistant',
+            content:
+              `<sentra-message><chat_type>system_task</chat_type><message><segment index="1"><type>text</type><data><text>Recorded tool result for replanning context. step_id=${escapeXmlText(h?.stepId || '')}; tool=${escapeXmlText(h?.aiName || '')}.</text></data></segment></message></sentra-message>`
+          });
         }
       }
     }
   } catch { }
+  const adaptivePlanningMsgs = buildAdaptivePlanningMessages({ context, toolResults: [] });
   const messages = compactMessages([
     { role: 'system', content: sys },
     ...(Array.isArray(conversation) ? conversation : []),
     ...historyMessages,
+    ...adaptivePlanningMsgs,
     { role: 'user', content: renderTemplate(ep.user_goal, { objective }) },
     ...(usePT ? [{ role: 'assistant', content: renderTemplate(ep.assistant_thought, { preThought: preThought || '' }) }] : []),
     { role: 'assistant', content: renderTemplate(ep.assistant_manifest, { manifestBulleted: manifestToXmlToolsCatalog(manifest) }) },
-    ...planMemoryMsgs,
     { role: 'user', content: ep.user_request },
     { role: 'user', content: [policyText, planInstrText].join('\n\n') },
   ]);
@@ -431,30 +604,27 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
   let steps = [];
   let lastContent = '';
 
-  // 规划模型列表：
-  // - 若 PLAN_FC_MODEL 配置了多个模型（逗号分隔），则对每个模型各生成一份候选计划
-  // - 若仅配置 1 个或未配置，则退化为单模型单计划（不再使用单模型 K 变体采样）
   const planModelsRaw = Array.isArray(fc.planModels) ? fc.planModels : [];
   const planModels = planModelsRaw.filter((m) => typeof m === 'string' && m.trim());
   const uniqueModels = Array.from(new Set(planModels));
 
-  // 若未显式配置 PLAN_FC_MODEL，则使用阶段默认模型（getStageModel('plan')）
   const fallbackModel = getStageModel('plan');
   if (uniqueModels.length <= 1) {
     const modelName = uniqueModels[0] || fallbackModel;
     if (runId && isRunCancelled(runId)) {
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：运行已取消，跳过单模型规划', { label: 'PLAN', runId });
+        logger.info('FC plan aborted because run was cancelled (single-model path)', { label: 'PLAN', runId });
       }
-      return { manifest, steps: [] };
+      return { manifest, steps: [], rerankScoreByAiName };
     }
 
     const isValid = (x) => Array.isArray(x?.steps) && x.steps.length > 0;
     const tPlan0 = nowMs();
     if (config.flags.enableVerboseSteps) {
-      logger.info('FC 规划：LLM plan begin', { label: 'PLAN', mode: 'race2', model: modelName });
+      logger.info('FC plan begin', { label: 'PLAN', mode: 'race2', model: modelName });
     }
     const tasks = [0, 1].map((i) => {
+      const controller = new AbortController();
       const t0 = nowMs();
       return generateSinglePlan({
         baseMessages: messages,
@@ -466,6 +636,7 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
         policyText,
         planInstrText,
         model: modelName,
+        signal: controller.signal,
       })
         .then((res) => ({ ok: true, res, i, ms: nowMs() - t0 }))
         .catch((err) => ({ ok: false, res: null, i, ms: nowMs() - t0, error: String(err || '') }));
@@ -473,17 +644,44 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
 
     let pick = await Promise.race(tasks);
     if (!pick?.ok || !isValid(pick?.res)) {
-      try {
-        const other = await tasks[1 - (Number(pick?.i) || 0)];
-        if (other?.ok && isValid(other?.res)) {
-          pick = other;
+      const isTimeoutLike = isTimeoutLikeErrorText(pick?.error);
+      if (isTimeoutLike) {
+        if (config.flags.enableVerboseSteps) {
+          logger.warn?.('FC plan race first pick timeout/abort; skip waiting peer and return no-tool plan', {
+            label: 'PLAN',
+            error: String(pick?.error || '')
+          });
         }
-      } catch { }
+      } else {
+        const otherIndex = 1 - (Number(pick?.i) || 0);
+        const waitPeerMs = Math.max(
+          1000,
+          Math.min(15000, Math.floor(Number(getStageTimeoutMs('plan') || 8000) * 0.1))
+        );
+        try {
+          const other = await Promise.race([
+            tasks[otherIndex],
+            new Promise((resolve) => setTimeout(
+              () => resolve({ ok: false, res: null, i: otherIndex, ms: waitPeerMs, error: `PEER_WAIT_TIMEOUT_${waitPeerMs}` }),
+              waitPeerMs
+            ))
+          ]);
+          if (other?.ok && isValid(other?.res)) {
+            pick = other;
+          } else if (config.flags.enableVerboseSteps) {
+            logger.warn?.('FC plan race peer did not produce valid plan in wait window', {
+              label: 'PLAN',
+              waitPeerMs,
+              peerError: String(other?.error || '')
+            });
+          }
+        } catch { }
+      }
     }
 
     const one = pick?.ok ? (pick?.res || {}) : {};
     if (config.flags.enableVerboseSteps) {
-      logger.info('FC 规划：LLM plan end', {
+      logger.info('FC plan end', {
         label: 'PLAN',
         mode: 'race2',
         model: modelName,
@@ -498,20 +696,20 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
 
     if (runId && isRunCancelled(runId)) {
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 规划：单模型规划完成后运行被取消，返回空计划', { label: 'PLAN', runId });
+        logger.info('FC plan cancelled after race completion; returning empty steps', { label: 'PLAN', runId });
       }
-      return { manifest, steps: [] };
+      return { manifest, steps: [], rerankScoreByAiName };
     }
   } else {
     if (runId && isRunCancelled(runId)) {
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 多模型规划：运行已取消，跳过规划', { label: 'PLAN', runId });
+        logger.info('FC plan aborted because run was cancelled (multi-model path)', { label: 'PLAN', runId });
       }
-      return { manifest, steps: [] };
+      return { manifest, steps: [], rerankScoreByAiName };
     }
 
     if (config.flags.enableVerboseSteps) {
-      logger.info('FC 多模型规划：开始为每个模型生成候选计划', { label: 'PLAN', models: uniqueModels });
+      logger.info('FC multi-model plan begin', { label: 'PLAN', models: uniqueModels });
     }
 
     const tasks = uniqueModels.map((modelName) => {
@@ -535,14 +733,14 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
 
     if (config.flags.enableVerboseSteps) {
       const summary = (results || []).map((r) => ({ model: r.model, ok: !!r.ok, ms: r.ms })).slice(0, 20);
-      logger.info('FC 多模型规划：LLM plan all done', { label: 'PLAN', totalModels: uniqueModels.length, summary });
+      logger.info('FC multi-model planning complete', { label: 'PLAN', totalModels: uniqueModels.length, summary });
     }
 
     if (runId && isRunCancelled(runId)) {
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 多模型规划：规划过程中检测到运行已取消，返回空计划', { label: 'PLAN', runId });
+        logger.info('FC multi-model plan cancelled before candidate selection', { label: 'PLAN', runId });
       }
-      return { manifest, steps: [] };
+      return { manifest, steps: [], rerankScoreByAiName };
     }
 
     const candidates = results
@@ -554,7 +752,7 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
       }));
 
     if (config.flags.enableVerboseSteps) {
-      logger.info('FC 多模型规划：生成候选数量', {
+      logger.info('FC multi-model candidate summary', {
         label: 'PLAN',
         totalModels: uniqueModels.length,
         candidates: candidates.length,
@@ -562,37 +760,48 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
     }
 
     if (candidates.length === 0) {
-      // 若所有模型均未产出有效步骤，则回退到主模型单次规划
-      const primaryModel = uniqueModels[0] || fallbackModel;
-      const one = await generateSinglePlan({
-        baseMessages: messages,
-        allowedAiNames,
-        fc,
-        planningTemp,
-        top_p,
-        maxRetries,
-        policyText,
-        planInstrText,
-        model: primaryModel,
-      });
-      steps = Array.isArray(one.steps) ? one.steps : [];
-      lastContent = one.raw || '';
+      const hasTimeoutLikeFailure = results.some((r) => !r?.ok && isTimeoutLikeErrorText(r?.error));
+      if (hasTimeoutLikeFailure) {
+        if (config.flags.enableVerboseSteps) {
+          logger.warn?.('FC multi-model produced no candidates with timeout/abort failures; skip extra fallback and return no-tool plan', {
+            label: 'PLAN',
+            totalModels: uniqueModels.length
+          });
+        }
+        steps = [];
+        lastContent = '';
+      } else {
+        const primaryModel = uniqueModels[0] || fallbackModel;
+        const one = await generateSinglePlan({
+          baseMessages: messages,
+          allowedAiNames,
+          fc,
+          planningTemp,
+          top_p,
+          maxRetries,
+          policyText,
+          planInstrText,
+          model: primaryModel,
+        });
+        steps = Array.isArray(one.steps) ? one.steps : [];
+        lastContent = one.raw || '';
+      }
     } else if (candidates.length === 1) {
       steps = candidates[0].steps;
       lastContent = candidates[0].raw;
     } else {
       const tPick0 = nowMs();
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 多模型规划：selectBestPlan begin', { label: 'PLAN', candidates: candidates.length });
+        logger.info('FC selectBestPlan begin', { label: 'PLAN', candidates: candidates.length });
       }
       const pick = await selectBestPlan({ objective, manifest, candidates, context });
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 多模型规划：selectBestPlan end', { label: 'PLAN', candidates: candidates.length, ms: nowMs() - tPick0 });
+        logger.info('FC selectBestPlan end', { label: 'PLAN', candidates: candidates.length, ms: nowMs() - tPick0 });
       }
       const idx = Math.max(0, Math.min(candidates.length - 1, Number(pick.index) || 0));
       const best = candidates[idx];
       if (config.flags.enableVerboseSteps) {
-        logger.info('FC 多模型规划：选择候选', {
+        logger.info('FC selectBestPlan chose candidate', {
           label: 'PLAN',
           index: idx,
           model: best.model,
@@ -618,27 +827,25 @@ export async function generatePlanViaFC(objective, mcpcore, context = {}, conver
 
   if (steps.length === 0) {
     const raw = String(lastContent || '');
-    const rawSlice = raw.length > 4000 ? `${raw.slice(0, 4000)}…[truncated ${raw.length - 4000}]` : raw;
-    if (config.flags.enableVerboseSteps || !selected) {
-      logger.info('FC 计划候选选择优（select_plan）结果', {
-        label: 'PLAN',
-        retries: maxRetries,
-        allowedCount: allowedAiNames.length,
-        provider: { baseURL: provider.baseURL, model: planModel },
-        contentRaw: rawSlice,
-      });
-    }
+    const rawSlice = raw.length > 4000 ? `${raw.slice(0, 4000)}...[truncated ${raw.length - 4000}]` : raw;
+    const stageProvider = getStageProvider('plan');
+    const stageModel = getStageModel('plan');
+    logger.warn?.('FC plan produced no valid steps', {
+      label: 'PLAN',
+      retries: maxRetries,
+      allowedCount: allowedAiNames.length,
+      provider: {
+        baseURL: stageProvider?.baseURL || '',
+        model: stageModel || ''
+      },
+      contentRaw: rawSlice,
+    });
   }
   if (config.flags.enableVerboseSteps) {
-    logger.info(`规划生成(FC): 共 ${steps.length} 步`, { label: 'PLAN', stepsPreview: clip(steps) });
+    logger.info('FC plan generated', { label: 'PLAN', stepsCount: steps.length, stepsPreview: clip(steps) });
   }
 
-  // 记忆
-  if (config.memory?.enable) {
-    try { await upsertPlanMemory({ runId: context?.runId || 'unknown', objective, plan: { steps } }); } catch { }
-  }
-
-  return { manifest, steps };
+  return { manifest, steps, rerankScoreByAiName };
 }
 
 export default { generatePlanViaFC };

@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import { XMLParser } from 'fast-xml-parser';
 import type { MessageEvent, NoticeEvent } from './types/onebot';
 import type { SdkInvoke } from './sdk';
 import { createLogger } from './logger';
@@ -19,6 +20,129 @@ function formatEventTimeStr(timeSec: number | undefined): string {
   return `${yyyy}-${MM}-${dd} ${HH}:${mm}:${ss}`;
 }
 
+const cardXmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '',
+  textNodeName: '#text',
+  trimValues: true,
+  parseTagValue: false,
+  parseAttributeValue: false,
+});
+
+function nodeText(node: unknown): string {
+  if (node == null) return '';
+  if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') return String(node);
+  if (Array.isArray(node)) return node.map((x) => nodeText(x)).join(' ').trim();
+  if (typeof node === 'object') {
+    const obj = node as Record<string, unknown>;
+    if (typeof obj['#text'] === 'string') return obj['#text'];
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === '#text') continue;
+      const txt = nodeText(v).trim();
+      if (txt) parts.push(txt);
+    }
+    return parts.join(' ').trim();
+  }
+  return '';
+}
+
+function findFirstTitle(node: unknown): string {
+  if (node == null) return '';
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const title = findFirstTitle(item);
+      if (title) return title;
+    }
+    return '';
+  }
+  if (typeof node !== 'object') return '';
+  const obj = node as Record<string, unknown>;
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.toLowerCase() === 'title') {
+      const t = nodeText(v).trim();
+      if (t) return t;
+    }
+  }
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === '#text') continue;
+    const nested = findFirstTitle(v);
+    if (nested) return nested;
+  }
+  return '';
+}
+
+function extractCardTitle(raw: unknown, maxLen: number): string {
+  const text = typeof raw === 'string' ? raw : String(raw ?? '');
+  if (!text) return '';
+  try {
+    const parsed = cardXmlParser.parse(`<root>${text}</root>`) as Record<string, unknown>;
+    const title = findFirstTitle(parsed?.root);
+    if (title) return title.slice(0, maxLen);
+  } catch {
+  }
+  return '';
+}
+
+
+const FORWARD_NODE_MEDIA_TYPES = new Set(['image', 'video', 'record', 'file']);
+
+function trimmed(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+function sanitizeForwardNodeMediaData(type: string, data: any): Record<string, any> {
+  const src = data && typeof data === 'object' ? data : {};
+  const out: Record<string, any> = {};
+  const fileRaw = src.file ?? (type === 'file' ? (src.name ?? src.file_id) : undefined);
+  const file = trimmed(fileRaw);
+  if (file) out.file = file;
+  const path = trimmed(src.path);
+  const cachePath = trimmed(src.cache_path);
+  if (path) out.path = path;
+  else if (cachePath) out.cache_path = cachePath;
+  return out;
+}
+
+function sanitizeForwardNodeSegment(seg: any): any | null {
+  if (!seg || typeof seg !== 'object') return null;
+  const type = trimmed(seg.type).toLowerCase();
+  if (!type) return null;
+  const srcData = seg.data && typeof seg.data === 'object' ? seg.data : {};
+
+  if (FORWARD_NODE_MEDIA_TYPES.has(type)) {
+    return { type, data: sanitizeForwardNodeMediaData(type, srcData) };
+  }
+  if (type === 'text') {
+    const text = trimmed(srcData.text);
+    return { type, data: text ? { text } : {} };
+  }
+  if (type === 'at') {
+    const qq = trimmed(srcData.qq);
+    return { type, data: qq ? { qq } : {} };
+  }
+  if (type === 'reply') {
+    const id = trimmed(srcData.id ?? srcData.message_id);
+    return { type, data: id ? { id } : {} };
+  }
+  if (type === 'forward') {
+    const messageId = trimmed(srcData.message_id ?? srcData.id);
+    const data: Record<string, any> = {};
+    if (messageId) {
+      data.message_id = messageId;
+      data.id = messageId;
+    }
+    return { type, data };
+  }
+  return { type, data: { ...srcData } };
+}
+
+function sanitizeForwardNodeSegments(raw: any[]): any[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((seg: any) => sanitizeForwardNodeSegment(seg))
+    .filter((seg: any) => !!seg);
+}
 /**
  * 格式化的消息结构
  */
@@ -52,6 +176,10 @@ export interface FormattedMessage {
   text: string;
   /** 消息段数组 */
   segments: Array<{
+    type: string;
+    data: any;
+  }>;
+  message?: Array<{
     type: string;
     data: any;
   }>;
@@ -159,6 +287,7 @@ export class MessageStream {
   private whitelistGroups: Set<number>;
   private whitelistUsers: Set<number>;
   private logFiltered: boolean;
+  private pokeMessageSeq: number;
 
   constructor(options: {
     /** WebSocket服务器端口 */
@@ -192,6 +321,30 @@ export class MessageStream {
     this.whitelistGroups = new Set(options.whitelistGroups ?? []);
     this.whitelistUsers = new Set(options.whitelistUsers ?? []);
     this.logFiltered = options.logFiltered ?? false;
+    this.pokeMessageSeq = Math.max(1, Math.floor(Date.now() % 1000000000));
+  }
+
+  private nextSyntheticPokeMessageId(): number {
+    this.pokeMessageSeq += 1;
+    if (!Number.isFinite(this.pokeMessageSeq) || this.pokeMessageSeq > 2147483000) {
+      this.pokeMessageSeq = 1;
+    }
+    return this.pokeMessageSeq;
+  }
+
+  private withSegmentMessageId(
+    segments: Array<{ type: string; data: Record<string, unknown> }>,
+    messageId: unknown
+  ): Array<{ type: string; data: Record<string, unknown> }> {
+    const mid = messageId == null ? '' : String(messageId).trim();
+    if (!mid || mid === '0') return segments;
+    return segments.map((seg) => {
+      const data = seg.data && typeof seg.data === 'object'
+        ? { ...seg.data }
+        : {};
+      data.message_id = mid;
+      return { type: seg.type, data };
+    });
   }
 
   private isAllowedGroup(groupId: number | undefined): boolean {
@@ -220,6 +373,21 @@ export class MessageStream {
     if (path === 'send.private' || path === 'send.privateReply' || path === 'send.forwardPrivate') {
       const userId = Number(args?.[0]);
       if (!this.isAllowedUser(Number.isFinite(userId) ? userId : undefined)) {
+        throw new Error('user_not_in_whitelist');
+      }
+      return;
+    }
+
+    // Direct poke
+    if (path === 'user.sendPoke') {
+      const userId = Number(args?.[0]);
+      const groupId = Number(args?.[1]);
+      const hasGroup = Number.isFinite(groupId) && groupId > 0;
+      if (hasGroup) {
+        if (!this.isAllowedGroup(groupId)) {
+          throw new Error('group_not_in_whitelist');
+        }
+      } else if (!this.isAllowedUser(Number.isFinite(userId) ? userId : undefined)) {
         throw new Error('user_not_in_whitelist');
       }
       return;
@@ -400,9 +568,17 @@ export class MessageStream {
       }
     }
 
+    const pokeSegmentData: Record<string, any> = {
+      user_id: senderId,
+    };
+    if (msgType === 'group' && groupId) {
+      pokeSegmentData.group_id = groupId;
+    }
+    const pokeSegments = [{ type: 'poke', data: pokeSegmentData }];
+
     const poke: PokeNotice = {
       event_type: 'poke',
-      message_id: 0,
+      message_id: this.nextSyntheticPokeMessageId(),
       time,
       time_str: timeStr,
       type: msgType,
@@ -416,7 +592,8 @@ export class MessageStream {
       group_id: groupId,
       group_name: groupName,
       text: '',
-      segments: [],
+      segments: pokeSegments,
+      message: pokeSegments,
       reply: undefined,
       images: [],
       videos: [],
@@ -851,15 +1028,22 @@ export class MessageStream {
       userId: (ev as any).user_id as number | undefined,
     };
 
-    const segments = (Array.isArray(ev.message) ? ev.message : []).map((seg: any) => ({
-      type: seg?.type,
-      data: seg?.data ? { ...seg.data } : {},
-    }));
+    const rawSegments: Array<{ type: string; data: Record<string, unknown> }> = (Array.isArray(ev.message) ? ev.message : [])
+      .map((seg: any) => {
+        const type = typeof seg?.type === 'string' ? seg.type.trim() : '';
+        if (!type) return null;
+        const data = seg?.data && typeof seg.data === 'object'
+          ? { ...seg.data }
+          : {};
+        return { type, data };
+      })
+      .filter((seg): seg is { type: string; data: Record<string, unknown> } => !!seg);
 
     try {
-      await this.enrichSegmentsMedia(segments, ctx);
+      await this.enrichSegmentsMedia(rawSegments, ctx);
     } catch {
     }
+    const segments = this.withSegmentMessageId(rawSegments, ev.message_id);
 
     const stringifyRaw = (v: any): string => {
       if (typeof v === 'string') return v;
@@ -924,6 +1108,7 @@ export class MessageStream {
     const buildCardFromRaw = (type: string, rawInput: any): any => {
       const rawStr = stringifyRaw(rawInput);
       const obj = tryParseJsonAny(rawInput) ?? tryParseJsonAny(rawStr);
+      const musicMeta = obj?.meta?.music || obj?.metaData?.music || obj?.meta_data?.music;
 
       const metaData = obj?.metaData || obj?.meta_data || obj?.meta || undefined;
       const details = [
@@ -939,16 +1124,21 @@ export class MessageStream {
       ].filter(Boolean);
       const detail1 = (details[0] as any) || undefined;
 
+      const promptRaw = typeof obj?.prompt === 'string' ? obj.prompt.trim() : '';
+      const promptTitle = promptRaw.startsWith('[分享]') ? promptRaw.replace(/^\[分享\]\s*/u, '') : promptRaw;
+
       const title =
+        musicMeta?.title ||
         detail1?.title ||
         metaData?.title ||
-        obj?.prompt ||
+        promptTitle ||
         obj?.title ||
         obj?.meta?.title ||
         obj?.appName ||
         undefined;
 
       const content =
+        musicMeta?.desc ||
         detail1?.desc ||
         metaData?.desc ||
         obj?.desc ||
@@ -958,6 +1148,9 @@ export class MessageStream {
         undefined;
 
       const url =
+        // Music share card
+        musicMeta?.jumpUrl ||
+        musicMeta?.musicUrl ||
         // Napcat get_mini_app_ark 响应示例：metaData.detail_1.url
         detail1?.url ||
         // 兼容少量历史字段（非递归猜测，仅枚举）
@@ -969,6 +1162,9 @@ export class MessageStream {
         undefined;
 
       const image =
+        // Music share card
+        pickUrlLike(musicMeta?.preview) ||
+        pickUrlLike(musicMeta?.tagIcon) ||
         // Napcat get_mini_app_ark 响应示例：metaData.detail_1.preview / icon
         pickUrlLike(detail1?.preview) ||
         pickUrlLike(detail1?.icon) ||
@@ -979,6 +1175,8 @@ export class MessageStream {
         undefined;
 
       const source =
+        musicMeta?.tag ||
+        musicMeta?.appName ||
         detail1?.source ||
         detail1?.sourceName ||
         detail1?.tag ||
@@ -1019,9 +1217,155 @@ export class MessageStream {
     };
 
     // 提取纯文本
+    const normalizeText = (v: unknown): string => String(v ?? '').trim();
+    const normalizeSegmentList = (raw: any[]): any[] => {
+      return sanitizeForwardNodeSegments(raw);
+    };
+
+    const normalizeForwardData = (source: any): Record<string, any> => {
+      const out: Record<string, any> = {};
+      const messageId = source?.message_id ?? source?.id;
+      if (messageId != null && String(messageId).trim()) {
+        out.message_id = String(messageId).trim();
+      }
+
+      const rawNodes = Array.isArray(source?.nodes)
+        ? source.nodes
+        : (Array.isArray(source?.content) ? source.content : []);
+      if (rawNodes.length > 0) {
+        const nodes = rawNodes
+          .map((node: any) => {
+            const n = node?.data && typeof node.data === 'object' ? node.data : node;
+            const senderIdRaw = n?.sender_id ?? n?.user_id ?? n?.sender?.user_id;
+            const senderNameRaw = n?.sender_name ?? n?.nickname ?? n?.sender?.nickname;
+            const merged: any[] = [];
+            if (Array.isArray(n?.message)) merged.push(...n.message);
+            if (Array.isArray(n?.content)) merged.push(...n.content);
+            if (Array.isArray(n?.data?.content)) merged.push(...n.data.content);
+            if (Array.isArray(n?.data?.message)) merged.push(...n.data.message);
+            const msgSegs = normalizeSegmentList(merged);
+            const messageText = normalizeText(n?.message_text || this.renderSegmentsMarkdownInline(msgSegs));
+            const nodeOut: Record<string, any> = {};
+            if (senderIdRaw != null && String(senderIdRaw).trim()) nodeOut.sender_id = String(senderIdRaw).trim();
+            if (senderNameRaw != null && String(senderNameRaw).trim()) nodeOut.sender_name = String(senderNameRaw).trim();
+            if (n?.time != null && String(n.time).trim()) nodeOut.time = String(n.time).trim();
+            if (msgSegs.length > 0) nodeOut.message = msgSegs;
+            if (messageText) nodeOut.message_text = messageText;
+            return nodeOut;
+          })
+          .filter((node: any) => Object.keys(node).length > 0);
+        if (nodes.length > 0) {
+          out.nodes = nodes;
+          out.count = nodes.length;
+          out.preview = nodes.slice(0, 30).map((node: any) => {
+            const name = node.sender_name || `user_${node.sender_id || ''}`;
+            const t = normalizeText(node.message_text);
+            return `${name}: ${t || '[empty]'}`;
+          });
+        }
+      }
+
+      if (out.count == null) {
+        const countNum = Number(source?.count);
+        if (Number.isFinite(countNum) && countNum >= 0) out.count = countNum;
+      }
+      if (!out.preview && Array.isArray(source?.preview)) {
+        out.preview = source.preview
+          .map((p: any) => normalizeText(p))
+          .filter(Boolean)
+          .slice(0, 30);
+      }
+      return out;
+    };
+
+    const normalizeCardData = (type: string, source: any): Record<string, any> => {
+      const s = source && typeof source === 'object' ? source : {};
+      if (type === 'share') {
+        const title = normalizeText(s.title);
+        const url = normalizeText(s.url);
+        const content = normalizeText(s.content);
+        const image = normalizeText(s.image);
+        const sourceName = normalizeText(s.source || s.app || s.origin);
+        const out: Record<string, any> = {};
+        if (title) out.title = title;
+        if (url) out.url = url;
+        if (content) out.content = content;
+        if (image) out.image = image;
+        if (sourceName) out.source = sourceName;
+        out.preview = compactText(String(title || content || url || ''));
+        return out;
+      }
+
+      if (type === 'xml') {
+        const raw = s.data ?? s.xml ?? s.raw ?? '';
+        const rawStr = stringifyRaw(raw);
+        const title = extractCardTitle(rawStr, 160) || '';
+        const out: Record<string, any> = {};
+        if (title) out.title = title;
+        out.preview = compactText(String(title || rawStr || ''), 240);
+        if (!title && rawStr) out.raw = rawStr;
+        return out;
+      }
+
+      const raw = s.data ?? s.json ?? s.content ?? s.raw ?? s;
+      const card = buildCardFromRaw(type, raw);
+      const out: Record<string, any> = {};
+      if (normalizeText(card?.title)) out.title = normalizeText(card?.title);
+      if (normalizeText(card?.url)) out.url = normalizeText(card?.url);
+      if (normalizeText(card?.content)) out.content = normalizeText(card?.content);
+      if (normalizeText(card?.image)) out.image = normalizeText(card?.image);
+      if (normalizeText(card?.source)) out.source = normalizeText(card?.source);
+      if (normalizeText(card?.preview)) out.preview = normalizeText(card?.preview);
+      const rawStr = stringifyRaw(card?.raw || raw);
+      if (!out.title && !out.preview && rawStr) out.raw = rawStr;
+      return out;
+    };
+
+    const normalizeCardPayloadObject = (source: any): Record<string, any> => {
+      const s = source && typeof source === 'object' ? { ...source } : {};
+      const keys: Array<'data' | 'json' | 'content' | 'raw'> = ['data', 'json', 'content', 'raw'];
+      for (const key of keys) {
+        const value = s[key];
+        const parsed = tryParseJsonAny(value);
+        if (parsed && typeof parsed === 'object') {
+          s[key] = parsed;
+        }
+      }
+      return s;
+    };
+
+    for (const seg of segments) {
+      if (!seg || typeof seg !== 'object') continue;
+      seg.type = normalizeText(seg.type).toLowerCase();
+      const data = seg.data && typeof seg.data === 'object' ? seg.data : {};
+      if (FORWARD_NODE_MEDIA_TYPES.has(seg.type)) {
+        // Keep media payload minimal at adapter boundary:
+        // only file + (path|cache_path), drop url/file_size/sub_type/etc.
+        seg.data = sanitizeForwardNodeMediaData(seg.type, data);
+      } else if (seg.type === 'text') {
+        seg.data = { text: normalizeText(data.text) };
+      } else if (seg.type === 'at') {
+        seg.data = data.qq === 'all'
+          ? { qq: 'all' }
+          : (normalizeText(data.qq) ? { qq: normalizeText(data.qq) } : {});
+      } else if (seg.type === 'reply') {
+        const replyId = normalizeText(data.id ?? data.message_id);
+        seg.data = replyId ? { id: replyId } : {};
+      } else if (seg.type === 'forward') {
+        seg.data = normalizeForwardData(data);
+      } else if (seg.type === 'json' || seg.type === 'xml' || seg.type === 'app' || seg.type === 'share') {
+        const normalizedSource =
+          seg.type === 'json' || seg.type === 'app'
+            ? normalizeCardPayloadObject(data)
+            : { ...data };
+        seg.data = { ...normalizedSource, ...normalizeCardData(seg.type, normalizedSource) };
+      }
+    }
+
     const text = segments
       .filter((seg: any) => seg.type === 'text')
-      .map((seg: any) => String(seg.data?.text ?? ''))
+      .map((seg: any) => String(seg.data?.text ?? '').trim())
+      .filter(Boolean)
       .join('');
 
     // 提取多媒体
@@ -1085,8 +1429,7 @@ export class MessageStream {
       } else if (seg.type === 'xml') {
         const raw = seg.data?.data ?? seg.data?.xml ?? '';
         const rawStr = stringifyRaw(raw);
-        const m = rawStr ? rawStr.match(/<title>([^<]{1,64})<\/title>/i) : null;
-        const title = m?.[1];
+        const title = extractCardTitle(rawStr, 64) || undefined;
         const preview = compactText(title || rawStr);
         cards.push({ type: 'xml', raw: rawStr, title, preview });
       } else if (seg.type === 'share') {
@@ -1121,8 +1464,9 @@ export class MessageStream {
       objective: '', // 稍后生成
       sender_id: ev.user_id ?? ev.sender?.user_id ?? 0,
       sender_name: ev.sender?.nickname || String(ev.user_id ?? ev.sender?.user_id ?? 0),
-      text,
+      text: text || compactText(this.renderSegmentsMarkdownInline(segments), 1200),
       segments,
+      message: segments,
       images,
       videos,
       files,
@@ -1219,12 +1563,13 @@ export class MessageStream {
                   groupId: ev.group_id,
                   userId: ev.user_id,
                 });
+                const nodeSegs = sanitizeForwardNodeSegments(baseSegs);
                 return {
                   sender_id: node.sender_id || node.user_id || node.sender?.user_id,
                   sender_name: node.sender_name || node.nickname || node.sender?.nickname,
                   time: node.time,
-                  message: baseSegs,
-                  message_text: this.renderSegmentsMarkdownInline(baseSegs),
+                  message: nodeSegs,
+                  message_text: this.renderSegmentsMarkdownInline(nodeSegs),
                 };
               }));
               fwd.nodes = nodesOut;
@@ -1928,6 +2273,15 @@ export class MessageStream {
         continue;
       }
 
+      if (s.type === 'poke') {
+        const uid = s.data?.user_id ?? s.data?.qq ?? '';
+        const tid = s.data?.target_id ?? '';
+        if (uid && tid) parts.push(`poke:${uid}->${tid}`);
+        else if (uid) parts.push(`poke:${uid}`);
+        else parts.push('poke');
+        continue;
+      }
+
       if (s.type === 'face') {
         const text = s.data?.text;
         const id = s.data?.id;
@@ -2059,7 +2413,7 @@ export class MessageStream {
 
       if (s.type === 'xml') {
         const raw = s.data?.data ?? s.data?.xml ?? '';
-        const title = typeof raw === 'string' ? (raw.match(/<title>([^<]{1,100})<\/title>/i)?.[1] || raw) : '';
+        const title = extractCardTitle(raw, 100) || (typeof raw === 'string' ? raw : '');
         parts.push(`XML卡片: ${title || '(无标题)'}`);
         continue;
       }
@@ -2278,6 +2632,9 @@ export class MessageStream {
                     : (Array.isArray(n?.content) ? n.content : (Array.isArray(n?.data?.content) ? n.data.content : []));
                   if (Array.isArray(segs) && segs.length > 0) {
                     await this.enrichSegmentsMedia(segs, ctx, depth + 1);
+                    const nodeSegs = sanitizeForwardNodeSegments(segs);
+                    n.message = nodeSegs;
+                    n.message_text = this.renderSegmentsMarkdownInline(nodeSegs);
                   }
                 }),
               );
@@ -2305,13 +2662,14 @@ export class MessageStream {
                 const baseSegs = merged;
 
                 await this.enrichSegmentsMedia(baseSegs, ctx, depth + 1);
+                const nodeSegs = sanitizeForwardNodeSegments(baseSegs);
 
                 return {
                   sender_id: nData?.sender_id || nData?.user_id || nData?.sender?.user_id,
                   sender_name: nData?.sender_name || nData?.nickname || nData?.sender?.nickname,
                   time: nData?.time,
-                  message: baseSegs,
-                  message_text: this.renderSegmentsMarkdownInline(baseSegs),
+                  message: nodeSegs,
+                  message_text: this.renderSegmentsMarkdownInline(nodeSegs),
                 };
               }),
             );
@@ -2386,13 +2744,14 @@ export class MessageStream {
 
               // 递归 enrich 子节点（包含子转发）
               await this.enrichSegmentsMedia(baseSegs, ctx, depth + 1);
+              const nodeSegs = sanitizeForwardNodeSegments(baseSegs);
 
               return {
                 sender_id: nData?.sender_id || nData?.user_id || nData?.sender?.user_id,
                 sender_name: nData?.sender_name || nData?.nickname || nData?.sender?.nickname,
                 time: nData?.time,
-                message: baseSegs,
-                message_text: this.renderSegmentsMarkdownInline(baseSegs),
+                message: nodeSegs,
+                message_text: this.renderSegmentsMarkdownInline(nodeSegs),
               };
             }),
           );

@@ -118,7 +118,7 @@ export async function createRagSdk({ lang, watchEnv, envPath } = {}) {
   }
 
   async function embedQuery(text) {
-    const embeddingModel = getEnv('EMBEDDING_MODEL', { defaultValue: 'text-embedding-3-small' });
+    const embeddingModel = getEnv('EMBEDDING_MODEL', { defaultValue: 'qwen3-embedding-4b' });
     const emb = await embeddingOpenai.embeddings.create({ model: embeddingModel, input: String(text ?? '') });
     const v = emb.data?.[0]?.embedding;
     if (!Array.isArray(v)) throw new Error('Embedding failed');

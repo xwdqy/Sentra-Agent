@@ -1,9 +1,56 @@
 import { DateTime } from 'luxon';
 import { createLogger } from './logger.js';
 import { getEnv } from './envHotReloader.js';
-import type { ChatMessage } from '../src/types.js';
+import type { ChatMessage, ModelFormatFixParams } from '../src/types.js';
+import { countTextTokens, truncateTextByTokens } from './tokenTextTruncator.js';
+import { parseSentraToolsInvocations } from './protocolUtils.js';
+import { runSentraFormatFixPipeline } from './responseFormatGuard.js';
+import { escapeXml, escapeXmlAttr } from './xmlUtils.js';
+import {
+  buildSentraContractPolicyText,
+  buildSentraRootDirectiveFromContract,
+  getSentraContractOutputInstruction,
+  getSentraToolsContract
+} from './sentraToolsContractEngine.js';
 
 const logger = createLogger('ContextCompressor');
+
+const SUMMARY_CONTRACT_ID = 'context_summary_emit';
+const SUMMARY_CONTRACT = getSentraToolsContract(SUMMARY_CONTRACT_ID);
+const SUMMARY_OUTPUT_SPEC = SUMMARY_CONTRACT.outputSpec && typeof SUMMARY_CONTRACT.outputSpec === 'object'
+  ? SUMMARY_CONTRACT.outputSpec as Record<string, unknown>
+  : {};
+const SUMMARY_REQUIRED_INVOKE = SUMMARY_OUTPUT_SPEC.requiredInvoke && typeof SUMMARY_OUTPUT_SPEC.requiredInvoke === 'object'
+  ? SUMMARY_OUTPUT_SPEC.requiredInvoke as Record<string, unknown>
+  : {};
+const SUMMARY_INVOKE_NAME = String(SUMMARY_REQUIRED_INVOKE.name || 'emit_context_summary').trim() || 'emit_context_summary';
+const SUMMARY_CONTRACT_POLICY_TEXT = buildSentraContractPolicyText(SUMMARY_CONTRACT_ID);
+const SUMMARY_CONTRACT_OUTPUT_INSTRUCTION = getSentraContractOutputInstruction(SUMMARY_CONTRACT_ID);
+
+const SUMMARY_MAX_RETRIES = 2;
+const SUMMARY_PREVIEW_MAX_CHARS = 2000;
+const SUMMARY_OUTPUT_SHAPE_EXAMPLE = String(
+  SUMMARY_OUTPUT_SPEC.shapeExample ||
+  [
+    '<sentra-tools>',
+    `  <invoke name="${SUMMARY_INVOKE_NAME}">`,
+    '    <parameter name="summary"><string>...</string></parameter>',
+    '    <parameter name="keywords"><array><string>...</string></array></parameter>',
+    '    <parameter name="eventBoard"><array><string>...</string></array></parameter>',
+    '    <parameter name="artifacts"><array><object><string name="captain">...</string></object></array></parameter>',
+    '    <parameter name="confidence"><number>0.8</number></parameter>',
+    '  </invoke>',
+    '</sentra-tools>'
+  ].join('\n')
+);
+
+const HISTORY_MAX_TOKENS = (() => {
+  const direct = Number(getEnv('CONTEXT_SUMMARY_HISTORY_MAX_TOKENS', '0'));
+  if (Number.isFinite(direct) && direct > 0) return Math.floor(direct);
+  const legacyChars = Number(getEnv('CONTEXT_SUMMARY_HISTORY_MAX_CHARS', '8000'));
+  if (Number.isFinite(legacyChars) && legacyChars > 0) return Math.max(120, Math.floor(legacyChars / 4));
+  return 2000;
+})();
 
 const BOT_PRIMARY_NAME = (() => {
   try {
@@ -11,113 +58,79 @@ const BOT_PRIMARY_NAME = (() => {
     const list = raw.split(',').map((s) => s.trim()).filter(Boolean);
     return list[0] || 'you';
   } catch {
-
     return 'you';
   }
 })();
 
-/**
- * Build system prompt for conversation summarization.
- * Follows industry best practices (Semantic Kernel / LangChain style):
- * - Keep only information that is useful for future reasoning
- * - Drop small talk and formatting noise
- * - Focus on user intent, facts, decisions, plans, and preferences
- *
- * IMPORTANT: Although instructions are in English, the FINAL SUMMARY
- * MUST be written in fluent Chinese.
- */
-function buildSummarySystemPrompt({ chatType, botName }: { chatType?: string; botName?: string }) {
-  const scene = chatType === 'group'
-    ? 'a multi-user QQ group chat'
-    : 'a one-to-one QQ private chat';
+const SUMMARY_SYSTEM_PROMPT_TEMPLATE = [
+  'You are "{{bot_name}}", the primary AI agent in {{scene}}.',
+  'Read the XML evidence and output ONLY one sentra-tools call for context summary.',
+  '',
+  'Output contract:',
+  '{{contract_output_instruction}}',
+  '{{contract_policy_text}}',
+  '',
+  'Summary policy:',
+  '- Output summary in Chinese.',
+  '- Keep key user goals, constraints, deliverables, outcomes.',
+  '- Keep concrete entities for keywords.',
+  '- eventBoard must be actionable and complete sentences.',
+  '- No markdown or extra prose outside sentra-tools.'
+].join('\n');
 
-  return [
-    `You are "${botName}", the primary AI agent in ${scene}.`,
-    'Your role is to compress long chat histories into short, information-dense summaries while keeping the same persona and speaking style that you normally use in the chat.',
-    '',
-    'Your goal is to preserve all important meaning while aggressively removing redundancy and noise.',
-    '',
-    'Summarization rules:',
-    '- Focus on: user goals, questions, requests, preferences, emotions, important facts, decisions, plans, and TODO items.',
-    '- Ignore: greetings, thanks, emojis, idle chatter, short acknowledgements, and unimportant digressions.',
-    '- Tools / searches / external systems: keep only the key conclusions that matter to the users; do NOT describe the execution process.',
-    '- Code / logs / XML / JSON: only describe them briefly in natural language when they are essential to the user\'s intent.',
-    '- Do NOT invent facts that are not clearly supported by the conversation.',
-    `- History lines are formatted like "[角色] 内容": lines starting with "[${botName}]" are your own previous replies in the chat, lines starting with "[用户]" are user messages, other labels are system or meta information. Treat them all as parts of one coherent dialogue.`,
-    `- When you summarize, keep the tone, style and identity of "${botName}". Do not say you are a helper or a tool; just speak as yourself in the chat.`,
-    '- Even though these instructions are in English, the SUMMARY ITSELF MUST be written in fluent Chinese, in natural, concise style.',
-    '- When the caller asks for a "one-sentence" summary, you MUST output at most one complete Chinese sentence.'
-  ].join('\n');
-}
+const SUMMARY_REPAIR_PROMPT_TEMPLATE = [
+  '<sentra-summary-repair>',
+  '  <attempt>{{attempt}}</attempt>',
+  '  <max_attempts>{{max_attempts}}</max_attempts>',
+  '  <failure_reason>{{failure_reason}}</failure_reason>',
+  '  <required_output>',
+  '    <rule>{{contract_output_instruction}}</rule>',
+  '    <rule>{{contract_policy_text}}</rule>',
+  '    <rule>Do not output any extra text.</rule>',
+  '  </required_output>',
+  '  <failure_detail>{{failure_detail}}</failure_detail>',
+  '  <required_shape_example>{{required_shape_example}}</required_shape_example>',
+  '  <last_response_preview>{{last_response_preview}}</last_response_preview>',
+  '</sentra-summary-repair>'
+].join('\n');
 
-function formatTimeRange({ timeStart, timeEnd, timezone = 'Asia/Shanghai' }: {
-  timeStart?: number;
-  timeEnd?: number;
-  timezone?: string;
-} = {}) {
-  if (!timeStart && !timeEnd) {
-    return '时间范围：未指定';
-  }
+type SummaryArtifact = {
+  captain?: string;
+  type?: string;
+  kind?: string;
+  outputPath?: string;
+  originalPath?: string;
+  path?: string;
+  url?: string;
+  note?: string;
+};
 
-  try {
-    const fmt = (ms: number) => DateTime.fromMillis(ms).setZone(timezone).toFormat('yyyy-LL-dd HH:mm:ss');
-    const startStr = timeStart ? fmt(timeStart) : '未知起点';
-    const endStr = timeEnd ? fmt(timeEnd) : '当前/未知终点';
-    return `时间范围：${startStr} ~ ${endStr}`;
-  } catch {
-    const startStr = timeStart ? new Date(timeStart).toISOString() : '未知起点';
-    const endStr = timeEnd ? new Date(timeEnd).toISOString() : '当前/未知终点';
-    return `时间范围：${startStr} ~ ${endStr}`;
-  }
-}
+type ParsedSummaryOutput = {
+  summary: string;
+  confidence: number | null;
+  keywords: string[];
+  eventBoard: string[];
+  artifacts: SummaryArtifact[];
+};
 
-function buildLinearHistoryText(historyConversations: ChatMessage[] | undefined, maxChars = 8000) {
-  if (!Array.isArray(historyConversations) || historyConversations.length === 0) {
-    return '';
-  }
+export type CompressContextResult = {
+  summary: string;
+  keywords: string[];
+  eventBoard: string[];
+  artifacts: SummaryArtifact[];
+  confidence: number | null;
+  messages: ChatMessage[];
+  model?: string;
+};
 
-  let out = '';
+type SummaryHistoryEntry = {
+  index: number;
+  role: string;
+  content: string;
+  tokens: number;
+  truncated: boolean;
+};
 
-  for (const msg of historyConversations) {
-    if (!msg || typeof msg.content !== 'string') continue;
-    let role;
-    if (msg.role === 'assistant') {
-      role = BOT_PRIMARY_NAME;
-    } else if (msg.role === 'user') {
-      role = '用户';
-    } else {
-      role = String(msg.role || '系统');
-    }
-
-    const line = `[${role}] ${msg.content}\n\n`;
-
-    if (out.length + line.length > maxChars) {
-      const remain = Math.max(0, maxChars - out.length);
-      out += line.substring(0, remain);
-      break;
-    }
-
-    out += line;
-  }
-
-  return out.trim();
-}
-
-/**
- * 构建一次上下文压缩任务的消息列表（用于传给 Agent.chat）
- *
- * @param {Object} options
- * @param {Array<{role: string, content: string}>} options.historyConversations - 按时间排序的历史对话
- * @param {'group'|'private'} options.chatType - 对话类型：群聊 / 私聊
- * @param {string} [options.groupId] - 群ID（群聊时可选）
- * @param {string} [options.userId] - 用户ID（可选，仅用于日志）
- * @param {number} [options.timeStart] - 时间范围起点（毫秒）
- * @param {number} [options.timeEnd] - 时间范围终点（毫秒）
- * @param {number} [options.maxSummarySentences=1] - 摘要最多句数
- * @param {string} [options.presetText] - Agent 预设提示词（可选，会拼接到 system 提示词末尾）
- *
- * @returns {Array<{role: string, content: string}>}
- */
 interface ContextSummaryOptions {
   historyConversations?: ChatMessage[];
   chatType?: 'group' | 'private';
@@ -129,84 +142,6 @@ interface ContextSummaryOptions {
   presetText?: string;
 }
 
-export function buildContextSummaryMessages(options: ContextSummaryOptions = {}): ChatMessage[] {
-  const {
-    historyConversations,
-    chatType = 'group',
-    groupId,
-    userId,
-    timeStart,
-    timeEnd,
-    maxSummarySentences = 1,
-    presetText
-  } = options;
-
-  const historyText = buildLinearHistoryText(historyConversations);
-
-  const baseSystem = buildSummarySystemPrompt({ chatType, botName: BOT_PRIMARY_NAME });
-
-  let systemContent = baseSystem;
-  if (presetText && typeof presetText === 'string' && presetText.trim()) {
-    systemContent = [
-      baseSystem,
-      '',
-      '---',
-      '',
-      'Below is the long-term persona preset for you in Chinese. When summarizing, keep the same identity, tone and style as described here (do not mention this preset explicitly):',
-      presetText.trim()
-    ].join('\n');
-  }
-
-  const metaParts = [];
-  metaParts.push(chatType === 'group' ? '对话类型：QQ 群聊' : '对话类型：QQ 私聊');
-  if (groupId) metaParts.push(`群ID：${groupId}`);
-  if (userId) metaParts.push(`用户ID：${userId}`);
-  const timeRangeArgs: { timeStart?: number; timeEnd?: number } = {
-    ...(timeStart !== undefined ? { timeStart } : {}),
-    ...(timeEnd !== undefined ? { timeEnd } : {})
-  };
-  metaParts.push(formatTimeRange(timeRangeArgs));
-  metaParts.push(`摘要要求：最多 ${maxSummarySentences} 句中文，总结出这段对话的核心内容和意图。`);
-  metaParts.push('下面是按时间顺序排列的原始对话内容（包含 Sentra 内部 XML 标签，如 <sentra-user-question> / <sentra-tools> / <sentra-result> 等）：');
-  metaParts.push('请你自动忽略这些技术标签本身，只关注它们所表达的真实语义（谁在做什么、提出了什么问题、工具返回了什么结论等）。');
-
-  const userContent = [
-    metaParts.join('\n'),
-    '',
-    '=== 对话开始 ===',
-    historyText || '(当前时间范围内没有对话内容)',
-    '=== 对话结束 ===',
-    '',
-    '现在请根据上述对话内容，生成精炼的中文摘要。'
-  ].join('\n');
-
-  return [
-    { role: 'system', content: systemContent },
-    { role: 'user', content: userContent }
-  ];
-}
-
-/**
- * 使用给定的 Agent 实例，对一段历史对话进行压缩摘要。
- * 调用方需要传入已构建好的 Agent（必须提供 chat(messages, options?) 方法）。
- *
- * @param {Object} params
- * @param {Object} params.agent - 已初始化的 Agent 实例
- * @param {Array<{role: string, content: string}>} params.historyConversations - 历史对话
- * @param {'group'|'private'} params.chatType
- * @param {string} [params.groupId]
- * @param {string} [params.userId]
- * @param {number} [params.timeStart]
- * @param {number} [params.timeEnd]
- * @param {number} [params.maxSummarySentences=1]
- * @param {string} [params.model] - 可选，压缩用模型名称，未提供时由 Agent 默认模型决定
- * @param {string} [params.presetText] - 可选，Agent 预设提示词，用于保持概括时的人设一致
- * @param {string} [params.apiBaseUrl] - 可选，API 基础 URL
- * @param {string} [params.apiKey] - 可选，API 密钥
- * @param {number} [params.timeout] - 可选，超时时间（毫秒）
- *
- * @returns {Promise<{ summary: string, messages: Array, model?: string }>}
- */
 interface CompressContextParams extends ContextSummaryOptions {
   agent?: { chat: (conversations: ChatMessage[], options?: Record<string, unknown>) => Promise<unknown> };
   model?: string;
@@ -215,7 +150,358 @@ interface CompressContextParams extends ContextSummaryOptions {
   timeout?: number;
 }
 
-export async function compressContext(params: CompressContextParams = {}) {
+function renderPromptText(template: string, vars: Record<string, unknown>): string {
+  const tpl = String(template || '');
+  if (!tpl) return '';
+  return tpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => (
+    Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : ''
+  ));
+}
+
+function clipText(raw: unknown, max = SUMMARY_PREVIEW_MAX_CHARS): string {
+  const text = String(raw ?? '').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function normalizeStringList(input: unknown, maxItems = 24, maxLen = 120): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of input) {
+    const text = String(item ?? '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const clipped = text.length > maxLen ? text.slice(0, maxLen) : text;
+    const key = clipped.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clipped);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function normalizeArtifacts(input: unknown, maxItems = 32): SummaryArtifact[] {
+  if (!Array.isArray(input)) return [];
+  const out: SummaryArtifact[] = [];
+  const seen = new Set<string>();
+  for (const row of input) {
+    if (!row || typeof row !== 'object') continue;
+    const rec = row as Record<string, unknown>;
+    const captain = String(rec.captain ?? rec.name ?? rec.title ?? '').trim();
+    const type = String(rec.type ?? '').trim();
+    const kind = String(rec.kind ?? '').trim();
+    const outputPath = String(rec.outputPath ?? rec.path ?? rec.file ?? '').trim();
+    const originalPath = String(rec.originalPath ?? '').trim();
+    const url = String(rec.url ?? rec.link ?? '').trim();
+    const note = String(rec.note ?? rec.desc ?? '').trim();
+    if (!captain && !outputPath && !originalPath && !url && !note) continue;
+    const key = `${captain.toLowerCase()}|${outputPath.toLowerCase()}|${originalPath.toLowerCase()}|${url.toLowerCase()}|${note.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      ...(captain ? { captain: captain.slice(0, 120) } : {}),
+      ...(type ? { type: type.slice(0, 80) } : {}),
+      ...(kind ? { kind: kind.slice(0, 80) } : {}),
+      ...(outputPath ? { outputPath: outputPath.slice(0, 1200) } : {}),
+      ...(originalPath ? { originalPath: originalPath.slice(0, 1200) } : {}),
+      ...(url ? { url: url.slice(0, 1200) } : {}),
+      ...(note ? { note: note.slice(0, 240) } : {})
+    });
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+async function buildSummarySystemPrompt({ chatType, botName }: { chatType?: string; botName?: string }) {
+  const scene = chatType === 'group'
+    ? 'a multi-user QQ group chat'
+    : 'a one-to-one QQ private chat';
+  return renderPromptText(SUMMARY_SYSTEM_PROMPT_TEMPLATE, {
+    bot_name: botName || BOT_PRIMARY_NAME,
+    scene,
+    contract_output_instruction: SUMMARY_CONTRACT_OUTPUT_INSTRUCTION,
+    contract_policy_text: SUMMARY_CONTRACT_POLICY_TEXT
+  });
+}
+
+async function buildSummaryRootDirectiveXml(): Promise<string> {
+  return buildSentraRootDirectiveFromContract({
+    contractId: SUMMARY_CONTRACT_ID,
+    idPrefix: 'context_summary',
+    scope: 'single_turn',
+    phaseOverride: 'ContextSummary',
+    objectiveOverride: 'Summarize XML evidence and output one structured sentra-tools call.'
+  });
+}
+
+function formatTimeRange({ timeStart, timeEnd, timezone = 'Asia/Shanghai' }: {
+  timeStart?: number;
+  timeEnd?: number;
+  timezone?: string;
+} = {}) {
+  if (!timeStart && !timeEnd) return 'not_specified';
+  try {
+    const fmt = (ms: number) => DateTime.fromMillis(ms).setZone(timezone).toFormat('yyyy-LL-dd HH:mm:ss');
+    const startStr = timeStart ? fmt(timeStart) : 'unknown_start';
+    const endStr = timeEnd ? fmt(timeEnd) : 'unknown_end_or_now';
+    return `${startStr} ~ ${endStr}`;
+  } catch {
+    const startStr = timeStart ? new Date(timeStart).toISOString() : 'unknown_start';
+    const endStr = timeEnd ? new Date(timeEnd).toISOString() : 'unknown_end_or_now';
+    return `${startStr} ~ ${endStr}`;
+  }
+}
+
+function normalizeHistoryRole(roleLike: unknown): string {
+  const role = String(roleLike || '').trim().toLowerCase();
+  if (role === 'assistant') return BOT_PRIMARY_NAME;
+  if (role === 'user') return 'user';
+  return role || 'system';
+}
+
+function buildSummaryHistoryEntries(
+  historyConversations: ChatMessage[] | undefined,
+  maxTokens = HISTORY_MAX_TOKENS
+): SummaryHistoryEntry[] {
+  if (!Array.isArray(historyConversations) || historyConversations.length === 0) return [];
+
+  const out: SummaryHistoryEntry[] = [];
+  let usedTokens = 0;
+
+  for (let i = 0; i < historyConversations.length; i++) {
+    const msg = historyConversations[i];
+    if (!msg || typeof msg.content !== 'string') continue;
+    const rawContent = String(msg.content || '').trim();
+    if (!rawContent) continue;
+
+    const role = normalizeHistoryRole(msg.role);
+    const overheadTokens = 16;
+    const contentTokens = countTextTokens(rawContent);
+
+    if (usedTokens + overheadTokens + contentTokens <= maxTokens) {
+      out.push({ index: i + 1, role, content: rawContent, tokens: contentTokens, truncated: false });
+      usedTokens += overheadTokens + contentTokens;
+      continue;
+    }
+
+    const remain = Math.max(0, maxTokens - usedTokens - overheadTokens);
+    if (remain <= 0) break;
+
+    const clipped = truncateTextByTokens(rawContent, { maxTokens: remain, suffix: ' ...' }).text.trim();
+    if (!clipped) break;
+    out.push({ index: i + 1, role, content: clipped, tokens: countTextTokens(clipped), truncated: true });
+    break;
+  }
+
+  return out;
+}
+
+function buildSummaryRequestXml(options: ContextSummaryOptions = {}): string {
+  const {
+    historyConversations,
+    chatType = 'group',
+    groupId,
+    userId,
+    timeStart,
+    timeEnd,
+    maxSummarySentences = 1
+  } = options;
+
+  const historyEntries = buildSummaryHistoryEntries(historyConversations, HISTORY_MAX_TOKENS);
+  const timeRange = formatTimeRange({
+    ...(timeStart !== undefined ? { timeStart } : {}),
+    ...(timeEnd !== undefined ? { timeEnd } : {})
+  });
+
+  const lines: string[] = [];
+  lines.push('<sentra-context-summary-input>');
+  lines.push('  <meta>');
+  lines.push(`    <chat_type>${escapeXml(chatType === 'group' ? 'group' : 'private')}</chat_type>`);
+  if (groupId) lines.push(`    <group_id>${escapeXml(groupId)}</group_id>`);
+  if (userId) lines.push(`    <user_id>${escapeXml(userId)}</user_id>`);
+  lines.push(`    <time_range timezone="Asia/Shanghai">${escapeXml(timeRange)}</time_range>`);
+  lines.push('  </meta>');
+
+  lines.push('  <summary_policy>');
+  lines.push(`    <max_sentences>${Math.max(1, Math.floor(maxSummarySentences || 1))}</max_sentences>`);
+  lines.push('    <language>zh-CN</language>');
+  lines.push('    <focus>goal,facts,constraints,deliverables,outcomes</focus>');
+  lines.push('  </summary_policy>');
+
+  lines.push('  <output_schema>');
+  lines.push('    <required>summary,keywords,eventBoard</required>');
+  lines.push('    <summary_type>string</summary_type>');
+  lines.push('    <keywords_type>array[string]</keywords_type>');
+  lines.push('    <event_board_type>array[string] via parameter name eventBoard</event_board_type>');
+  lines.push('    <artifacts_type>array[object captain/outputPath/originalPath/url/type/kind/note] (optional)</artifacts_type>');
+  lines.push('  </output_schema>');
+
+  lines.push(`  <history_messages count="${historyEntries.length}">`);
+  for (const item of historyEntries) {
+    lines.push(
+      `    <message index="${escapeXmlAttr(String(item.index))}" role="${escapeXmlAttr(item.role)}" truncated="${item.truncated ? 'true' : 'false'}">`
+    );
+    lines.push(`      <content>${escapeXml(item.content)}</content>`);
+    lines.push('    </message>');
+  }
+  lines.push('  </history_messages>');
+
+  lines.push('  <summarize_task>');
+  lines.push('    <instruction>Generate concise Chinese summary from XML evidence.</instruction>');
+  lines.push(`    <instruction>Return only one sentra-tools invoke named ${SUMMARY_INVOKE_NAME}.</instruction>`);
+  lines.push('  </summarize_task>');
+  lines.push('</sentra-context-summary-input>');
+  return lines.join('\n');
+}
+
+function buildContextSummaryFewShotMessages(): ChatMessage[] {
+  const root = [
+    '<sentra-root-directive>',
+    '  <id>context_summary_demo</id>',
+    '  <type>context_summary</type>',
+    '  <constraints>',
+    '    <item>Output sentra-tools only.</item>',
+    `    <item>Use invoke name ${SUMMARY_INVOKE_NAME}.</item>`,
+    '    <item>Use parameter wrappers for each field.</item>',
+    '  </constraints>',
+    '</sentra-root-directive>'
+  ].join('\n');
+
+  const user1 = [
+    root,
+    '',
+    '<sentra-context-summary-input>',
+    '  <meta><chat_type>private</chat_type><user_id>2166683295</user_id></meta>',
+    '  <history_messages count="2">',
+    '    <message index="1" role="user"><content>在私聊里，雨安说：画一个八重神子。</content></message>',
+    '    <message index="2" role="assistant"><content>&lt;sentra-message&gt;已回传图片&lt;/sentra-message&gt;</content></message>',
+    '  </history_messages>',
+    '</sentra-context-summary-input>'
+  ].join('\n');
+
+  const assistant1 = [
+    '<sentra-tools>',
+    `  <invoke name="${SUMMARY_INVOKE_NAME}">`,
+    '    <parameter name="summary"><string>雨安在私聊要求绘制八重神子，当前已完成图片交付。</string></parameter>',
+    '    <parameter name="keywords"><array><string>雨安</string><string>八重神子</string><string>绘图</string></array></parameter>',
+    '    <parameter name="eventBoard"><array><string>用户偏好二次元角色绘图，后续相似需求可直接走出图能力。</string></array></parameter>',
+    '    <parameter name="confidence"><number>0.92</number></parameter>',
+    '  </invoke>',
+    '</sentra-tools>'
+  ].join('\n');
+
+  return [
+    { role: 'user', content: user1 },
+    { role: 'assistant', content: assistant1 }
+  ];
+}
+
+function buildSummaryParseFailureReason(raw: string, args: Record<string, unknown>): string {
+  const text = String(raw || '');
+  const invokePattern = new RegExp(`<invoke\\b[^>]*name=["']${SUMMARY_INVOKE_NAME}["'][^>]*>[\\s\\S]*?<\\/invoke>`, 'i');
+  const invokeBlock = (text.match(invokePattern) || [])[0] || '';
+  const hasNamedTypedNodeDirectly = /<(string|number|array|object|boolean)\b[^>]*\bname\s*=\s*["'][^"']+["'][^>]*>/i.test(invokeBlock);
+  const hasParameterWrapper = /<parameter\b[^>]*\bname\s*=\s*["'][^"']+["'][^>]*>/i.test(invokeBlock);
+  if (hasNamedTypedNodeDirectly && !hasParameterWrapper) {
+    return 'invalid_xml_shape: named typed nodes were placed directly under invoke; each field must be wrapped by parameter.';
+  }
+  if (Object.prototype.hasOwnProperty.call(args, 'event_board')) {
+    return 'invalid_parameter_name: use parameter name eventBoard (camelCase), not event_board.';
+  }
+  if (Object.prototype.hasOwnProperty.call(args, 'eventboard')) {
+    return 'invalid_parameter_name: use parameter name eventBoard (camelCase), not eventboard.';
+  }
+  return 'missing_required_parameters: required parameter names are summary, keywords, eventBoard.';
+}
+
+async function buildSummaryRepairPrompt(
+  lastResponse: string,
+  reason: string,
+  failureDetail: string,
+  attempt: number,
+  maxAttempts: number
+): Promise<string> {
+  return renderPromptText(SUMMARY_REPAIR_PROMPT_TEMPLATE, {
+    attempt,
+    max_attempts: maxAttempts,
+    failure_reason: escapeXml(reason),
+    failure_detail: escapeXml(failureDetail),
+    contract_output_instruction: escapeXml(SUMMARY_CONTRACT_OUTPUT_INSTRUCTION),
+    contract_policy_text: escapeXml(SUMMARY_CONTRACT_POLICY_TEXT),
+    required_shape_example: escapeXml(SUMMARY_OUTPUT_SHAPE_EXAMPLE),
+    last_response_preview: escapeXml(clipText(lastResponse, SUMMARY_PREVIEW_MAX_CHARS))
+  });
+}
+
+function parseSummaryFromToolsOutput(raw: unknown): { parsed: ParsedSummaryOutput | null; invokeFound: boolean; reason: string } {
+  const text = String(raw ?? '').trim();
+  if (!text) return { parsed: null, invokeFound: false, reason: 'empty_response' };
+
+  const invokes = parseSentraToolsInvocations(text);
+  if (!Array.isArray(invokes) || invokes.length === 0) {
+    return { parsed: null, invokeFound: false, reason: 'no_sentra_tools_invocation' };
+  }
+
+  const invoke = invokes.find((it) => String(it?.aiName || '').trim() === SUMMARY_INVOKE_NAME);
+  if (!invoke) return { parsed: null, invokeFound: false, reason: `missing_invoke_${SUMMARY_INVOKE_NAME}` };
+
+  const args = invoke.args && typeof invoke.args === 'object' ? invoke.args as Record<string, unknown> : {};
+  const hasSummary = Object.prototype.hasOwnProperty.call(args, 'summary');
+  const hasKeywords = Object.prototype.hasOwnProperty.call(args, 'keywords');
+  const hasEventBoard = Object.prototype.hasOwnProperty.call(args, 'eventBoard');
+  if (!hasSummary || !hasKeywords || !hasEventBoard) {
+    return { parsed: null, invokeFound: true, reason: buildSummaryParseFailureReason(text, args) };
+  }
+
+  const summary = String(args.summary ?? '').trim();
+  if (!summary) return { parsed: null, invokeFound: true, reason: 'missing_or_empty_summary' };
+  if (!Array.isArray(args.keywords)) return { parsed: null, invokeFound: true, reason: 'keywords_not_array' };
+  if (!Array.isArray(args.eventBoard)) return { parsed: null, invokeFound: true, reason: 'event_board_not_array' };
+
+  const confidenceRaw = Number(args.confidence);
+  const confidence = Number.isFinite(confidenceRaw) && confidenceRaw >= 0 && confidenceRaw <= 1 ? confidenceRaw : null;
+
+  return {
+    parsed: {
+      summary,
+      confidence,
+      keywords: normalizeStringList(args.keywords, 24, 80),
+      eventBoard: normalizeStringList(args.eventBoard, 32, 2000),
+      artifacts: Array.isArray(args.artifacts) ? normalizeArtifacts(args.artifacts, 48) : []
+    },
+    invokeFound: true,
+    reason: ''
+  };
+}
+
+export async function buildContextSummaryMessages(options: ContextSummaryOptions = {}): Promise<ChatMessage[]> {
+  const { chatType = 'group', presetText } = options;
+  const baseSystem = await buildSummarySystemPrompt({ chatType, botName: BOT_PRIMARY_NAME });
+  const rootDirectiveXml = await buildSummaryRootDirectiveXml();
+  const requestXml = buildSummaryRequestXml(options);
+
+  let systemContent = baseSystem;
+  if (presetText && typeof presetText === 'string' && presetText.trim()) {
+    systemContent = [
+      baseSystem,
+      '',
+      '---',
+      '',
+      'Below is your long-term persona preset. Keep the same identity and tone while summarizing:',
+      presetText.trim()
+    ].join('\n');
+  }
+
+  const fewShotMessages = buildContextSummaryFewShotMessages();
+  return [
+    { role: 'system', content: systemContent },
+    ...fewShotMessages,
+    { role: 'user', content: `${rootDirectiveXml}\n\n${requestXml}` }
+  ];
+}
+
+export async function compressContext(params: CompressContextParams = {}): Promise<CompressContextResult> {
   const {
     agent,
     historyConversations,
@@ -233,12 +519,19 @@ export async function compressContext(params: CompressContextParams = {}) {
   } = params;
 
   if (!agent || typeof agent.chat !== 'function') {
-    throw new Error('compressContext: 需要传入带有 chat(messages, options) 方法的 agent 实例');
+    throw new Error('compressContext: agent.chat(messages, options) is required');
   }
 
   if (!Array.isArray(historyConversations) || historyConversations.length === 0) {
-    logger.debug('compressContext: 历史为空，返回空摘要');
-    return { summary: '', messages: [], model };
+    return {
+      summary: '',
+      keywords: [],
+      eventBoard: [],
+      artifacts: [],
+      confidence: null,
+      messages: [],
+      ...(model ? { model } : {})
+    };
   }
 
   const summaryOptions: ContextSummaryOptions = {
@@ -252,8 +545,7 @@ export async function compressContext(params: CompressContextParams = {}) {
     ...(presetText !== undefined ? { presetText } : {})
   };
 
-  const messages = buildContextSummaryMessages(summaryOptions);
-
+  const conversation: ChatMessage[] = await buildContextSummaryMessages(summaryOptions);
   const options = {
     ...(model ? { model } : {}),
     ...(apiBaseUrl ? { apiBaseUrl } : {}),
@@ -263,16 +555,98 @@ export async function compressContext(params: CompressContextParams = {}) {
 
   logger.debug(
     `compressContext: chatType=${chatType} groupId=${groupId || ''} userId=${userId || ''} ` +
-      `历史条数=${historyConversations.length}, maxSummarySentences=${maxSummarySentences}`
+    `historyCount=${historyConversations.length}, maxSummarySentences=${maxSummarySentences}`
   );
 
-  const response = await agent.chat(messages, options);
-  const summary = (response || '').toString().trim();
+  const maxAttempts = SUMMARY_MAX_RETRIES + 1;
+  let lastReason = 'unknown_parse_error';
 
-  logger.info(
-    `compressContext: 完成摘要 chatType=${chatType} groupId=${groupId || ''} ` +
-      `历史条数=${historyConversations.length}, 摘要长度=${summary.length}`
-  );
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await agent.chat(conversation, options);
+    const responseText = String(response ?? '').trim();
+    const parsed = parseSummaryFromToolsOutput(responseText);
 
-  return { summary, messages, model };
+    if (parsed.parsed) {
+      logger.info(
+        `compressContext: summary done chatType=${chatType} groupId=${groupId || ''} ` +
+        `historyCount=${historyConversations.length}, summaryLength=${parsed.parsed.summary.length}, attempt=${attempt}`
+      );
+      return {
+        summary: parsed.parsed.summary,
+        keywords: parsed.parsed.keywords,
+        eventBoard: parsed.parsed.eventBoard,
+        artifacts: parsed.parsed.artifacts,
+        confidence: parsed.parsed.confidence,
+        messages: conversation,
+        ...(model ? { model } : {})
+      };
+    }
+
+    lastReason = parsed.reason || 'invalid_structured_summary_output';
+    const failureDetail = parsed.reason || buildSummaryParseFailureReason(responseText, {});
+
+    let repairCandidate = responseText;
+    let formatFixApplied = false;
+    let formatFixReason = '';
+    try {
+      const fixParams: ModelFormatFixParams = {
+        expectedOutput: 'sentra_tools',
+        candidateOutput: responseText
+      };
+      if (agent) fixParams.agent = agent as unknown as NonNullable<ModelFormatFixParams['agent']>;
+      if (conversation.length > 0) fixParams.conversations = conversation;
+      if (typeof model === 'string' && model.trim()) fixParams.model = model;
+      if (typeof options.timeout === 'number' && Number.isFinite(options.timeout) && options.timeout > 0) {
+        fixParams.timeout = options.timeout;
+      }
+      if (typeof groupId === 'string' && groupId.trim()) fixParams.groupId = groupId;
+      if (lastReason) fixParams.lastErrorReason = lastReason;
+      const fixed = await runSentraFormatFixPipeline(fixParams);
+      if (typeof fixed === 'string' && fixed.trim()) {
+        formatFixApplied = fixed.trim() !== responseText;
+        repairCandidate = fixed.trim();
+        const reparsed = parseSummaryFromToolsOutput(repairCandidate);
+        if (reparsed.parsed) {
+          logger.info('compressContext: summary parsed after format-fix pipeline', {
+            attempt,
+            maxAttempts,
+            originalReason: lastReason,
+            historyCount: historyConversations.length
+          });
+          return {
+            summary: reparsed.parsed.summary,
+            keywords: reparsed.parsed.keywords,
+            eventBoard: reparsed.parsed.eventBoard,
+            artifacts: reparsed.parsed.artifacts,
+            confidence: reparsed.parsed.confidence,
+            messages: conversation,
+            ...(model ? { model } : {})
+          };
+        }
+        formatFixReason = reparsed.reason || 'format_fix_output_parse_failed';
+      }
+    } catch (e) {
+      logger.warn('compressContext: format-fix pipeline failed', { attempt, maxAttempts, reason: String(e) });
+    }
+
+    logger.warn('compressContext: structured summary parse failed', {
+      attempt,
+      maxAttempts,
+      reason: lastReason,
+      formatFixApplied,
+      formatFixReason,
+      invokeFound: parsed.invokeFound,
+      responsePreview: clipText(responseText, SUMMARY_PREVIEW_MAX_CHARS)
+    });
+
+    if (attempt >= maxAttempts) break;
+
+    conversation.push({ role: 'assistant', content: repairCandidate || '<empty_response />' });
+    conversation.push({
+      role: 'user',
+      content: await buildSummaryRepairPrompt(repairCandidate, lastReason, failureDetail, attempt + 1, maxAttempts)
+    });
+  }
+
+  throw new Error(`compressContext: failed to parse ${SUMMARY_INVOKE_NAME} after ${maxAttempts} attempts (${lastReason})`);
 }

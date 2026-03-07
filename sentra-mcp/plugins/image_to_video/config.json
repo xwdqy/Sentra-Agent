@@ -15,33 +15,6 @@
           "type": "string"
         },
         "description": "参考图片列表（至少 1 张）。每个元素支持：1) 本地绝对路径（含盘符/根目录）；2) http/https URL。"
-      },
-      "schedule": {
-        "type": "object",
-        "properties": {
-          "when": {
-            "type": "string",
-            "description": "时间表达：如 '5分钟后' / '30秒后' / '明天09:00' / '2025-12-16 21:30' / ISO 字符串。请使用清晰、可解析的时间表达，避免使用『稍后』『改天』『有空的时候』『尽快』『5分钟之后』等模糊说法。"
-          },
-          "language": {
-            "type": "string",
-            "description": "语言标识，例如 zh|en（默认 zh）"
-          },
-          "timezone": {
-            "type": "string",
-            "description": "IANA 时区名称，例如 Asia/Shanghai"
-          },
-          "targetISO": {
-            "type": "string",
-            "description": "预解析好的绝对时间（ISO 字符串），例如 '2025-12-16T21:30:00+08:00'；如提供，将被上游优先用作目标时间。"
-          }
-        },
-        "required": [
-          "when",
-          "targetISO"
-        ],
-        "additionalProperties": true,
-        "description": "可选：当用户需要延迟处理或延迟反馈时使用。具体是仅延迟反馈还是到点再执行，由上层调度策略（例如 immediate_exec / delayed_exec）决定；若到点未完成，将先反馈进行中状态。"
       }
     },
     "required": [
@@ -53,5 +26,18 @@
   "timeoutMs": 600000,
   "meta": {
     "streamSupport": true
-  }
+  },
+  "trigger_keywords": [
+    "图生视频",
+    "图片转视频",
+    "image to video",
+    "animate image"
+  ],
+  "trigger_patterns": [
+    "(图生视频|图片转视频).{0,12}(image to video|animate image)",
+    "(image to video|animate image).{0,12}(图生视频|图片转视频)",
+    "(图生视频|图片转视频|image to video|animate image)"
+  ],
+  "keyword_boost": 67,
+  "regex_boost": 92
 }

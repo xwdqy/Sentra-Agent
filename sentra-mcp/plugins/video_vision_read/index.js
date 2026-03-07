@@ -6,6 +6,11 @@ import mime from 'mime-types';
 import { httpRequest } from '../../src/utils/http.js';
 import { toAbsoluteLocalPath } from '../../src/utils/path.js';
 import { ok, fail } from '../../src/utils/result.js';
+import {
+  resolveModelFailoverPolicy,
+  resolvePluginModelCandidates,
+  runWithModelFailover,
+} from '../../src/utils/plugin_llm_failover.js';
 
 function isTimeoutError(e) {
   const msg = String(e?.message || e || '').toLowerCase();
@@ -206,7 +211,15 @@ async function legacyHandler(args = {}, options = {}) {
   const penv = options?.pluginEnv || {};
   const apiKey = penv.VIDEO_VISION_API_KEY || process.env.VIDEO_VISION_API_KEY || config.llm.apiKey;
   const baseURL = penv.VIDEO_VISION_BASE_URL || process.env.VIDEO_VISION_BASE_URL || config.llm.baseURL;
-  const model = penv.VIDEO_VISION_MODEL || process.env.VIDEO_VISION_MODEL || config.llm.model;
+  const modelArg = String(args.model || '').trim();
+  const modelCandidates = resolvePluginModelCandidates({
+    pluginEnv: penv,
+    primaryKey: 'VIDEO_VISION_MODEL',
+    explicitModel: modelArg,
+    defaultModel: config.llm.model,
+  });
+  const model = String(modelCandidates[0] || '').trim();
+  const failoverPolicy = resolveModelFailoverPolicy(penv);
   const maxVideoSizeMB = Number(penv.VIDEO_VISION_MAX_SIZE_MB || process.env.VIDEO_VISION_MAX_SIZE_MB || 50);
   const mode = normalizeVideoVisionMode(penv.VIDEO_VISION_MODE || process.env.VIDEO_VISION_MODE || 'openai');
   const timeoutMs = Number(penv.VIDEO_VISION_TIMEOUT_MS || process.env.VIDEO_VISION_TIMEOUT_MS || penv.PLUGIN_TIMEOUT_MS || process.env.PLUGIN_TIMEOUT_MS || 360000);
@@ -246,20 +259,28 @@ async function legacyHandler(args = {}, options = {}) {
   
   try {
     if (mode === 'gemini' || isGeminiBaseUrl(baseURL)) {
-      const url = buildGeminiGenerateContentUrl(baseURL, model);
       const parts = [{ text: prompt }];
       for (const it of prepared) {
         parts.push({ inlineData: { mimeType: it.mime || 'video/mp4', data: it.base64 } });
       }
-      logger.info?.('video_vision_read:calling_api', { label: 'PLUGIN', provider: 'gemini', url, model, partCount: parts.length });
-      const res = await postJsonWithRetry(
-        url,
-        { contents: [{ role: 'user', parts }], generationConfig: { temperature: 0 } },
-        timeoutMs,
-        retries,
-        retryBaseMs,
-        { ...(apiKey ? { 'x-goog-api-key': apiKey } : {}) }
-      );
+      logger.info?.('video_vision_read:calling_api', { label: 'PLUGIN', provider: 'gemini', model, partCount: parts.length });
+      const { value: res, model: usedModel } = await runWithModelFailover({
+        models: modelCandidates,
+        policy: failoverPolicy,
+        tag: 'video_vision_read',
+        meta: { provider: 'gemini', baseURL },
+        execute: async (pickedModel) => {
+          const url = buildGeminiGenerateContentUrl(baseURL, pickedModel);
+          return postJsonWithRetry(
+            url,
+            { contents: [{ role: 'user', parts }], generationConfig: { temperature: 0 } },
+            timeoutMs,
+            retries,
+            retryBaseMs,
+            { ...(apiKey ? { 'x-goog-api-key': apiKey } : {}) }
+          );
+        },
+      });
       const content = pickGeminiText(res?.data);
       logger.info?.('video_vision_read:api_success', { label: 'PLUGIN', provider: 'gemini', responseLength: content?.length || 0 });
 
@@ -272,7 +293,8 @@ async function legacyHandler(args = {}, options = {}) {
           description: content,
           video_count: videos.length,
           formats,
-          total_size_mb: totalSizeMB.toFixed(2)
+          total_size_mb: totalSizeMB.toFixed(2),
+          model: usedModel
         }
       };
     }
@@ -287,14 +309,20 @@ async function legacyHandler(args = {}, options = {}) {
     const url = `${normalizeBaseUrl(baseURL)}/chat/completions`;
     const messages = [{ role: 'user', content: items }];
     logger.info?.('video_vision_read:calling_api', { label: 'PLUGIN', provider: 'openai_compatible', url, model, itemCount: items.length });
-    const res = await postJsonWithRetry(
-      url,
-      { model, messages },
-      timeoutMs,
-      retries,
-      retryBaseMs,
-      { Authorization: `Bearer ${apiKey}` }
-    );
+    const { value: res, model: usedModel } = await runWithModelFailover({
+      models: modelCandidates,
+      policy: failoverPolicy,
+      tag: 'video_vision_read',
+      meta: { provider: 'openai_compatible', baseURL },
+      execute: async (pickedModel) => postJsonWithRetry(
+        url,
+        { model: pickedModel, messages },
+        timeoutMs,
+        retries,
+        retryBaseMs,
+        { Authorization: `Bearer ${apiKey}` }
+      ),
+    });
     const content = res?.data?.choices?.[0]?.message?.content || '';
     logger.info?.('video_vision_read:api_success', { label: 'PLUGIN', provider: 'openai_compatible', responseLength: content?.length || 0 });
     
@@ -309,7 +337,8 @@ async function legacyHandler(args = {}, options = {}) {
         description: content, 
         video_count: videos.length, 
         formats,
-        total_size_mb: totalSizeMB.toFixed(2)
+        total_size_mb: totalSizeMB.toFixed(2),
+        model: usedModel
       } 
     };
   } catch (e) {
@@ -332,3 +361,6 @@ export default async function handler(args = {}, options = {}) {
   }
   return ok(out);
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

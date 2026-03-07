@@ -11,13 +11,23 @@
 
 ## When to use
 
-- 用户明确要求“禁言某人 X 分钟/到某时间”，且你能拿到真实群号与 QQ 号。
+- 目标与工具能力一致：QQ平台：对群成员禁言
+- 可提供必需入参：`group_id`、`user_id`。
+- 目标路由已明确：`group_id`、`user_id`。
+- 你明确接受该操作可能产生的副作用（发送/修改/写入/生成）。
 
-## When NOT to use
+## When not to use
 
-- 拿不到真实 `group_id/user_id` 或禁言时长不明确。
-- 用户意图不明确/可能误伤对象。
+- 缺少必需入参时不要调用：`group_id`、`user_id`。
+- 路由不明确时不要调用（需明确 `group_id`、`user_id`）。
+- 仅希望查询信息、且不希望产生副作用时，不要调用。
 
+## Success Criteria
+
+- Must have `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be non-empty, `data.request.requestId` must be present, and `data.request.args` must match this call (`group_id, user_id, duration`).
+- `data.response` must be present (non-null object/string), proving RPC was sent and acknowledged.
+- Retry guidance: timeout/network may retry once with same args; input/schema errors should regenerate args; business rejection should replan.
 ## Input
 
 - Required:

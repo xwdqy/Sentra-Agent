@@ -38,6 +38,9 @@ importers:
       '@opentelemetry/semantic-conventions':
         specifier: ^1.37.0
         version: 1.39.0
+      '@xterm/headless':
+        specifier: ^5.5.0
+        version: 5.5.0
       ajv:
         specifier: ^8.12.0
         version: 8.17.1
@@ -481,6 +484,9 @@ packages:
   '@xmldom/xmldom@0.8.11':
     resolution: {integrity: sha512-cQzWCtO6C8TQiYl1ruKNn2U6Ao4o4WBBcbL61yJl84x+j5sOWWFU9X7DpND8XZG3daDppSsigMdfAIl2upQBRw==}
     engines: {node: '>=10.0.0'}
+
+  '@xterm/headless@5.5.0':
+    resolution: {integrity: sha512-5xXB7kdQlFBP82ViMJTwwEc3gKCLGKR/eoxQm4zge7GPBl86tCdI0IdPJjoKd8mUSFXz5V7i/25sfsEkP4j46g==}
 
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==}
@@ -3086,6 +3092,8 @@ snapshots:
     optional: true
 
   '@xmldom/xmldom@0.8.11': {}
+
+  '@xterm/headless@5.5.0': {}
 
   abort-controller@3.0.0:
     dependencies:

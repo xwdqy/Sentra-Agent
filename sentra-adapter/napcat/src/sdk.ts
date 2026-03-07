@@ -179,7 +179,7 @@ export type SdkInvoke = ((action: string, params?: any) => Promise<OneBotRespons
             message_text?: string;
           }>;
         }>;
-        cards: Array<{ type: string; title?: string; url?: string; content?: string; image?: string; raw?: any; preview?: string }>;
+        cards: Array<{ type: string; raw?: any; [key: string]: any }>;
         faces: Array<{ id?: string; text?: string }>;
       };
     }>;
@@ -958,6 +958,118 @@ export function createSDK(init?: SDKInit): SdkInvoke {
         referredPlain = embeddedPlain || '';
       }
 
+      const normalizeForwardNodeSegments = (raw: any[]): any[] => {
+        if (!Array.isArray(raw)) return [];
+        const trim = (v: unknown) => String(v ?? '').trim();
+        const mediaTypes = new Set(['image', 'video', 'record', 'file']);
+        const normalizeMedia = (type: string, data: any) => {
+          const src = data && typeof data === 'object' ? data : {};
+          const out: any = {};
+          const fileRaw = src.file ?? (type === 'file' ? (src.name ?? src.file_id) : undefined);
+          const file = trim(fileRaw);
+          if (file) out.file = file;
+          const path = trim(src.path);
+          const cachePath = trim(src.cache_path);
+          if (path) out.path = path;
+          else if (cachePath) out.cache_path = cachePath;
+          return out;
+        };
+        return raw
+          .map((seg: any) => {
+            if (!seg || typeof seg !== 'object') return null;
+            const type = trim(seg.type).toLowerCase();
+            if (!type) return null;
+            const data = seg.data && typeof seg.data === 'object' ? seg.data : {};
+            if (mediaTypes.has(type)) {
+              return { type, data: normalizeMedia(type, data) };
+            }
+            if (type === 'text') {
+              const text = trim(data.text);
+              return { type, data: text ? { text } : {} };
+            }
+            if (type === 'at') {
+              const qq = trim(data.qq);
+              return { type, data: qq ? { qq } : {} };
+            }
+            if (type === 'reply') {
+              const id = trim(data.id ?? data.message_id);
+              return { type, data: id ? { id } : {} };
+            }
+            if (type === 'forward') {
+              const messageId = trim(data.message_id ?? data.id);
+              const out: any = {};
+              if (messageId) {
+                out.message_id = messageId;
+                out.id = messageId;
+              }
+              return { type, data: out };
+            }
+            return { type, data: { ...data } };
+          })
+          .filter(Boolean);
+      };
+
+      const normalizeForwardNode = (node: any) => {
+        const n = node?.data && typeof node.data === 'object' ? node.data : node;
+        const merged: any[] = [];
+        if (Array.isArray(n?.message)) merged.push(...n.message);
+        if (Array.isArray(n?.content)) merged.push(...n.content);
+        if (Array.isArray(n?.data?.content)) merged.push(...n.data.content);
+        if (Array.isArray(n?.data?.message)) merged.push(...n.data.message);
+        if (merged.length === 0) {
+          if (typeof n?.content === 'string') merged.push({ type: 'text', data: { text: n.content } });
+          else if (typeof n?.message === 'string') merged.push({ type: 'text', data: { text: n.message } });
+        }
+        const msgSegs = normalizeForwardNodeSegments(merged);
+        return {
+          sender_id: n?.sender_id || n?.user_id || n?.sender?.user_id,
+          sender_name: n?.sender_name || n?.nickname || n?.sender?.nickname || n?.sender?.card,
+          time: n?.time,
+          message: msgSegs,
+          message_text: String(n?.message_text || renderSegmentsMarkdownInline(msgSegs) || '').trim(),
+        };
+      };
+
+      const normalizeForwardNodes = (nodesLike: any): any[] => {
+        if (!Array.isArray(nodesLike)) return [];
+        return nodesLike
+          .map((n: any) => normalizeForwardNode(n))
+          .filter((n: any) => n && (n.message_text || (Array.isArray(n.message) && n.message.length > 0)));
+      };
+
+      const buildForwardPreview = (nodes: any[], fallbackPreview?: any): string[] => {
+        if (Array.isArray(nodes) && nodes.length > 0) {
+          return nodes
+            .map((n: any) => {
+              const sender = n?.sender_name || n?.sender_id || '?';
+              const text = String(n?.message_text || '').trim();
+              return `${sender}: ${text || '[空消息]'}`;
+            })
+            .filter(Boolean)
+            .slice(0, 30);
+        }
+        if (Array.isArray(fallbackPreview)) {
+          return fallbackPreview.map((p: any) => String(p || '').trim()).filter(Boolean).slice(0, 30);
+        }
+        return [];
+      };
+
+      const extractForwardNodesFromDetail = (detail: any): any[] => {
+        const data = detail?.data ?? detail;
+        return (
+          (detail?.messages as any[]) ||
+          (detail?.data as any)?.messages ||
+          (data as any)?.message ||
+          (data as any)?.messages ||
+          (data as any)?.content ||
+          (data as any)?.data?.content ||
+          (data as any)?.data?.messages ||
+          (data as any)?.data?.message ||
+          (detail?.data as any[]) ||
+          []
+        );
+      };
+
       const collectMedia = (segs?: any[]) => {
         const images: any[] = [];
         const videos: any[] = [];
@@ -972,47 +1084,36 @@ export function createSDK(init?: SDKInit): SdkInvoke {
             if (s.type === 'image') {
               images.push(s.data || {});
             } else if (s.type === 'video') {
-              videos.push({ file: s.data?.file, url: s.data?.url, size: s.data?.file_size });
+              videos.push(s.data || {});
             } else if (s.type === 'file') {
               files.push(s.data || {});
             } else if (s.type === 'record') {
               records.push(s.data || {});
             } else if (s.type === 'forward' && s.data) {
-              forwards.push({ id: s.data.id });
-            } else if (s.type === 'face' && s.data) {
-              faces.push({ id: s.data.id, text: s.data.text });
-            } else if (s.type === 'json') {
-              const raw = s.data?.data ?? s.data?.content ?? s.data?.json ?? '';
-              let preview = '';
-              try {
-                const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                // 尝试提取有意义的字段：prompt/desc/title/view 等
-                preview = obj?.prompt || obj?.desc || obj?.meta?.detail_1?.desc || obj?.meta?.news?.desc || obj?.view || obj?.title || '';
-                if (!preview && obj?.config?.type) preview = `类型: ${obj.config.type}`;
-                if (!preview) preview = typeof raw === 'string' ? raw : JSON.stringify(raw);
-              } catch {
-                preview = typeof raw === 'string' ? raw : '';
+              const data = s.data && typeof s.data === 'object' ? s.data : {};
+              const messageId = (data as any).message_id ?? (data as any).id;
+              const rawNodes = Array.isArray((data as any).nodes)
+                ? (data as any).nodes
+                : (Array.isArray((data as any).content) ? (data as any).content : []);
+              const nodes = normalizeForwardNodes(rawNodes);
+              const preview = buildForwardPreview(nodes, (data as any).preview);
+              const out: any = { ...data };
+              if (messageId != null && String(messageId).trim()) {
+                out.message_id = String(messageId).trim();
+                if (!out.id) out.id = String(messageId).trim();
               }
-              cards.push({ type: 'json', raw, preview });
-            } else if (s.type === 'xml') {
-              const raw = s.data?.data ?? s.data?.xml ?? '';
-              const m = typeof raw === 'string' ? raw.match(/<title>([^<]{1,64})<\/title>/i) : null;
-              const preview = m?.[1] || (typeof raw === 'string' ? raw : '');
-              cards.push({ type: 'xml', raw, preview });
-            } else if (s.type === 'share') {
-              cards.push({ type: 'share', title: s.data?.title, url: s.data?.url, content: s.data?.content, image: s.data?.image, preview: s.data?.title || s.data?.url });
-            } else if (s.type === 'app') {
-              const raw = s.data?.content ?? s.data?.data ?? '';
-              let title: string | undefined; let url: string | undefined; let image: string | undefined; let content: string | undefined;
-              try {
-                const obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                title = obj?.meta?.news?.title || obj?.meta?.detail_1?.title || obj?.prompt || obj?.meta?.title || obj?.title;
-                content = obj?.meta?.news?.desc || obj?.meta?.detail_1?.desc || obj?.desc || obj?.meta?.desc;
-                url = obj?.meta?.news?.jumpUrl || obj?.meta?.detail_1?.qqdocurl || obj?.meta?.news?.url || obj?.url;
-                image = obj?.meta?.news?.preview || obj?.meta?.detail_1?.preview || obj?.meta?.preview || obj?.cover;
-              } catch { }
-              const preview = title || (typeof raw === 'string' ? raw : '');
-              cards.push({ type: 'app', title, url, image, content, raw, preview });
+              if (nodes.length > 0) {
+                out.nodes = nodes;
+                out.content = rawNodes;
+                out.count = typeof (data as any).count === 'number' ? (data as any).count : nodes.length;
+              }
+              if (preview.length > 0) out.preview = preview;
+              forwards.push(out);
+            } else if (s.type === 'face' && s.data) {
+              faces.push(s.data || {});
+            } else if (s.type === 'json' || s.type === 'xml' || s.type === 'share' || s.type === 'app') {
+              const data = s.data && typeof s.data === 'object' ? s.data : {};
+              cards.push({ type: s.type, ...data, raw: data });
             }
           }
         }
@@ -1132,49 +1233,61 @@ export function createSDK(init?: SDKInit): SdkInvoke {
 
       const enrichForwards = async (items: any[]) => {
         const tasks = items.map(async (fwd: any) => {
+          const messageIdRaw = fwd?.message_id ?? fwd?.id;
+          const messageId = messageIdRaw != null && String(messageIdRaw).trim() ? String(messageIdRaw).trim() : '';
+          const existingRawNodes = Array.isArray(fwd?.nodes)
+            ? fwd.nodes
+            : (Array.isArray(fwd?.content) ? fwd.content : []);
+          const existingNodes = normalizeForwardNodes(existingRawNodes);
+          const existingPreview = buildForwardPreview(existingNodes, fwd?.preview);
+
+          if (existingNodes.length > 0) {
+            return {
+              ...fwd,
+              ...(messageId ? { id: messageId, message_id: messageId } : {}),
+              nodes: existingNodes,
+              content: existingRawNodes,
+              count: typeof fwd?.count === 'number' ? fwd.count : existingNodes.length,
+              preview: existingPreview,
+            };
+          }
+
+          if (!messageId) {
+            return {
+              ...fwd,
+              count: typeof fwd?.count === 'number' ? fwd.count : 0,
+              preview: existingPreview,
+            };
+          }
+
           try {
-            const messageId = fwd.message_id ?? fwd.id;
             const detail: any = await fn.data('get_forward_msg', { message_id: messageId, id: messageId });
-            const data = detail?.data ?? detail;
-            const nodes: any[] =
-              (detail?.messages as any[]) ||
-              (detail?.data as any)?.messages ||
-              (data as any)?.message ||
-              (data as any)?.messages ||
-              (data as any)?.data?.messages ||
-              (data as any)?.data?.message ||
-              [];
-            const nodesCount = Array.isArray(nodes) ? nodes.length : 0;
-            let preview: string[] = [];
-            if (Array.isArray(nodes) && nodes.length) {
-              preview = nodes.map((n: any) => {
-                const segs = (n?.content as any[]) || (n?.message as any[]) || [];
-                const plain = renderSegmentsMarkdownInline(segs);
-                const sender = n?.sender?.nickname || n?.user_id || '?';
-                return `${sender}: ${plain || '[空消息]'}`;
-              });
-            }
-            return { id: messageId, count: nodesCount, preview };
+            const nodesRaw = extractForwardNodesFromDetail(detail);
+            const nodes = normalizeForwardNodes(nodesRaw);
+            const preview = buildForwardPreview(nodes, fwd?.preview);
+            return {
+              ...fwd,
+              id: messageId,
+              message_id: messageId,
+              nodes,
+              content: nodesRaw,
+              count: nodes.length,
+              preview,
+            };
           } catch {
-            return { id: fwd.id, count: 0, preview: [] };
+            return {
+              ...fwd,
+              ...(messageId ? { id: messageId, message_id: messageId } : {}),
+              count: typeof fwd?.count === 'number' ? fwd.count : 0,
+              preview: existingPreview,
+            };
           }
         });
         return await Promise.all(tasks);
       };
 
       const enrichCards = async (items: any[]) => {
-        return items.map((c: any) => {
-          if (c.type === 'share') {
-            return { type: 'share', title: c.title, url: c.url, content: c.content, image: c.image, preview: c.preview || c.title || c.url };
-          } else if (c.type === 'json') {
-            return { type: 'json', preview: c.preview, raw: c.raw };
-          } else if (c.type === 'xml') {
-            return { type: 'xml', preview: c.preview, raw: c.raw };
-          } else if (c.type === 'app') {
-            return { type: 'app', title: c.title, url: c.url, image: c.image, content: c.content, preview: c.preview, raw: c.raw };
-          }
-          return c;
-        });
+        return items.map((c: any) => ({ ...(c || {}) }));
       };
 
       const msgType = ev.message_type;
@@ -1257,3 +1370,4 @@ export function createSDK(init?: SDKInit): SdkInvoke {
 }
 
 export default createSDK;
+

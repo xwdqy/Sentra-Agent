@@ -27,9 +27,11 @@
   "scripts": {
     "start": "node src/mcp/server/index.js",
     "dev": "node --watch src/mcp/server/index.js",
+    "check:encoding": "node scripts/check_text_integrity.js",
     "postinstall": "puppeteer browsers install chrome",
     "gen:skills": "node scripts/generate_skill_docs.js",
     "gen:skills:overwrite": "node scripts/generate_skill_docs.js --overwrite",
+    "skills:normalize-usage": "node scripts/normalize_skill_usage_sections.js",
     "export:tools": "node scripts/export_tools.js --format both",
     "export:tools:md": "node scripts/export_tools.js --format md",
     "export:tools:xml": "node scripts/export_tools.js --format xml"
@@ -41,6 +43,7 @@
     "electron-builder": "^24.13.3"
   },
   "dependencies": {
+    "@xterm/headless": "^5.5.0",
     "@microsoft/recognizers-text-date-time": "^1.0.2",
     "@microsoft/recognizers-text-suite": "^1.0.2",
     "@modelcontextprotocol/sdk": "1.27.1",

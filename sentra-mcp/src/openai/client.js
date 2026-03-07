@@ -1,11 +1,18 @@
 import OpenAI from 'openai';
 import { config } from '../config/index.js';
 import logger from '../logger/index.js';
+import { getRuntimeSignal } from '../utils/runtime_context.js';
+import { mergeAbortSignals } from '../utils/signal.js';
 
 let client;
 let clientKey;
 let embeddingClient;
 let embeddingClientKey;
+
+function buildRequestOptions(signal) {
+  const merged = mergeAbortSignals([signal, getRuntimeSignal()]);
+  return merged ? { signal: merged } : undefined;
+}
 
 export function getOpenAI() {
   const key = `${config.llm.apiKey || ''}@@${config.llm.baseURL || ''}`;
@@ -37,7 +44,7 @@ export function getEmbeddingOpenAI() {
   return embeddingClient;
 }
 
-export async function chatCompletion({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens, timeoutMs }) {
+export async function chatCompletion({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens, timeoutMs, signal }) {
   // Allow per-call overrides of API credentials and base URL
   const timeout = Number(timeoutMs);
   const openai = (apiKey || baseURL || Number.isFinite(timeout))
@@ -72,11 +79,14 @@ export async function chatCompletion({ messages, tools, tool_choice, temperature
 
   logger.debug?.('openai.chat.completions.create', { hasTools: !!tools, tool_choice: payload.tool_choice });
 
-  const res = await openai.chat.completions.create(payload);
+  const requestOptions = buildRequestOptions(signal);
+  const res = requestOptions
+    ? await openai.chat.completions.create(payload, requestOptions)
+    : await openai.chat.completions.create(payload);
   return res;
 }
 
-export async function chatCompletionStream({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens, onDelta, timeoutMs }) {
+export async function chatCompletionStream({ messages, tools, tool_choice, temperature, top_p, max_tokens, apiKey, baseURL, model, omitMaxTokens, onDelta, timeoutMs, signal }) {
   const timeout = Number(timeoutMs);
   const openai = (apiKey || baseURL || Number.isFinite(timeout))
     ? new OpenAI({
@@ -113,7 +123,10 @@ export async function chatCompletionStream({ messages, tools, tool_choice, tempe
 
   logger.debug?.('openai.chat.completions.create(stream)', { hasTools: !!tools, tool_choice: payload.tool_choice });
 
-  const stream = await openai.chat.completions.create(payload);
+  const requestOptions = buildRequestOptions(signal);
+  const stream = requestOptions
+    ? await openai.chat.completions.create(payload, requestOptions)
+    : await openai.chat.completions.create(payload);
   let content = '';
   let created;
   let usedModel;
@@ -134,7 +147,7 @@ export async function chatCompletionStream({ messages, tools, tool_choice, tempe
 }
 
 // 中文：简单封装 Embeddings 接口，返回每个输入文本的向量数组
-export async function embedTexts({ texts = [], apiKey, baseURL, model }) {
+export async function embedTexts({ texts = [], apiKey, baseURL, model, signal }) {
   if (!Array.isArray(texts) || texts.length === 0) return [];
   const timeout = Number(config.embedding?.timeoutMs);
   const openai = (apiKey || baseURL || (Number.isFinite(timeout) && timeout > 0))
@@ -144,8 +157,11 @@ export async function embedTexts({ texts = [], apiKey, baseURL, model }) {
         ...(Number.isFinite(timeout) && timeout > 0 ? { timeout } : {})
       })
     : getEmbeddingOpenAI();
-  const mdl = model || config.embedding.model || 'text-embedding-3-small';
-  const res = await openai.embeddings.create({ model: mdl, input: texts });
+  const mdl = model || config.embedding.model || 'qwen3-embedding-4b';
+  const requestOptions = buildRequestOptions(signal);
+  const res = requestOptions
+    ? await openai.embeddings.create({ model: mdl, input: texts }, requestOptions)
+    : await openai.embeddings.create({ model: mdl, input: texts });
   return (res?.data || []).map((d) => Array.isArray(d.embedding) ? d.embedding : []);
 }
 

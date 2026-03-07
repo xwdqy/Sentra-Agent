@@ -107,6 +107,7 @@ desktop.ini
 # Backup Files
 *.backup
 *.bak
+*.bak_*
 *.old
 
 # Project Specific
@@ -122,4 +123,5 @@ utils/emoji-stickers/emoji/
 # User Data (Privacy Protection)
 userData/
 taskData/
+.summary/
 !userData/README.md

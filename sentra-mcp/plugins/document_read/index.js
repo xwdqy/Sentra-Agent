@@ -206,3 +206,6 @@ export default async function handler(args = {}, options = {}) {
     failed: files.length - successCount
   }, successCount === files.length ? 'OK' : 'PARTIAL_SUCCESS');
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

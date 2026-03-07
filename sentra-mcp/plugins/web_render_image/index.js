@@ -437,3 +437,6 @@ export default async function handler(args = {}, options = {}) {
     }
   }
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

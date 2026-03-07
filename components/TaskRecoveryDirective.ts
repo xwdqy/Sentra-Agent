@@ -1,4 +1,4 @@
-import { escapeXml } from '../utils/xmlUtils.js';
+﻿import { escapeXml } from '../utils/xmlUtils.js';
 
 type TaskPromise = { content?: string; evidence?: string; fulfilled?: boolean };
 type TaskToolCall = { name?: string; code?: string; success?: boolean | null };
@@ -88,7 +88,7 @@ export function buildTaskRecoveryRootDirectiveXml(options: TaskRecoveryOptions =
 
   objectiveParts.push('你正在处理一个未完成的任务，需要尽可能推进到完成。');
   objectiveParts.push('重要：这是“补全/恢复任务”回合，系统会给你旧任务的上下文，但你必须优先依据当前会话内的最新信息判断该任务是否仍然需要执行。');
-  objectiveParts.push('如果你判断该任务已经在后续对话中被完成/替代/取消，或当前任务已过时不应再执行：你必须保持沉默，输出一个空的 <sentra-response></sentra-response>（不要追加任何解释）。');
+  objectiveParts.push('如果你判断该任务已经在后续对话中被完成/替代/取消，或当前任务已过时不应再执行：你必须保持沉默，输出一个空的 <sentra-message></sentra-message>（不要追加任何解释）。');
   objectiveParts.push('只有当你确信任务仍未完成且仍然需要推进时，才继续执行补全。');
   if (summary) {
     objectiveParts.push(`任务摘要：${summary}`);

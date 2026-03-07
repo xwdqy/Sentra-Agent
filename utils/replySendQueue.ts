@@ -7,8 +7,9 @@ import { createLogger } from './logger.js';
 import { getEnvInt, getEnvBool, onEnvReload } from './envHotReloader.js';
 import { judgeReplySimilarity } from './replySimilarityJudge.js';
 import { decideSendFusionBatch } from './replyIntervention.js';
-import { parseSentraResponse } from './protocolUtils.js';
+import { parseSentraMessage as parseSentraResponse } from './protocolUtils.js';
 import { escapeXml } from './xmlUtils.js';
+import { buildGroupScopeId, buildPrivateScopeId, isGroupScopeId, isPrivateScopeId } from './conversationId.js';
 
 const logger = createLogger('ReplySendQueue');
 
@@ -49,7 +50,6 @@ type QueueItem = {
 
 type FusionCandidate = { taskId: string; text: string };
 type ReplyResource = { type: string; source: string; caption?: string | undefined };
-type ReplyEmoji = { source: string; caption?: string | undefined };
 
 type RecentSentEntry = { text: string; resources: string[]; ts: number };
 
@@ -94,15 +94,15 @@ function takeLast<T>(arr: T[], count: number): T[] {
 }
 
 class ReplySendQueue {
-  queue: QueueItem[];
-  isProcessing: boolean;
+  queuesByKey: Map<string, QueueItem[]>;
+  processingKeys: Set<string>;
   sendDelayMs: number;
   pureReplyCooldown: Map<string, number>;
   recentSentByGroup: Map<string, RecentSentEntry[]>;
 
   constructor() {
-    this.queue = [];
-    this.isProcessing = false;
+    this.queuesByKey = new Map();
+    this.processingKeys = new Set();
     this.sendDelayMs = readEnvInt('REPLY_SEND_DELAY_MS', 20000); // 默认20秒
     this.pureReplyCooldown = new Map();
     this.recentSentByGroup = new Map(); // Map<groupId, Array<{ text, resources, ts }>>
@@ -117,12 +117,44 @@ class ReplySendQueue {
     });
   }
 
+  _resolveGroupId(meta: SendMeta | null | undefined): string | null {
+    const raw =
+      (meta && meta.groupId != null ? meta.groupId : undefined) ??
+      (meta && meta.meta && meta.meta.groupId != null ? meta.meta.groupId : undefined);
+    if (raw == null) return null;
+    const gid = String(raw).trim();
+    return gid || null;
+  }
+
+  _resolveBucketKey(meta: SendMeta | null | undefined): string {
+    const gid = this._resolveGroupId(meta);
+    if (gid) return `target:${gid}`;
+    return 'target:default';
+  }
+
+  _getOrCreateQueue(bucketKey: string): QueueItem[] {
+    let q = this.queuesByKey.get(bucketKey);
+    if (!q) {
+      q = [];
+      this.queuesByKey.set(bucketKey, q);
+    }
+    return q;
+  }
+
+  _getTotalQueueLength(): number {
+    let total = 0;
+    for (const q of this.queuesByKey.values()) {
+      if (Array.isArray(q)) total += q.length;
+    }
+    return total;
+  }
+
   _getPostSendDelayMs(meta: SendMeta | null | undefined, runtimeCfg: SendQueueRuntimeConfig): number {
     const immediate = !!meta?.immediate;
     if (!immediate) return this.sendDelayMs;
 
-    const gid = meta?.groupId ? String(meta.groupId) : '';
-    const isGroup = gid.startsWith('G:');
+    const gid = this._resolveGroupId(meta) || '';
+    const isGroup = isGroupScopeId(gid);
     const base = isGroup
       ? Number(runtimeCfg?.groupReplyMinIntervalMs)
       : Number(runtimeCfg?.userReplyMinIntervalMs);
@@ -139,320 +171,331 @@ class ReplySendQueue {
    */
   async enqueue(sendTask: () => Promise<unknown>, taskId = 'unknown', meta: SendMeta | null = null): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      this.queue.push({ sendTask, taskId, meta, resolve, reject });
-      logger.debug(`任务入队: ${taskId} (队列长度: ${this.queue.length})`);
+      const bucketKey = this._resolveBucketKey(meta);
+      const queue = this._getOrCreateQueue(bucketKey);
+      queue.push({ sendTask, taskId, meta, resolve, reject });
+      logger.debug(
+        `任务入队: ${taskId} (bucket=${bucketKey}, 桶长度=${queue.length}, 总队列=${this._getTotalQueueLength()})`
+      );
 
-      // 如果当前没有在处理，立即开始处理
-      if (!this.isProcessing) {
-        this.processQueue();
+      // 每个 bucket 独立处理，避免不同会话互相阻塞
+      if (!this.processingKeys.has(bucketKey)) {
+        this.processQueueForBucket(bucketKey).catch((error) => {
+          logger.error(`队列处理异常: bucket=${bucketKey}`, error);
+        });
       }
     });
+  }
+
+  async processQueue(): Promise<void> {
+    const keys = Array.from(this.queuesByKey.keys());
+    await Promise.all(keys.map((bucketKey) => this.processQueueForBucket(bucketKey)));
   }
 
   /**
    * 处理队列中的任务
    */
-  async processQueue(): Promise<void> {
-    if (this.isProcessing) {
+  async processQueueForBucket(bucketKey: string): Promise<void> {
+    if (!bucketKey) return;
+    if (this.processingKeys.has(bucketKey)) {
       return;
     }
 
-    this.isProcessing = true;
+    this.processingKeys.add(bucketKey);
 
     try {
-      this._prunePureReplyCooldown();
-    } catch { }
+      try {
+        this._prunePureReplyCooldown();
+      } catch { }
 
-    try {
-      this._pruneAllRecentLists();
-    } catch { }
+      try {
+        this._pruneAllRecentLists();
+      } catch { }
 
-    while (this.queue.length > 0) {
-      const first = this.queue.shift();
-      if (!first) continue;
-      const batch: QueueItem[] = [first];
-      const groupId = first.meta?.groupId ? String(first.meta.groupId) : null;
-      const immediate = !!first.meta?.immediate;
+      const queue = this._getOrCreateQueue(bucketKey);
+      while (queue.length > 0) {
+        const first = queue.shift();
+        if (!first) continue;
+        const batch: QueueItem[] = [first];
+        const groupId = this._resolveGroupId(first.meta);
+        const immediate = !!first.meta?.immediate;
 
-      const runtimeCfg = getSendQueueRuntimeConfig();
+        const runtimeCfg = getSendQueueRuntimeConfig();
 
-      // 在发送前等待一个窗口，收集同一会话的其他待发送任务，用于语义去重
-      if (groupId && !immediate) {
-        logger.debug(`等待 ${this.sendDelayMs}ms 收集同一会话的待发送回复用于去重 (groupId=${groupId})...`);
-        await sleep(this.sendDelayMs);
+        // 在发送前等待一个窗口，收集同一会话的其他待发送任务，用于语义去重
+        if (groupId && !immediate) {
+          logger.debug(`等待 ${this.sendDelayMs}ms 收集同一会话的待发送回复用于去重 (groupId=${groupId})...`);
+          await sleep(this.sendDelayMs);
 
-        const remaining: QueueItem[] = [];
-        for (const item of this.queue) {
-          const gid = item?.meta?.groupId ? String(item.meta.groupId) : null;
-          if (gid && gid === groupId) {
-            batch.push(item);
-          } else {
-            remaining.push(item);
-          }
-        }
-        this.queue = remaining;
-        logger.debug(`发送阶段语义去重批次组装完成: groupId=${groupId}, 批次大小=${batch.length}, 队列剩余=${this.queue.length}`);
-      } else if (groupId && immediate) {
-        logger.debug(`immediate send: 跳过收集窗口等待 (groupId=${groupId})`);
-      }
-
-      let selectedIndices: number[] | null = null;
-
-      if (
-        groupId &&
-        runtimeCfg.sendFusionEnabled &&
-        runtimeCfg.sendFusionMinBatch > 1 &&
-        batch.length >= runtimeCfg.sendFusionMinBatch
-      ) {
-        try {
-          const candidates: FusionCandidate[] = [];
-          const resources: ReplyResource[] = [];
-          let emoji: ReplyEmoji | null = null;
-          let hasTool = false;
-          const routingKeys = new Set();
-
-          for (let i = 0; i < batch.length; i++) {
-            const item = batch[i];
-            const meta: SendMeta = item?.meta || {};
-            const raw = typeof meta.response === 'string' ? meta.response : '';
-            let parsed = null;
-            try {
-              parsed = parseSentraResponse(raw);
-            } catch {
-              parsed = null;
-            }
-
-            const segments = parsed && Array.isArray(parsed.textSegments)
-              ? parsed.textSegments.map((t) => (t || '').trim()).filter(Boolean)
-              : [];
-
-            if (segments.length > 0) {
-              candidates.push({ taskId: item?.taskId || '', text: segments.join('\n') });
-            }
-
-            const rs = parsed && Array.isArray(parsed.resources) ? parsed.resources : [];
-            for (const r of rs) {
-              if (!r || !r.type || !r.source) continue;
-              resources.push(r);
-            }
-
-            if (groupId) {
-              let rk = null;
-              if (parsed && parsed.group_id != null && String(parsed.group_id).trim() !== '') {
-                rk = `G:${String(parsed.group_id).trim()}`;
-              } else if (parsed && parsed.user_id != null && String(parsed.user_id).trim() !== '') {
-                rk = `U:${String(parsed.user_id).trim()}`;
-              }
-              // 未显式指定目标时，视为当前批次目标
-              routingKeys.add(rk || groupId);
-            }
-
-            if (parsed && parsed.emoji && parsed.emoji.source) {
-              emoji = parsed.emoji;
-            }
-
-            if (meta && meta.hasTool === true) {
-              hasTool = true;
-            }
-          }
-
-          if (routingKeys.size > 0) {
-            // 允许融合的前提：全部都发往当前 batch 的同一目标（同一群或同一私聊）
-            // 例如：批次 groupId=G:123，所有 routed 也必须是 G:123
-            const keys = Array.from(routingKeys);
-            const allSameTarget = keys.every((k) => k === groupId);
-            if (!allSameTarget) {
-              throw new Error(`skip_send_fusion_due_to_target_routing:${keys.join(',')}`);
-            }
-          }
-
-          const fusion = await decideSendFusionBatch({ groupId, userQuestion: '', candidates });
-          if (fusion && Array.isArray(fusion.textSegments) && fusion.textSegments.length > 0) {
-            const uniqRes: ReplyResource[] = [];
-            const seenRes = new Set<string>();
-            for (const r of resources) {
-              const k = `${r.type}|${r.source}`;
-              if (seenRes.has(k)) continue;
-              seenRes.add(k);
-              uniqRes.push(r);
-            }
-
-            const lines: string[] = [];
-            lines.push('<sentra-response>');
-            for (let i = 0; i < fusion.textSegments.length; i++) {
-              const idx = i + 1;
-              lines.push(`  <text${idx}>${escapeXml(fusion.textSegments[i])}</text${idx}>`);
-            }
-
-            if (uniqRes.length > 0) {
-              lines.push('  <resources>');
-              for (const r of uniqRes) {
-                lines.push('    <resource>');
-                lines.push(`      <type>${escapeXml(r.type)}</type>`);
-                lines.push(`      <source>${escapeXml(r.source)}</source>`);
-                if (r.caption) {
-                  lines.push(`      <caption>${escapeXml(r.caption)}</caption>`);
-                }
-                lines.push('    </resource>');
-              }
-              lines.push('  </resources>');
+          const remaining: QueueItem[] = [];
+          for (const item of queue) {
+            const gid = this._resolveGroupId(item?.meta);
+            if (gid && gid === groupId) {
+              batch.push(item);
             } else {
-              lines.push('  <resources></resources>');
+              remaining.push(item);
             }
+          }
+          queue.length = 0;
+          queue.push(...remaining);
+          logger.debug(
+            `发送阶段语义去重批次组装完成: groupId=${groupId}, 批次大小=${batch.length}, 桶剩余=${queue.length}, 总队列=${this._getTotalQueueLength()}`
+          );
+        } else if (groupId && immediate) {
+          logger.debug(`immediate send: 跳过收集窗口等待 (groupId=${groupId})`);
+        }
 
-            if (emoji && emoji.source) {
-              lines.push('  <emoji>');
-              lines.push(`    <source>${escapeXml(emoji.source)}</source>`);
-              if (emoji.caption) {
-                lines.push(`    <caption>${escapeXml(emoji.caption)}</caption>`);
-              }
-              lines.push('  </emoji>');
-            }
+        let selectedIndices: number[] | null = null;
 
-            lines.push('</sentra-response>');
-            const fusedResponse = lines.join('\n');
-
-            const selectedIndex = batch.length - 1;
-            const selected = batch[selectedIndex];
-            if (selected && selected.meta) {
-              selected.meta.response = fusedResponse;
-              selected.meta.textForDedup = fusion.textSegments.join('\n');
-              const baseKeys = uniqRes.map((r) => `${r.type}|${r.source}`);
-              if (emoji && emoji.source) {
-                baseKeys.push(`emoji|${emoji.source}`);
-              }
-              selected.meta.resourceKeys = Array.from(new Set(baseKeys));
-              selected.meta.hasTool = hasTool;
-              selected.meta.allowReply = true;
-            }
+        if (
+          groupId &&
+          runtimeCfg.sendFusionEnabled &&
+          runtimeCfg.sendFusionMinBatch > 1 &&
+          batch.length >= runtimeCfg.sendFusionMinBatch
+        ) {
+          try {
+            const candidates: FusionCandidate[] = [];
+            const resources: ReplyResource[] = [];
+            let hasTool = false;
+            const routingKeys = new Set();
 
             for (let i = 0; i < batch.length; i++) {
-              if (i === selectedIndex) continue;
               const item = batch[i];
-              if (item && item.meta) {
-                item.meta.allowReply = false;
+              const meta: SendMeta = item?.meta || {};
+              const raw = typeof meta.response === 'string' ? meta.response : '';
+              let parsed = null;
+              try {
+                parsed = parseSentraResponse(raw);
+              } catch {
+                parsed = null;
+              }
+
+              const segments = parsed && Array.isArray(parsed.textSegments)
+                ? parsed.textSegments.map((t: string) => (t || '').trim()).filter(Boolean)
+                : [];
+
+              if (segments.length > 0) {
+                candidates.push({ taskId: item?.taskId || '', text: segments.join('\n') });
+              }
+
+              const rs = parsed && Array.isArray(parsed.resources) ? parsed.resources : [];
+              for (const r of rs) {
+                if (!r || !r.type || !r.source) continue;
+                resources.push(r);
+              }
+
+              if (groupId) {
+                let rk = null;
+                if (parsed && parsed.group_id != null && String(parsed.group_id).trim() !== '') {
+                  rk = buildGroupScopeId(String(parsed.group_id).trim());
+                } else if (parsed && parsed.user_id != null && String(parsed.user_id).trim() !== '') {
+                  rk = buildPrivateScopeId(String(parsed.user_id).trim());
+                }
+                // 未显式指定目标时，视为当前批次目标
+                routingKeys.add(rk || groupId);
+              }
+
+              if (meta && meta.hasTool === true) {
+                hasTool = true;
               }
             }
 
-            selectedIndices = [selectedIndex];
-            logger.info(`发送阶段融合触发: groupId=${groupId}, 批次大小=${batch.length}, 仅发送=1`);
-          }
-        } catch (e) {
-          logger.warn('发送阶段融合失败，将回退为去重/逐条发送', { err: String(e) });
-        }
-      }
+            if (routingKeys.size > 0) {
+              // 允许融合的前提：全部都发往当前 batch 的同一目标（同一群或同一私聊）
+              // 例如：批次 groupId=G_123，所有 routed 也必须是 G_123
+              const keys = Array.from(routingKeys);
+              const allSameTarget = keys.every((k) => k === groupId);
+              if (!allSameTarget) {
+                throw new Error(`skip_send_fusion_due_to_target_routing:${keys.join(',')}`);
+              }
+            }
 
-      // 纯文本连续回复（无工具调用）优化：在同一批次内，如果全部都是 hasTool=false 且数量达到阈值，
-      // 并且未处于冷却期，则直接仅保留最新一条，跳过语义去重（embedding + 轻量 LLM）。
-      if (groupId && runtimeCfg.pureReplySkipThreshold > 0 && batch.length >= runtimeCfg.pureReplySkipThreshold) {
-        const now = Date.now();
-        const cooldownUntil = this.pureReplyCooldown.get(groupId) || 0;
-        const allNoTool = batch.every((item) => item?.meta && item.meta.hasTool === false);
+            const fusion = await decideSendFusionBatch({ groupId, userQuestion: '', candidates });
+            if (fusion && Array.isArray(fusion.textSegments) && fusion.textSegments.length > 0) {
+              const uniqRes: ReplyResource[] = [];
+              const seenRes = new Set<string>();
+              for (const r of resources) {
+                const k = `${r.type}|${r.source}`;
+                if (seenRes.has(k)) continue;
+                seenRes.add(k);
+                uniqRes.push(r);
+              }
 
-        if (allNoTool && now >= cooldownUntil) {
-          selectedIndices = [batch.length - 1];
-          this.pureReplyCooldown.set(groupId, now + runtimeCfg.pureReplySkipCooldownMs);
-          logger.info(
-            `纯文本连续回复优化触发: groupId=${groupId}, 批次大小=${batch.length}, 阈值=${runtimeCfg.pureReplySkipThreshold}, 冷却=${runtimeCfg.pureReplySkipCooldownMs}ms`
-          );
-        }
-      }
+              const lines: string[] = [];
+              lines.push('<sentra-response>');
+              for (let i = 0; i < fusion.textSegments.length; i++) {
+                const idx = i + 1;
+                lines.push(`  <text${idx}>${escapeXml(fusion.textSegments[i])}</text${idx}>`);
+              }
 
-      if (!selectedIndices) {
-        selectedIndices = await this._dedupBatch(batch);
-      }
-      const selectedSet = new Set(selectedIndices);
+              if (uniqRes.length > 0) {
+                lines.push('  <resources>');
+                for (const r of uniqRes) {
+                  lines.push('    <resource>');
+                  lines.push(`      <type>${escapeXml(r.type)}</type>`);
+                  lines.push(`      <source>${escapeXml(r.source)}</source>`);
+                  if (r.caption) {
+                    lines.push(`      <caption>${escapeXml(r.caption)}</caption>`);
+                  }
+                  lines.push('    </resource>');
+                }
+                lines.push('  </resources>');
+              } else {
+                lines.push('  <resources></resources>');
+              }
 
-      for (let i = 0; i < batch.length; i++) {
-        const item = batch[i];
-        if (!item) continue;
-        const { sendTask, taskId, meta, resolve, reject } = item;
+              lines.push('</sentra-response>');
+              const fusedResponse = lines.join('\n');
 
-        if (!selectedSet.has(i)) {
-          const dedupInfo = meta && meta._dedupInfo;
-          if (dedupInfo && dedupInfo.similarity != null) {
-            const simVal =
-              typeof dedupInfo.similarity === 'number' && !Number.isNaN(dedupInfo.similarity)
-                ? dedupInfo.similarity.toFixed(3)
-                : String(dedupInfo.similarity);
-            logger.info(
-              `发送阶段去重: 跳过任务 ${taskId}, by=${dedupInfo.byTaskId || 'unknown'}, sim=${simVal}`
-            );
-          } else {
-            logger.info(`发送阶段去重: 跳过任务 ${taskId}`);
-          }
-          resolve(null);
-          continue;
-        }
+              const selectedIndex = batch.length - 1;
+              const selected = batch[selectedIndex];
+              if (selected && selected.meta) {
+                selected.meta.response = fusedResponse;
+                selected.meta.textForDedup = fusion.textSegments.join('\n');
+                const baseKeys = uniqRes.map((r) => `${r.type}|${r.source}`);
+                selected.meta.resourceKeys = Array.from(new Set(baseKeys));
+                selected.meta.hasTool = hasTool;
+                selected.meta.allowReply = true;
+              }
 
-        const groupIdForRecent = meta?.meta && meta.meta.groupId
-          ? String(meta.meta.groupId)
-          : (meta?.groupId ? String(meta.groupId) : null);
-        const textForRecent = (meta?.textForDedup || '').trim();
-        const resourcesForRecent = Array.isArray(meta?.resourceKeys) ? meta.resourceKeys : [];
-        const hasTextOrResourceForRecent = !!textForRecent || resourcesForRecent.length > 0;
+              for (let i = 0; i < batch.length; i++) {
+                if (i === selectedIndex) continue;
+                const item = batch[i];
+                if (item && item.meta) {
+                  item.meta.allowReply = false;
+                }
+              }
 
-        // 跨批次/跨轮的最近已发送去重：仅在资源集合完全一致的前提下，避免在同一会话里前后两轮说几乎一样的话
-        if (groupIdForRecent && hasTextOrResourceForRecent && meta && !meta.immediate) {
-          try {
-            const recentAction = await this._applyRecentDedupAndMaybeRewrite(groupIdForRecent, meta);
-            if (recentAction) {
-              logger.info(
-                `最近发送去重: 跳过任务 ${taskId} (groupId=${groupIdForRecent})`
-              );
-              resolve(null);
-              continue;
+              selectedIndices = [selectedIndex];
+              logger.info(`发送阶段融合触发: groupId=${groupId}, 批次大小=${batch.length}, 仅发送=1`);
             }
           } catch (e) {
-            logger.warn('最近发送去重判断失败（已忽略）', { err: String(e) });
+            logger.warn('发送阶段融合失败，将回退为去重/逐条发送', { err: String(e) });
           }
         }
 
-        logger.info(`开始发送: ${taskId} (剩余队列: ${this.queue.length})`);
+        // 纯文本连续回复（无工具调用）优化：在同一批次内，如果全部都是 hasTool=false 且数量达到阈值，
+        // 并且未处于冷却期，则直接仅保留最新一条，跳过语义去重（embedding + 轻量 LLM）。
+        if (groupId && runtimeCfg.pureReplySkipThreshold > 0 && batch.length >= runtimeCfg.pureReplySkipThreshold) {
+          const now = Date.now();
+          const cooldownUntil = this.pureReplyCooldown.get(groupId) || 0;
+          const allNoTool = batch.every((item) => item?.meta && item.meta.hasTool === false);
 
-        try {
-          const startTime = Date.now();
-          const result = await sendTask();
-          const duration = Date.now() - startTime;
-
-          logger.success(`发送完成: ${taskId} (耗时: ${duration}ms)`);
-          if (groupIdForRecent && hasTextOrResourceForRecent) {
-            this._rememberRecentSent(
-              groupIdForRecent,
-              (meta?.textForDedup || '').trim(),
-              Array.isArray(meta?.resourceKeys) ? meta.resourceKeys : []
+          if (allNoTool && now >= cooldownUntil) {
+            selectedIndices = [batch.length - 1];
+            this.pureReplyCooldown.set(groupId, now + runtimeCfg.pureReplySkipCooldownMs);
+            logger.info(
+              `纯文本连续回复优化触发: groupId=${groupId}, 批次大小=${batch.length}, 阈值=${runtimeCfg.pureReplySkipThreshold}, 冷却=${runtimeCfg.pureReplySkipCooldownMs}ms`
             );
           }
-          resolve(result);
-        } catch (error) {
-          logger.error(`发送失败: ${taskId}`, error);
-          reject(error);
         }
 
-        // 如果后续还有需要发送的任务（当前批次或后续队列），按照配置的间隔等待
-        const hasMoreInBatch = (() => {
-          for (let j = i + 1; j < batch.length; j++) {
-            if (selectedSet.has(j)) return true;
-          }
-          return false;
-        })();
+        if (!selectedIndices) {
+          selectedIndices = await this._dedupBatch(batch);
+        }
+        const selectedSet = new Set(selectedIndices);
 
-        if (hasMoreInBatch || this.queue.length > 0) {
-          const postDelayMs = this._getPostSendDelayMs(meta, runtimeCfg);
-          if (postDelayMs > 0) {
-            logger.debug(`等待 ${postDelayMs}ms 后发送下一条...`);
-            await sleep(postDelayMs);
+        for (let i = 0; i < batch.length; i++) {
+          const item = batch[i];
+          if (!item) continue;
+          const { sendTask, taskId, meta, resolve, reject } = item;
+
+          if (!selectedSet.has(i)) {
+            const dedupInfo = meta && meta._dedupInfo;
+            if (dedupInfo && dedupInfo.similarity != null) {
+              const simVal =
+                typeof dedupInfo.similarity === 'number' && !Number.isNaN(dedupInfo.similarity)
+                  ? dedupInfo.similarity.toFixed(3)
+                  : String(dedupInfo.similarity);
+              logger.info(
+                `发送阶段去重: 跳过任务 ${taskId}, by=${dedupInfo.byTaskId || 'unknown'}, sim=${simVal}`
+              );
+            } else {
+              logger.info(`发送阶段去重: 跳过任务 ${taskId}`);
+            }
+            resolve(null);
+            continue;
+          }
+
+          const groupIdForRecent = this._resolveGroupId(meta);
+          const textForRecent = (meta?.textForDedup || '').trim();
+          const resourcesForRecent = Array.isArray(meta?.resourceKeys) ? meta.resourceKeys : [];
+          const hasTextOrResourceForRecent = !!textForRecent || resourcesForRecent.length > 0;
+
+          // 跨批次/跨轮的最近已发送去重：仅在资源集合完全一致的前提下，避免在同一会话里前后两轮说几乎一样的话
+          if (groupIdForRecent && hasTextOrResourceForRecent && meta && !meta.immediate) {
+            try {
+              const recentAction = await this._applyRecentDedupAndMaybeRewrite(groupIdForRecent, meta);
+              if (recentAction) {
+                logger.info(
+                  `最近发送去重: 跳过任务 ${taskId} (groupId=${groupIdForRecent})`
+                );
+                resolve(null);
+                continue;
+              }
+            } catch (e) {
+              logger.warn('最近发送去重判断失败（已忽略）', { err: String(e) });
+            }
+          }
+
+          logger.info(`开始发送: ${taskId} (桶剩余: ${queue.length}, 总队列: ${this._getTotalQueueLength()})`);
+
+          try {
+            const startTime = Date.now();
+            const result = await sendTask();
+            const duration = Date.now() - startTime;
+
+            logger.success(`发送完成: ${taskId} (耗时: ${duration}ms)`);
+            if (groupIdForRecent && hasTextOrResourceForRecent) {
+              this._rememberRecentSent(
+                groupIdForRecent,
+                (meta?.textForDedup || '').trim(),
+                Array.isArray(meta?.resourceKeys) ? meta.resourceKeys : []
+              );
+            }
+            resolve(result);
+          } catch (error) {
+            logger.error(`发送失败: ${taskId}`, error);
+            reject(error);
+          }
+
+          // 如果后续还有需要发送的任务（当前批次或后续队列），按照配置的间隔等待
+          const hasMoreInBatch = (() => {
+            for (let j = i + 1; j < batch.length; j++) {
+              if (selectedSet.has(j)) return true;
+            }
+            return false;
+          })();
+
+          if (hasMoreInBatch || queue.length > 0) {
+            const postDelayMs = this._getPostSendDelayMs(meta, runtimeCfg);
+            if (postDelayMs > 0) {
+              logger.debug(`等待 ${postDelayMs}ms 后发送下一条...`);
+              await sleep(postDelayMs);
+            }
           }
         }
       }
-    }
+    } finally {
+      this.processingKeys.delete(bucketKey);
+      this._prunePureReplyCooldown();
+      try {
+        this._pruneAllRecentLists();
+      } catch { }
 
-    this.isProcessing = false;
-    this._prunePureReplyCooldown();
-    try {
-      this._pruneAllRecentLists();
-    } catch { }
-    logger.debug('队列处理完毕');
+      const queue = this.queuesByKey.get(bucketKey);
+      if (queue && queue.length === 0) {
+        this.queuesByKey.delete(bucketKey);
+      }
+      logger.debug(`队列处理完毕: bucket=${bucketKey}`);
+
+      // 兜底处理竞态：避免在“最后一次判空”和“结束标记”之间入队导致任务滞留
+      if (queue && queue.length > 0) {
+        this.processQueueForBucket(bucketKey).catch((error) => {
+          logger.error(`队列续跑失败: bucket=${bucketKey}`, error);
+        });
+      }
+    }
   }
 
   _prunePureReplyCooldown(now: number = Date.now()) {
@@ -480,11 +523,13 @@ class ReplySendQueue {
       if (Array.isArray(list)) recentItems += list.length;
     }
     return {
-      queueLength: this.queue.length,
-      isProcessing: this.isProcessing,
+      queueLength: this._getTotalQueueLength(),
+      isProcessing: this.processingKeys.size > 0,
       pureReplyCooldownKeys: this.pureReplyCooldown.size,
       recentGroups,
       recentItems,
+      queueBuckets: this.queuesByKey.size,
+      processingBuckets: this.processingKeys.size,
     };
   }
 
@@ -680,7 +725,7 @@ class ReplySendQueue {
     const r = this._normalizeResourceKeys(Array.isArray(meta?.resourceKeys) ? meta.resourceKeys : []);
     if (!g || (!t && r.length === 0)) return false;
 
-    const isPrivate = g.startsWith('U:');
+    const isPrivate = isPrivateScopeId(g);
     if (isPrivate && !readEnvBool('SEND_RECENT_FUSION_STRICT_FOR_PRIVATE', true)) {
       // 私聊未启用严格去重时，只做简单 exact 匹配，但仍需资源集合一致
       const list = this.recentSentByGroup.get(g) || [];
@@ -793,7 +838,6 @@ class ReplySendQueue {
     }
 
     let resources = parsed && Array.isArray(parsed.resources) ? parsed.resources : [];
-    let emoji = parsed && parsed.emoji && parsed.emoji.source ? parsed.emoji : null;
 
     let targetGroupId = null;
     let targetUserId = null;
@@ -809,21 +853,13 @@ class ReplySendQueue {
       }
     }
 
-    // 容错：如果原始 response 无法解析，则仅根据 resourceKeys 反构建 resources/emoji
-    if ((!parsed || (!Array.isArray(parsed.resources) && !(parsed && parsed.emoji))) && allowed.size > 0) {
+    // 容错：如果原始 response 无法解析，则仅根据 resourceKeys 反构建 resources
+    if ((!parsed || !Array.isArray(parsed.resources)) && allowed.size > 0) {
       resources = [];
-      emoji = null;
       for (const k of allowed) {
         const key = String(k || '');
         if (!key) continue;
         if (key.startsWith('target|')) {
-          continue;
-        }
-        if (key.startsWith('emoji|')) {
-          const src = key.substring('emoji|'.length);
-          if (src) {
-            emoji = { source: src };
-          }
           continue;
         }
         const idx = key.indexOf('|');
@@ -844,10 +880,6 @@ class ReplySendQueue {
         filtered.push(r);
       }
     }
-
-    const emojiSource = emoji?.source;
-    const emojiCaption = emoji?.caption;
-    const keepEmoji = !!(emojiSource && allowed.has(`emoji|${emojiSource}`));
 
     const lines = [];
     lines.push('<sentra-response>');
@@ -872,15 +904,6 @@ class ReplySendQueue {
       lines.push('  </resources>');
     } else {
       lines.push('  <resources></resources>');
-    }
-
-    if (keepEmoji && emojiSource) {
-      lines.push('  <emoji>');
-      lines.push(`    <source>${escapeXml(emojiSource)}</source>`);
-      if (emojiCaption) {
-        lines.push(`    <caption>${escapeXml(emojiCaption)}</caption>`);
-      }
-      lines.push('  </emoji>');
     }
 
     lines.push('</sentra-response>');
@@ -913,15 +936,18 @@ class ReplySendQueue {
    * 获取队列长度
    */
   getQueueLength() {
-    return this.queue.length;
+    return this._getTotalQueueLength();
   }
 
   /**
    * 清空队列
    */
   clear() {
-    const count = this.queue.length;
-    this.queue = [];
+    const count = this._getTotalQueueLength();
+    for (const queue of this.queuesByKey.values()) {
+      if (Array.isArray(queue)) queue.length = 0;
+    }
+    this.queuesByKey.clear();
     logger.warn(`清空队列: ${count} 个任务被取消`);
     return count;
   }

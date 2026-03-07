@@ -1,0 +1,41 @@
+{
+  "id": "recall_segment_delivery",
+  "uuid": "3f4fb6eb-1781-45e7-9d6d-818d6ad6f216",
+  "title": "Recall Segment Delivery",
+  "summary": "Maps recall intent to native recall segment delivery with message_id.",
+  "selection": "auto",
+  "runtimeDynamic": true,
+  "when": [
+    "full",
+    "response_only",
+    "router"
+  ],
+  "priority": 230,
+  "deps": [
+    "message_segment_contract"
+  ],
+  "tags": [
+    "protocol",
+    "response",
+    "qq",
+    "recall_delivery"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "recall",
+      "message.recall",
+      "delete_msg",
+      "message_id",
+      "撤回",
+      "撤回消息",
+      "撤回这条",
+      "撤回上一条",
+      "删掉这条",
+      "删除这条消息"
+    ],
+    "regex": [
+      "/(recall|message\\.recall|delete[_\\s-]?msg|message[_\\s-]?id|撤回(?:消息|这条|上一条)?|删掉这条|删除这条消息)/i"
+    ]
+  }
+}

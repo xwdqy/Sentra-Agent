@@ -12,13 +12,24 @@
 
 ## When to use
 
-- 用户明确要给“某条具体消息”贴表情，并且你能拿到真实 `message_id`。
+- 目标与工具能力一致：QQ平台：给消息贴表情（emoji like/reaction）。支持单个或多个表情（最多3个），注意：仅支持添加表情，不支持取消
+- 可提供必需入参：`emoji_ids`、`message_id`。
 
-## When NOT to use
+## When not to use
 
-- 拿不到真实 `message_id`（不要用占位符）。
-- 用户想取消表情（本工具不支持）。
+- 缺少必需入参时不要调用：`emoji_ids`、`message_id`。
+- 参数不满足约束时不要调用：`message_id` 需匹配指定格式（pattern）。
 
+## Success Criteria
+
+- `result.success === true` and `result.code` is `OK` or `PARTIAL_SUCCESS`.
+- `data.message_id` must be present, and `data.sdk_calls` must be a non-empty array.
+- Every item in `data.sdk_calls` must include `emoji_id`, `success`, and `sdk.request`.
+- For every `sdk.request`: `type === "sdk"`, `path === "message.emojiLike"`, and `args` is a 2-item array `[message_id_number, emoji_id_number]`.
+- Successful items must include `sdk.response`; failed items must include `sdk.error` or top-level `error`.
+- `result.code === "OK"` means all `data.sdk_calls[*].success === true`.
+- `result.code === "PARTIAL_SUCCESS"` means at least one success and at least one failure, and `data.emojis_failed` should be present.
+- Retry guidance: transient RPC failures may retry once for failed emoji IDs; schema/input errors regenerate args; all-failed should replan.
 ## Input
 
 - Required:

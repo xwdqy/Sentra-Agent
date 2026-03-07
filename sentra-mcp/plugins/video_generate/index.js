@@ -5,6 +5,11 @@ import { config } from '../../src/config/index.js';
 import { ok, fail } from '../../src/utils/result.js';
 import mime from 'mime-types';
 import { httpRequest } from '../../src/utils/http.js';
+import {
+  resolveModelFailoverPolicy,
+  resolvePluginModelCandidates,
+  runWithModelFailover,
+} from '../../src/utils/plugin_llm_failover.js';
 
 function isTimeoutError(e) {
   const msg = String(e?.message || e || '').toLowerCase();
@@ -274,7 +279,15 @@ export default async function handler(args = {}, options = {}) {
   const penv = options?.pluginEnv || {};
   const apiKey = penv.VIDEO_API_KEY || process.env.VIDEO_API_KEY || config.llm.apiKey;
   const baseURL = penv.VIDEO_BASE_URL || process.env.VIDEO_BASE_URL || config.llm.baseURL;
-  const model = String(penv.VIDEO_MODEL || process.env.VIDEO_MODEL || config.llm.model || '').trim();
+  const modelArg = String(args.model || '').trim();
+  const modelCandidates = resolvePluginModelCandidates({
+    pluginEnv: penv,
+    primaryKey: 'VIDEO_MODEL',
+    explicitModel: modelArg,
+    defaultModel: config.llm.model,
+  });
+  const model = String(modelCandidates[0] || '').trim();
+  const failoverPolicy = resolveModelFailoverPolicy(penv);
 
   const oai = new OpenAI({ apiKey, baseURL });
 
@@ -285,17 +298,26 @@ export default async function handler(args = {}, options = {}) {
   ];
 
   try {
-    const stream = await oai.chat.completions.create({ model, messages, stream: true });
-    let content = '';
-    for await (const chunk of stream) {
-      const delta = chunk?.choices?.[0]?.delta?.content || '';
-      if (delta) {
-        content += delta;
-        if (typeof options?.onStream === 'function') {
-          try { options.onStream({ type: 'delta', delta, content }); } catch {}
+    const { value: content, model: usedModel } = await runWithModelFailover({
+      models: modelCandidates,
+      policy: failoverPolicy,
+      tag: 'video_generate',
+      meta: { baseURL: videoBaseURL },
+      execute: async (pickedModel) => {
+        const stream = await oai.chat.completions.create({ model: pickedModel, messages, stream: true });
+        let merged = '';
+        for await (const chunk of stream) {
+          const delta = chunk?.choices?.[0]?.delta?.content || '';
+          if (delta) {
+            merged += delta;
+            if (typeof options?.onStream === 'function') {
+              try { options.onStream({ type: 'delta', delta, content: merged }); } catch {}
+            }
+          }
         }
-      }
-    }
+        return merged;
+      },
+    });
     if (!hasVideoLink(content)) {
       return fail('response has no usable video link', 'NO_VIDEO_LINK', {
         advice: buildAdvice('NO_VIDEO_LINK', { tool: 'video_generate', prompt }),
@@ -310,10 +332,13 @@ export default async function handler(args = {}, options = {}) {
         detail: { prompt, content: sanitizeDetailText(rewritten) },
       });
     }
-    return ok({ prompt, content: localMarkdown });
+    return ok({ prompt, content: localMarkdown, model: usedModel });
   } catch (e) {
     logger.warn?.('video_generate:request_failed', { label: 'PLUGIN', error: String(e?.message || e) });
     const isTimeout = isTimeoutError(e);
     return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'video_generate', prompt }) });
   }
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

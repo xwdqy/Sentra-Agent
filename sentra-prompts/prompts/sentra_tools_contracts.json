@@ -1,0 +1,552 @@
+{
+  "version": "1.1.0",
+  "contracts": {
+    "format_fix_sentra_message": {
+      "title": "Format Fix: Sentra Message",
+      "type": "format_fix",
+      "phase": "FormatFix",
+      "expectedOutput": "sentra_message",
+      "allowTools": false,
+      "objective": "Repair candidate_output into a valid sentra-message block.",
+      "outputInstruction": "Output exactly one top-level <sentra-message> block and nothing else.",
+      "constraints": [
+        "Output exactly one top-level <sentra-message> block and nothing else.",
+        "Do not output markdown, JSON, or plain text outside XML.",
+        "Do not output sentra-tools/sentra-result/sentra-input tags."
+      ],
+      "rules": [
+        "sentra-message must include route tags and valid segment structure.",
+        "At least one valid segment is required."
+      ],
+      "outputSpec": {
+        "rootTag": "sentra-message",
+        "allowedRootTags": [
+          "sentra-message"
+        ],
+        "forbiddenTags": [
+          "sentra-tools",
+          "sentra-result",
+          "sentra-input"
+        ]
+      },
+      "fewSteps": [
+        {
+          "step": "invalid_shape",
+          "problem": "segment not under message container",
+          "fix": "move segment under <message>"
+        }
+      ]
+    },
+    "format_fix_sentra_tools": {
+      "title": "Format Fix: Sentra Tools",
+      "type": "format_fix",
+      "phase": "FormatFix",
+      "expectedOutput": "sentra_tools",
+      "allowTools": true,
+      "objective": "Repair candidate_output into a valid sentra-tools block.",
+      "outputInstruction": "Output exactly one top-level <sentra-tools> block and nothing else.",
+      "constraints": [
+        "Output exactly one top-level <sentra-tools> block and nothing else.",
+        "Use legal invoke/parameter structure only.",
+        "Do not output sentra-message/sentra-result/sentra-input tags."
+      ],
+      "rules": [
+        "Invoke must include name attribute.",
+        "Parameter must include name attribute."
+      ],
+      "outputSpec": {
+        "rootTag": "sentra-tools",
+        "allowedRootTags": [
+          "sentra-tools"
+        ],
+        "forbiddenTags": [
+          "sentra-message",
+          "sentra-result",
+          "sentra-input"
+        ]
+      },
+      "fewSteps": [
+        {
+          "step": "mixed_output",
+          "problem": "tools mixed with message",
+          "fix": "keep sentra-tools only"
+        }
+      ]
+    },
+    "format_fix_sentra_tools_or_message": {
+      "title": "Format Fix: Sentra Tools Or Message",
+      "type": "format_fix",
+      "phase": "FormatFix",
+      "expectedOutput": "sentra_tools_or_message",
+      "allowTools": true,
+      "objective": "Repair candidate_output into exactly one valid root block: sentra-tools or sentra-message.",
+      "outputInstruction": "Output exactly one top-level root: <sentra-tools> or <sentra-message>.",
+      "constraints": [
+        "Output exactly one top-level root block and nothing else.",
+        "If sentra-tools is chosen, do not output sentra-message.",
+        "If sentra-message is chosen, do not output sentra-tools."
+      ],
+      "rules": [
+        "Never emit both roots in one output."
+      ],
+      "outputSpec": {
+        "rootTag": "sentra-tools_or_message",
+        "allowedRootTags": [
+          "sentra-tools",
+          "sentra-message"
+        ],
+        "forbiddenTags": [
+          "sentra-result",
+          "sentra-input"
+        ]
+      },
+      "fewSteps": [
+        {
+          "step": "two_roots",
+          "problem": "both roots were returned",
+          "fix": "keep only one allowed root"
+        }
+      ]
+    },
+    "format_fix_reply_gate_decision_tools": {
+      "title": "Format Fix: Reply Gate Decision Tools",
+      "type": "format_fix",
+      "phase": "FormatFix",
+      "expectedOutput": "reply_gate_decision_tools",
+      "allowTools": true,
+      "objective": "Repair candidate_output into exactly one valid sentra-tools invoke for reply_gate_decision.",
+      "outputInstruction": "Output exactly one top-level <sentra-tools> containing exactly one invoke name=reply_gate_decision.",
+      "constraints": [
+        "Output exactly one top-level <sentra-tools> block and nothing else.",
+        "Use exactly one invoke name=reply_gate_decision.",
+        "Required parameters: action, enter, reason.",
+        "If action=delay, delay_when is required and must be parseable.",
+        "Do not output <sentra-message> or any non-XML prose."
+      ],
+      "rules": [
+        "action must be one of silent|action|short|delay.",
+        "enter must be boolean and consistent with action."
+      ],
+      "outputSpec": {
+        "requiredInvoke": {
+          "name": "reply_gate_decision",
+          "requiredParameters": [
+            "action",
+            "enter",
+            "reason"
+          ],
+          "conditionalRequiredParameters": [
+            "delay_when when action=delay"
+          ]
+        },
+        "parameterSchema": {
+          "action": "string(silent|action|short|delay)",
+          "enter": "boolean",
+          "delay_when": "string(optional, required when action=delay)",
+          "reason": "string"
+        },
+        "parameterEnums": {
+          "action": [
+            "silent",
+            "action",
+            "short",
+            "delay"
+          ]
+        }
+      },
+      "fewSteps": [
+        {
+          "step": "missing_invoke",
+          "problem": "missing reply_gate_decision invoke",
+          "fix": "emit exactly one invoke with required parameters"
+        }
+      ]
+    },
+    "format_fix_override_intent_decision_tools": {
+      "title": "Format Fix: Override Intent Decision Tools",
+      "type": "format_fix",
+      "phase": "FormatFix",
+      "expectedOutput": "override_intent_decision_tools",
+      "allowTools": true,
+      "objective": "Repair candidate_output into exactly one valid sentra-tools invoke for override_intent_decision.",
+      "outputInstruction": "Output exactly one top-level <sentra-tools> containing exactly one invoke name=override_intent_decision.",
+      "constraints": [
+        "Output exactly one top-level <sentra-tools> block and nothing else.",
+        "Use exactly one invoke name=override_intent_decision.",
+        "Required parameter: decision.",
+        "decision must be one of reply|pending|cancel_and_restart|cancel_only.",
+        "Do not output <sentra-message> or any non-XML prose."
+      ],
+      "rules": [
+        "confidence is optional number in [0,1].",
+        "reason is optional concise string."
+      ],
+      "outputSpec": {
+        "requiredInvoke": {
+          "name": "override_intent_decision",
+          "requiredParameters": [
+            "decision"
+          ],
+          "optionalParameters": [
+            "confidence",
+            "reason"
+          ]
+        },
+        "parameterSchema": {
+          "decision": "string(reply|pending|cancel_and_restart|cancel_only)",
+          "confidence": "number[0,1]",
+          "reason": "string"
+        },
+        "parameterEnums": {
+          "decision": [
+            "reply",
+            "pending",
+            "cancel_and_restart",
+            "cancel_only"
+          ]
+        }
+      },
+      "fewSteps": [
+        {
+          "step": "invalid_decision",
+          "problem": "decision value out of enum",
+          "fix": "choose one of allowed decision values"
+        }
+      ]
+    },
+    "reply_gate_decision": {
+      "title": "Reply Gate Decision",
+      "type": "decision",
+      "phase": "ReplyIntervention",
+      "expectedOutput": "reply_gate_decision_tools",
+      "allowTools": true,
+      "objective": "Decide whether to enter main flow and output one sentra-tools invoke reply_gate_decision.",
+      "outputInstruction": "Output exactly one top-level <sentra-tools> containing exactly one invoke name=reply_gate_decision.",
+      "constraints": [
+        "Output exactly one top-level <sentra-tools> block and nothing else.",
+        "Use exactly one invoke name=reply_gate_decision.",
+        "Required parameters: action, enter, reason.",
+        "action must be one of silent|action|short|delay.",
+        "If action=delay, delay_when is required and must be parseable.",
+        "Do not output <sentra-message> in this stage."
+      ],
+      "rules": [
+        "enter=false iff action=silent; otherwise enter=true.",
+        "Keep reason concise and evidence-based."
+      ],
+      "outputSpec": {
+        "requiredInvoke": {
+          "name": "reply_gate_decision",
+          "requiredParameters": [
+            "action",
+            "enter",
+            "reason"
+          ],
+          "conditionalRequiredParameters": [
+            "delay_when when action=delay"
+          ]
+        },
+        "parameterSchema": {
+          "action": "string(silent|action|short|delay)",
+          "enter": "boolean",
+          "delay_when": "string(optional, required when action=delay)",
+          "reason": "string"
+        },
+        "parameterEnums": {
+          "action": [
+            "silent",
+            "action",
+            "short",
+            "delay"
+          ]
+        }
+      },
+      "fewSteps": [
+        {
+          "step": "explicit_task_request",
+          "output": {
+            "action": "action",
+            "enter": true,
+            "reason": "explicit actionable request to bot"
+          }
+        },
+        {
+          "step": "future_timed_request",
+          "output": {
+            "action": "delay",
+            "enter": true,
+            "delay_when": "10分钟后",
+            "reason": "explicit future-timed intent"
+          }
+        }
+      ]
+    },
+    "override_intent_decision": {
+      "title": "Override Intent Decision",
+      "type": "decision",
+      "phase": "ReplyIntervention",
+      "expectedOutput": "override_intent_decision_tools",
+      "allowTools": true,
+      "objective": "Decide override intent and output one sentra-tools invoke override_intent_decision.",
+      "outputInstruction": "Output exactly one top-level <sentra-tools> containing exactly one invoke name=override_intent_decision.",
+      "constraints": [
+        "Output exactly one top-level <sentra-tools> block and nothing else.",
+        "Use exactly one invoke name=override_intent_decision.",
+        "Required parameter: decision.",
+        "decision must be one of reply|pending|cancel_and_restart|cancel_only.",
+        "Do not output <sentra-message> in this stage."
+      ],
+      "rules": [
+        "confidence is optional number in [0,1].",
+        "reason should briefly cite structured summary evidence."
+      ],
+      "outputSpec": {
+        "requiredInvoke": {
+          "name": "override_intent_decision",
+          "requiredParameters": [
+            "decision"
+          ],
+          "optionalParameters": [
+            "confidence",
+            "reason"
+          ]
+        },
+        "parameterSchema": {
+          "decision": "string(reply|pending|cancel_and_restart|cancel_only)",
+          "confidence": "number[0,1]",
+          "reason": "string"
+        },
+        "parameterEnums": {
+          "decision": [
+            "reply",
+            "pending",
+            "cancel_and_restart",
+            "cancel_only"
+          ]
+        }
+      },
+      "fewSteps": [
+        {
+          "step": "cancel_without_new_request",
+          "output": {
+            "decision": "cancel_only",
+            "reason": "user explicitly cancelled current task without replacement"
+          }
+        },
+        {
+          "step": "replace_or_supplement_same_task",
+          "output": {
+            "decision": "cancel_and_restart",
+            "reason": "new message replaces or supplements previous task objective"
+          }
+        }
+      ]
+    },
+    "runtime_signal_action_decision": {
+      "title": "Runtime Signal Action Decision",
+      "type": "decision",
+      "phase": "RuntimeSignalActionResolver",
+      "expectedOutput": "sentra_tools",
+      "allowTools": true,
+      "objective": "Decide one runtime action for currently running task from runtime signal.",
+      "outputInstruction": "Output exactly one top-level <sentra-tools> containing exactly one invoke name=runtime_signal_action_decision.",
+      "constraints": [
+        "Output exactly one top-level <sentra-tools> block and nothing else.",
+        "Use exactly one invoke name=runtime_signal_action_decision.",
+        "action must be one of cancel|supplement|replan|append|ignore.",
+        "reason must be concise and grounded in runtime objective/signal text.",
+        "confidence is optional and must be in [0,1]."
+      ],
+      "rules": [
+        "If uncertain between replan and supplement, prefer supplement."
+      ],
+      "outputSpec": {
+        "requiredInvoke": {
+          "name": "runtime_signal_action_decision",
+          "requiredParameters": [
+            "action",
+            "reason"
+          ],
+          "optionalParameters": [
+            "confidence"
+          ]
+        },
+        "parameterSchema": {
+          "action": "string(cancel|supplement|replan|append|ignore)",
+          "reason": "string",
+          "confidence": "number[0,1]"
+        },
+        "parameterEnums": {
+          "action": [
+            "cancel",
+            "supplement",
+            "replan",
+            "append",
+            "ignore"
+          ]
+        }
+      },
+      "fewSteps": [
+        {
+          "step": "user_says_cancel",
+          "output": {
+            "action": "cancel",
+            "reason": "user explicitly requested cancellation"
+          }
+        },
+        {
+          "step": "user_adds_small_clarification",
+          "output": {
+            "action": "supplement",
+            "reason": "new signal adds details to current objective"
+          }
+        }
+      ]
+    },
+    "tool_router_decision": {
+      "title": "Tool Router Decision",
+      "type": "router",
+      "phase": "ToolRouter",
+      "expectedOutput": "sentra_tools_or_message",
+      "allowTools": true,
+      "objective": "Decide whether this turn needs tools.",
+      "outputInstruction": "Output exactly one top-level block: <sentra-tools> or <sentra-message>.",
+      "constraints": [
+        "Output exactly one top-level block and nothing else.",
+        "If uncertain whether tools are needed, default to sentra-message.",
+        "If sentra-tools is returned, use native XML invoke/parameter only.",
+        "If sentra-tools is returned, include only tool requests and keep invokes minimal.",
+        "If sentra-message is returned, do not mention internal workflow or protocol."
+      ],
+      "rules": [
+        "Prefer sentra-message when input is insufficient or request is lightweight."
+      ],
+      "outputSpec": {
+        "allowedRootTags": [
+          "sentra-tools",
+          "sentra-message"
+        ],
+        "toolsTemplate": "<sentra-tools><invoke name=\"local__weather\"><parameter name=\"city\">Shanghai</parameter><parameter name=\"queryType\">forecast</parameter></invoke></sentra-tools>"
+      },
+      "fewSteps": [
+        {
+          "step": "lightweight_query",
+          "decision": "sentra-message",
+          "reason": "no tool side effects required"
+        },
+        {
+          "step": "tool_required_query",
+          "decision": "sentra-tools",
+          "reason": "external capability required"
+        }
+      ]
+    },
+    "execution_path_decision": {
+      "title": "Execution Path Decision",
+      "type": "router",
+      "phase": "ExecutionPathRouter",
+      "expectedOutput": "sentra_tools",
+      "allowTools": true,
+      "objective": "Choose execution path for this turn. Output sentra-tools only.",
+      "outputInstruction": "Output exactly one top-level <sentra-tools> with one invoke: execution_path_decision.",
+      "constraints": [
+        "Output exactly one top-level <sentra-tools> block and nothing else.",
+        "Use one invoke name=execution_path_decision.",
+        "path must be one of skills|mcp.",
+        "reasons must be typed array with concrete evidence, 1-4 items."
+      ],
+      "rules": [
+        "Choose skills when sentra-message can complete request without MCP tools.",
+        "Choose mcp only when MCP tool execution is required."
+      ],
+      "outputSpec": {
+        "requiredInvoke": {
+          "name": "execution_path_decision",
+          "requiredParameters": [
+            "path",
+            "reasons"
+          ],
+          "optionalParameters": [
+            "confidence"
+          ]
+        },
+        "parameterSchema": {
+          "path": "string(skills|mcp)",
+          "reasons": "array[string]",
+          "confidence": "number[0,1]"
+        }
+      },
+      "fewSteps": [
+        {
+          "step": "path_skills",
+          "output": {
+            "path": "skills",
+            "reasons": [
+              "User only needs direct reply; no tool side effects required."
+            ]
+          }
+        },
+        {
+          "step": "path_mcp",
+          "output": {
+            "path": "mcp",
+            "reasons": [
+              "User requested file write with explicit path, requiring tool execution."
+            ]
+          }
+        }
+      ]
+    },
+    "context_summary_emit": {
+      "title": "Context Summary Emit",
+      "type": "summary",
+      "phase": "ContextSummary",
+      "expectedOutput": "sentra_tools",
+      "allowTools": true,
+      "objective": "Summarize XML evidence and output one structured sentra-tools call.",
+      "outputInstruction": "Output exactly one sentra-tools invoke named emit_context_summary.",
+      "constraints": [
+        "Output exactly one top-level <sentra-tools> block and nothing else.",
+        "Use exactly one invoke name=emit_context_summary.",
+        "Required parameters: summary, keywords, eventBoard.",
+        "Each field must use <parameter name=\"...\"> wrapper.",
+        "Use eventBoard (camelCase), not event_board."
+      ],
+      "rules": [
+        "summary must be non-empty Chinese text.",
+        "keywords and eventBoard must be typed arrays of strings.",
+        "artifacts is optional typed array of objects.",
+        "Do not output markdown, JSON fences, or extra prose."
+      ],
+      "outputSpec": {
+        "requiredInvoke": {
+          "name": "emit_context_summary",
+          "requiredParameters": [
+            "summary",
+            "keywords",
+            "eventBoard"
+          ],
+          "optionalParameters": [
+            "artifacts",
+            "confidence"
+          ]
+        },
+        "parameterSchema": {
+          "summary": "string",
+          "keywords": "array[string]",
+          "eventBoard": "array[string]",
+          "artifacts": "array[object]",
+          "confidence": "number[0,1]"
+        },
+        "shapeExample": "<sentra-tools><invoke name=\"emit_context_summary\"><parameter name=\"summary\"><string>...</string></parameter><parameter name=\"keywords\"><array><string>...</string></array></parameter><parameter name=\"eventBoard\"><array><string>...</string></array></parameter></invoke></sentra-tools>"
+      },
+      "fewSteps": [
+        {
+          "step": "missing_event_board",
+          "problem": "eventBoard missing",
+          "fix": "add parameter name=eventBoard as typed array"
+        }
+      ]
+    }
+  }
+}

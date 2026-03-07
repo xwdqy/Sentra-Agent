@@ -1,7 +1,14 @@
 import { createLogger } from '../utils/logger.js';
 import { appendTeachingLog } from '../utils/presetTeachingLogViewer.js';
 import { getEnv, getEnvBool, getEnvTimeoutMs } from '../utils/envHotReloader.js';
-import { escapeXml, escapeXmlAttr, unescapeXml } from '../utils/xmlUtils.js';
+import {
+  escapeXml,
+  escapeXmlAttr,
+  extractAllFullXMLTags,
+  extractFullXMLTag,
+  extractXMLTag,
+  unescapeXml
+} from '../utils/xmlUtils.js';
 import { getRecentPresetTeachingExamples, pushPresetTeachingExample } from '../utils/presetTeachingCache.js';
 import path from 'node:path';
 import SentraPromptsSDK from 'sentra-prompts';
@@ -482,19 +489,13 @@ function buildTeachingInputXml({ nodes, conversationText }: { nodes: TeachingNod
 
 function extractFirstTagBlock(text: string, tagName: string): string | null {
   if (!text) return null;
-  // 允许关闭标签前存在空格，例如 </tagName >
-  const re = new RegExp(`<${tagName}[^>]*>[\\s\\S]*?<\\/${tagName}\\s*>`, 'i');
-  const m = text.match(re);
-  return m ? m[0] : null;
+  return extractFullXMLTag(text, tagName);
 }
 
 function extractTagText(xml: string, tagName: string): string {
   if (!xml) return '';
-  // 同样允许关闭标签前存在空格
-  const re = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\/${tagName}\\s*>`, 'i');
-  const m = xml.match(re);
-  if (!m) return '';
-  const raw = m[1];
+  const raw = extractXMLTag(xml, tagName, { trimResult: false, removeCodeBlock: false }) || '';
+  if (!raw) return '';
   const text = unescapeXml(raw);
   return text.trim();
 }
@@ -601,8 +602,7 @@ function parseEditPlanXml(text: string, nodeIndex: NodeIndex): EditPlanParseResu
   const decision = (decisionRaw || '').trim().toLowerCase();
 
   // 新版协议：所有编辑指令必须放在 <edit_operations> 下的若干 <edit_operation> 中
-  // 放宽 </edit_operation> 关闭标签匹配，兼容 </edit_operation > 写法
-  const opBlocks = xml.match(/<edit_operation\b[^>]*>[\s\S]*?<\/edit_operation\s*>/gi) || [];
+  const opBlocks = extractAllFullXMLTags(xml, 'edit_operation') || [];
   if ((!opBlocks || opBlocks.length === 0) && decision === 'no_change') {
     return { operations: [], error: null };
   }

@@ -1,0 +1,45 @@
+{
+  "id": "mcp_tool_usage",
+  "uuid": "a0f66b40-27b5-47e5-a585-9008011af0df",
+  "title": "MCP Tool Usage Policy",
+  "summary": "Explains how to consume MCP tool catalog and transform tool outcomes into user-facing messages.",
+  "selection": "auto",
+  "runtimeDynamic": true,
+  "when": [
+    "full",
+    "response_only",
+    "tools_only",
+    "router"
+  ],
+  "priority": 130,
+  "deps": [
+    "tool_call_contract"
+  ],
+  "tags": [
+    "global",
+    "mcp_usage",
+    "tools"
+  ],
+  "guideFile": "guide.md",
+  "triggers": {
+    "keywords": [
+      "mcp",
+      "tool result",
+      "result group",
+      "plugin",
+      "callback",
+      "plan",
+      "invoke",
+      "arguments",
+      "工具结果",
+      "结果组",
+      "插件",
+      "回调",
+      "规划",
+      "步骤"
+    ],
+    "regex": [
+      "/(mcp|tool\\s*result|result\\s*group|plugin|callback|plan|invoke|arguments|工具结果|结果组|插件|回调|规划|步骤)/i"
+    ]
+  }
+}

@@ -7,6 +7,11 @@ import OpenAI from 'openai';
 import mime from 'mime-types';
 import { httpRequest } from '../../src/utils/http.js';
 import { ok, fail } from '../../src/utils/result.js';
+import {
+  resolveModelFailoverPolicy,
+  resolvePluginModelCandidates,
+  runWithModelFailover,
+} from '../../src/utils/plugin_llm_failover.js';
 
 // 模型简化：仅使用环境变量 DRAW_MODEL（未配置则回退全局模型）
 
@@ -315,7 +320,14 @@ export default async function handler(args = {}, options = {}) {
   const apiKey = penv.DRAW_API_KEY || process.env.DRAW_API_KEY || config.llm.apiKey;
   const baseURL = penv.DRAW_BASE_URL || process.env.DRAW_BASE_URL || config.llm.baseURL;
   const modelArg = String(args.model || '').trim();
-  const model = String(modelArg || penv.DRAW_MODEL || process.env.DRAW_MODEL || '').trim();
+  const modelCandidates = resolvePluginModelCandidates({
+    pluginEnv: penv,
+    primaryKey: 'DRAW_MODEL',
+    explicitModel: modelArg,
+    defaultModel: config.llm.model,
+  });
+  const model = String(modelCandidates[0] || '').trim();
+  const failoverPolicy = resolveModelFailoverPolicy(penv);
   const mode = String(penv.DRAW_MODE || process.env.DRAW_MODE || 'images').toLowerCase();
   const imageSize = String(penv.DRAW_IMAGE_SIZE || process.env.DRAW_IMAGE_SIZE || '1024x1024');
 
@@ -333,13 +345,18 @@ export default async function handler(args = {}, options = {}) {
     try {
       const baseDir = 'artifacts';
       await fs.mkdir(baseDir, { recursive: true });
-
-      const res = await oai.images.generate({
-        model: model || undefined,
-        prompt,
-        n: 1,
-        size: imageSize,
-        response_format: 'b64_json'
+      const { value: res, model: usedModel } = await runWithModelFailover({
+        models: modelCandidates,
+        policy: failoverPolicy,
+        tag: 'image_draw',
+        meta: { mode: 'images', baseURL },
+        execute: async (pickedModel) => oai.images.generate({
+          model: pickedModel || undefined,
+          prompt,
+          n: 1,
+          size: imageSize,
+          response_format: 'b64_json'
+        }),
       });
 
       const first = Array.isArray(res?.data) ? res.data[0] : null;
@@ -358,7 +375,7 @@ export default async function handler(args = {}, options = {}) {
       const absMd = String(abs).replace(/\\/g, '/');
       const content = formatLocalMarkdownImage(absMd);
 
-      return ok({ prompt, content });
+      return ok({ prompt, content, model: usedModel });
     } catch (e) {
       logger.warn?.('image_draw:images_request_failed', { label: 'PLUGIN', error: String(e?.message || e) });
       const isTimeout = isTimeoutError(e);
@@ -372,19 +389,28 @@ export default async function handler(args = {}, options = {}) {
   ];
 
   try {
-    const stream = await oai.chat.completions.create({ model, messages, stream: true });
-    let content = '';
-    for await (const chunk of stream) {
-      const delta = chunk?.choices?.[0]?.delta?.content || '';
-      if (delta) {
-        content += delta;
-        if (typeof options?.onStream === 'function') {
-          try {
-            options.onStream({ type: 'delta', delta, content });
-          } catch { }
+    const { value: content, model: usedModel } = await runWithModelFailover({
+      models: modelCandidates,
+      policy: failoverPolicy,
+      tag: 'image_draw',
+      meta: { mode: 'chat_stream', baseURL },
+      execute: async (pickedModel) => {
+        const stream = await oai.chat.completions.create({ model: pickedModel, messages, stream: true });
+        let merged = '';
+        for await (const chunk of stream) {
+          const delta = chunk?.choices?.[0]?.delta?.content || '';
+          if (delta) {
+            merged += delta;
+            if (typeof options?.onStream === 'function') {
+              try {
+                options.onStream({ type: 'delta', delta, content: merged });
+              } catch { }
+            }
+          }
         }
+        return merged;
       }
-    }
+    });
 
     if (!hasMarkdownImage(content)) {
       return fail('response has no markdown image', 'NO_MD_IMAGE', {
@@ -400,10 +426,13 @@ export default async function handler(args = {}, options = {}) {
         detail: { prompt }
       });
     }
-    return ok({ prompt, content: localMarkdown });
+    return ok({ prompt, content: localMarkdown, model: usedModel });
   } catch (e) {
     logger.warn?.('image_draw:request_failed', { label: 'PLUGIN', mode, model, baseURL, error: String(e?.message || e) });
     const isTimeout = isTimeoutError(e);
     return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'image_draw', prompt }) });
   }
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

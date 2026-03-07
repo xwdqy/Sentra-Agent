@@ -663,3 +663,6 @@ export default async function handler(args = {}, options = {}) {
       : { queryType, results },
   });
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

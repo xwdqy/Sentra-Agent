@@ -4,9 +4,15 @@
 import MCPCore from '../mcpcore/index.js';
 import { planThenExecute, planThenExecuteStream } from '../agent/planners.js';
 import { cancelRun } from '../bus/runCancel.js';
+import { RunEvents } from '../bus/runEvents.js';
 import { startHotReloadWatchers } from '../config/hotReload.js';
+import { HistoryStore } from '../history/store.js';
+import { runTerminalTask as runTerminalTaskRuntime } from '../runtime/terminal/manager.js';
+import { dispatchActionRequest } from '../agent/controllers/action_dispatch_controller.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { XMLParser } from 'fast-xml-parser';
+import { truncateTextByTokens } from '../utils/tokenizer.js';
 
 function toXmlCData(text) {
   const s = String(text ?? '');
@@ -14,6 +20,13 @@ function toXmlCData(text) {
 }
 
 const __defaultCore = new MCPCore();
+const sdkXmlParser = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: '@_',
+  trimValues: true,
+  parseTagValue: false,
+  parseAttributeValue: false
+});
 
 function escapeXmlEntities(str) {
   return String(str ?? '')
@@ -231,18 +244,24 @@ export class SentraMcpSDK {
 
   /**
    * Run plan-then-execute once and return the final result.
-   * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, forceNeedTools?: boolean }} params
+   * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, forceNeedTools?: boolean, externalReasons?: string[] }} params
    * overlays/promptOverlays: per-stage system overlays, e.g. { global: '...', plan: '...', emit_plan: '...', judge: '...', arggen: '...', final_judge: '...', final_summary: '...' }
    * @returns {Promise<import('../utils/result.js').Result>}
    */
-  async runOnce({ objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey, forceNeedTools }) {
+  async runOnce({ objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey, forceNeedTools, externalReasons }) {
     await this.init();
     const ov = promptOverlays || overlays;
     const ctx0 = (context && typeof context === 'object') ? context : {};
     const ctx1 = (channelId != null || identityKey != null)
       ? { ...ctx0, ...(channelId != null ? { channelId } : {}), ...(identityKey != null ? { identityKey } : {}) }
       : ctx0;
-    const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
+    const normalizedReasons = this._normalizeExternalReasons(
+      Array.isArray(externalReasons) && externalReasons.length > 0
+        ? externalReasons
+        : ctx1?.externalReasons
+    );
+    const ctx2 = normalizedReasons.length > 0 ? { ...ctx1, externalReasons: normalizedReasons } : ctx1;
+    const ctx = ov ? { ...ctx2, promptOverlays: { ...(ctx2.promptOverlays || {}), ...ov } } : ctx2;
     return planThenExecute({ objective, context: ctx, mcpcore: this.mcpcore, conversation, forceNeedTools });
   }
 
@@ -269,6 +288,49 @@ export class SentraMcpSDK {
     }
     const ctx = context && typeof context === 'object' ? context : {};
     return this.mcpcore.callByAIName(aiName, args || {}, ctx);
+  }
+
+  /**
+   * Unified action dispatch entrypoint.
+   * Request format:
+   * {
+   *   runId, stepId, stepIndex, executionIndex, attemptNo,
+   *   action: { aiName, executor: 'mcp'|'sandbox', actionRef },
+   *   input: { args: {...} }
+   * }
+   * Returns MCP-style result plus normalized actionResult evidence payload.
+   */
+  async dispatchAction({ request = {}, context = {}, executionOptions = {} } = {}) {
+    await this.init();
+    return dispatchActionRequest({
+      mcpcore: this.mcpcore,
+      request,
+      context,
+      executionOptions
+    });
+  }
+
+  /**
+   * Terminal manager entrypoint.
+   * Supports:
+   * - JSON args execution: runTerminalTask({ args: { command, ... } })
+   * - Natural language inference: runTerminalTask({ request: '...' })
+   *
+   * @param {string|object} input
+   * @param {{
+   *   executionOptions?: {
+   *     onEvent?: (event:any)=>void,
+   *     onStream?: (event:any)=>void,
+   *     token?: string,
+   *     httpBase?: string,
+   *     baseUrl?: string,
+   *     signal?: AbortSignal
+   *   }
+   * }} [options]
+   * @returns {Promise<import('../utils/result.js').Result>}
+   */
+  async runTerminalTask(input = {}, options = {}) {
+    return runTerminalTaskRuntime(input, options);
   }
 
   /**
@@ -302,10 +364,10 @@ export class SentraMcpSDK {
 
   /**
    * Stream events for a run as an async iterator.
-   * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, forceNeedTools?: boolean }} params
+   * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, forceNeedTools?: boolean, externalReasons?: string[] }} params
    * @returns {AsyncIterable<any>}
    */
-  stream({ objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey, forceNeedTools }) {
+  stream({ objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey, forceNeedTools, externalReasons }) {
     const self = this;
     async function* gen() {
       await self.init();
@@ -314,7 +376,13 @@ export class SentraMcpSDK {
       const ctx1 = (channelId != null || identityKey != null)
         ? { ...ctx0, ...(channelId != null ? { channelId } : {}), ...(identityKey != null ? { identityKey } : {}) }
         : ctx0;
-      const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
+      const normalizedReasons = self._normalizeExternalReasons(
+        Array.isArray(externalReasons) && externalReasons.length > 0
+          ? externalReasons
+          : ctx1?.externalReasons
+      );
+      const ctx2 = normalizedReasons.length > 0 ? { ...ctx1, externalReasons: normalizedReasons } : ctx1;
+      const ctx = ov ? { ...ctx2, promptOverlays: { ...(ctx2.promptOverlays || {}), ...ov } } : ctx2;
       for await (const ev of planThenExecuteStream({ objective, context: ctx, mcpcore: self.mcpcore, conversation, forceNeedTools })) {
         yield ev;
       }
@@ -327,10 +395,10 @@ export class SentraMcpSDK {
    * It will still emit the same event types (start/judge/plan/args/tool_result/completed/summary)
    * so the upper layer can reuse the existing streaming UI/logics.
    *
-   * @param {{ toolsXml: string, objective?: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, channelId?: string, identityKey?: string }} params
+   * @param {{ toolsXml: string, objective?: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, channelId?: string, identityKey?: string, externalReasons?: string[] }} params
    * @returns {AsyncIterable<any>}
    */
-  streamToolsXml({ toolsXml, objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey }) {
+  streamToolsXml({ toolsXml, objective, conversation, context = {}, overlays, promptOverlays, channelId, identityKey, externalReasons }) {
     const self = this;
     async function* gen() {
       await self.init();
@@ -339,7 +407,13 @@ export class SentraMcpSDK {
       const ctx1 = (channelId != null || identityKey != null)
         ? { ...ctx0, ...(channelId != null ? { channelId } : {}), ...(identityKey != null ? { identityKey } : {}) }
         : ctx0;
-      const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
+      const normalizedReasons = self._normalizeExternalReasons(
+        Array.isArray(externalReasons) && externalReasons.length > 0
+          ? externalReasons
+          : ctx1?.externalReasons
+      );
+      const ctx2 = normalizedReasons.length > 0 ? { ...ctx1, externalReasons: normalizedReasons } : ctx1;
+      const ctx = ov ? { ...ctx2, promptOverlays: { ...(ctx2.promptOverlays || {}), ...ov } } : ctx2;
       const obj = (typeof objective === 'string' && objective.trim())
         ? objective
         : `DIRECT_TOOLS_XML_EXECUTION:\n${String(toolsXml || '').trim()}`;
@@ -355,9 +429,9 @@ export class SentraMcpSDK {
   /**
    * Stream with callback helper. Returns controller with stop() and a completion promise.
    * Note: stop() only stops event consumption; the underlying run will continue to finish.
-   * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, forceNeedTools?: boolean, onEvent: (ev:any)=>void }} params
+   * @param {{ objective: string, conversation?: Array<{role:string,content:any}>, context?: object, overlays?: Record<string, any>, promptOverlays?: Record<string, any>, forceNeedTools?: boolean, externalReasons?: string[], onEvent: (ev:any)=>void }} params
    */
-  async streamWithCallback({ objective, conversation, context = {}, overlays, promptOverlays, onEvent, channelId, identityKey, forceNeedTools }) {
+  async streamWithCallback({ objective, conversation, context = {}, overlays, promptOverlays, onEvent, channelId, identityKey, forceNeedTools, externalReasons }) {
     await this.init();
     let stopped = false;
     const done = (async () => {
@@ -367,7 +441,13 @@ export class SentraMcpSDK {
         const ctx1 = (channelId != null || identityKey != null)
           ? { ...ctx0, ...(channelId != null ? { channelId } : {}), ...(identityKey != null ? { identityKey } : {}) }
           : ctx0;
-        const ctx = ov ? { ...ctx1, promptOverlays: { ...(ctx1.promptOverlays || {}), ...ov } } : ctx1;
+        const normalizedReasons = this._normalizeExternalReasons(
+          Array.isArray(externalReasons) && externalReasons.length > 0
+            ? externalReasons
+            : ctx1?.externalReasons
+        );
+        const ctx2 = normalizedReasons.length > 0 ? { ...ctx1, externalReasons: normalizedReasons } : ctx1;
+        const ctx = ov ? { ...ctx2, promptOverlays: { ...(ctx2.promptOverlays || {}), ...ov } } : ctx2;
         for await (const ev of planThenExecuteStream({ objective, context: ctx, mcpcore: this.mcpcore, conversation, forceNeedTools })) {
           if (stopped) break;
           try { onEvent?.(ev); } catch { }
@@ -383,14 +463,270 @@ export class SentraMcpSDK {
     };
   }
 
-  /**
-   * 标记指定 runId 的运行为取消状态。
-   * 实际效果由执行器在内部轮询 isRunCancelled(runId) 后尽快停止调度新步骤。
-   * @param {string} runId
-   */
-  cancelRun(runId) {
+  _normalizeExternalReasons(raw) {
+    const list = Array.isArray(raw) ? raw : [];
+    const out = [];
+    for (const item of list) {
+      const text = String(item || '').replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      out.push(text.length > 240 ? text.slice(0, 240) : text);
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
+
+  _decodeXmlEntities(text) {
+    return String(text || '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, '\'');
+  }
+
+  _extractTextFromProtocolXml(raw) {
+    const s = String(raw || '').trim();
+    if (!s || !s.startsWith('<')) return '';
+    const getText = (node) => {
+      if (node == null) return '';
+      if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') return String(node);
+      if (Array.isArray(node)) return node.map((it) => getText(it)).join('');
+      if (typeof node === 'object') {
+        if (typeof node['#text'] === 'string') return node['#text'];
+        let out = '';
+        for (const [k, v] of Object.entries(node)) {
+          if (k === '#text') continue;
+          out += getText(v);
+        }
+        return out;
+      }
+      return '';
+    };
+    const collectByTag = (node, tagName, out) => {
+      if (node == null) return;
+      if (Array.isArray(node)) {
+        for (const item of node) collectByTag(item, tagName, out);
+        return;
+      }
+      if (typeof node !== 'object') return;
+      for (const [k, v] of Object.entries(node)) {
+        if (k === '#text') continue;
+        if (String(k).toLowerCase() === tagName) {
+          const t = this._decodeXmlEntities(getText(v).trim());
+          if (t) out.push(t);
+        }
+        collectByTag(v, tagName, out);
+      }
+    };
     try {
-      cancelRun(runId);
+      const parsed = sdkXmlParser.parse(`<root>${s}</root>`);
+      const root = parsed && typeof parsed === 'object' ? parsed.root : null;
+      const preview = [];
+      collectByTag(root, 'preview_text', preview);
+      if (preview.length > 0) return preview.join('\n').trim();
+      const texts = [];
+      collectByTag(root, 'text', texts);
+      if (texts.length > 0) return texts.join('\n').trim();
+    } catch { }
+    return '';
+  }
+
+  _normalizeObjectiveText(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    if (s.startsWith('<')) {
+      const fromXml = this._extractTextFromProtocolXml(s);
+      if (fromXml) return fromXml;
+    }
+    return s;
+  }
+
+  /**
+   * Report assistant responses generated during one task/run.
+   * The batch is persisted to run history so MCP can understand what was replied.
+   */
+  async reportAssistantResponsesBatch({ runId, responses = [], objective = '', reason = 'pipeline_flush', context = {} } = {}) {
+    await this.init();
+    const rid = String(runId || '').trim();
+    if (!rid) return { success: false, code: 'MISSING_RUN_ID', count: 0 };
+
+    const maxContentTokens = 3000;
+    const clip = (v, max = 120) => {
+      const s = String(v || '').replace(/\s+/g, ' ').trim();
+      if (!s) return '';
+      return truncateTextByTokens(s, { maxTokens: max, suffix: '...' }).text;
+    };
+    const clipContent = (v) => {
+      const s = String(v || '');
+      if (!s) return '';
+      return truncateTextByTokens(s, { maxTokens: maxContentTokens, suffix: '\n...[truncated]' }).text;
+    };
+    const objectivePreviewText = this._normalizeObjectiveText(objective);
+
+    const items = (Array.isArray(responses) ? responses : [])
+      .map((it, idx) => {
+        const item = (it && typeof it === 'object') ? it : {};
+        const content = clipContent(item.content);
+        if (!content) return null;
+        const tsNum = Number(item.ts);
+        const ts = Number.isFinite(tsNum) && tsNum > 0 ? Math.floor(tsNum) : Date.now();
+        const phase = String(item.phase || 'unknown').trim() || 'unknown';
+        const metaObj = (item.meta && typeof item.meta === 'object') ? item.meta : {};
+        return {
+          index: idx + 1,
+          phase,
+          content,
+          contentLength: content.length,
+          noReply: item.noReply === true,
+          delivered: item.delivered === true,
+          ts,
+          meta: metaObj,
+        };
+      })
+      .filter(Boolean);
+
+    const ctx = (context && typeof context === 'object') ? context : {};
+    const payload = {
+      type: 'assistant_response_batch',
+      reason: String(reason || 'pipeline_flush'),
+      objectivePreview: clip(objectivePreviewText, 320),
+      count: items.length,
+      responses: items,
+      context: {
+        conversationId: ctx.conversationId != null ? String(ctx.conversationId) : '',
+        channelId: ctx.channelId != null ? String(ctx.channelId) : '',
+        identityKey: ctx.identityKey != null ? String(ctx.identityKey) : '',
+        groupId: ctx.groupId != null ? String(ctx.groupId) : '',
+        userId: ctx.userId != null ? String(ctx.userId) : '',
+        feedbackRound: Number.isFinite(Number(ctx.feedbackRound)) ? Math.floor(Number(ctx.feedbackRound)) : undefined,
+      },
+    };
+
+    try { await HistoryStore.append(rid, payload); } catch { }
+    try {
+      if (typeof RunEvents.emitIfOpen === 'function') {
+        RunEvents.emitIfOpen(rid, { runId: rid, ts: Date.now(), ...payload });
+      }
+    } catch { }
+    return { success: true, code: 'OK', runId: rid, count: items.length };
+  }
+
+  async reportFeedbackFlushDone({ runId, round = 0, reason = 'feedback_wait', flushedCount = 0, context = {} } = {}) {
+    await this.init();
+    const rid = String(runId || '').trim();
+    if (!rid) return { success: false, code: 'MISSING_RUN_ID' };
+
+    const ctx = (context && typeof context === 'object') ? context : {};
+    const r = Number(round);
+    const payload = {
+      type: 'feedback_flush_done',
+      reason: String(reason || 'feedback_wait'),
+      round: Number.isFinite(r) ? Math.max(0, Math.floor(r)) : 0,
+      flushedCount: Number.isFinite(Number(flushedCount)) ? Math.max(0, Math.floor(Number(flushedCount))) : 0,
+      context: {
+        conversationId: ctx.conversationId != null ? String(ctx.conversationId) : '',
+        channelId: ctx.channelId != null ? String(ctx.channelId) : '',
+        identityKey: ctx.identityKey != null ? String(ctx.identityKey) : '',
+        groupId: ctx.groupId != null ? String(ctx.groupId) : '',
+        userId: ctx.userId != null ? String(ctx.userId) : '',
+      },
+    };
+
+    try { await HistoryStore.append(rid, payload); } catch { }
+    try {
+      if (typeof RunEvents.emitIfOpen === 'function') {
+        RunEvents.emitIfOpen(rid, { runId: rid, ts: Date.now(), ...payload });
+      }
+    } catch { }
+    return { success: true, code: 'OK', runId: rid };
+  }
+
+  async reportUserRuntimeSignal({
+    runId,
+    objective = '',
+    objectiveXml = '',
+    source = 'main_runtime_followup',
+    reason = '',
+    reasonCode = '',
+    action = '',
+    generation = 0,
+    signalSeq = 0,
+    sourceEventId = '',
+    context = {}
+  } = {}) {
+    await this.init();
+    const rid = String(runId || '').trim();
+    if (!rid) return { success: false, code: 'MISSING_RUN_ID' };
+
+    const ctx = (context && typeof context === 'object') ? context : {};
+    const objectiveFromText = this._normalizeObjectiveText(objective);
+    const objectiveFromXml = this._normalizeObjectiveText(objectiveXml);
+    const intentObjective = String(objectiveFromText || objectiveFromXml || '').trim();
+    if (!intentObjective) return { success: false, code: 'EMPTY_OBJECTIVE' };
+    const objectiveXmlRaw = String(objectiveXml || '').trim();
+    const normalizedAction = this._normalizeRuntimeSignalAction(action);
+    const generationRaw = Number(generation ?? context?.generation ?? 0);
+    const signalSeqRaw = Number(signalSeq ?? context?.signalSeq ?? 0);
+    const generationValue = Number.isFinite(generationRaw) && generationRaw > 0
+      ? Math.floor(generationRaw)
+      : 0;
+    const signalSeqValue = Number.isFinite(signalSeqRaw) && signalSeqRaw > 0
+      ? Math.floor(signalSeqRaw)
+      : 0;
+    const reasonCodeText = String(reasonCode || '').trim();
+    const sourceEventIdText = String(sourceEventId || '').trim();
+
+    const payload = {
+      type: 'user_runtime_signal',
+      runId: rid,
+      objective: intentObjective,
+      ...(objectiveXmlRaw ? { objectiveXml: objectiveXmlRaw } : {}),
+      source: String(source || 'main_runtime_followup'),
+      reason: String(reason || ''),
+      ...(reasonCodeText ? { reasonCode: reasonCodeText } : {}),
+      ...(normalizedAction !== 'ignore' ? { action: normalizedAction } : {}),
+      ...(generationValue > 0 ? { generation: generationValue } : {}),
+      ...(signalSeqValue > 0 ? { signalSeq: signalSeqValue } : {}),
+      ...(sourceEventIdText ? { sourceEventId: sourceEventIdText } : {}),
+      context: {
+        conversationId: ctx.conversationId != null ? String(ctx.conversationId) : '',
+        channelId: ctx.channelId != null ? String(ctx.channelId) : '',
+        identityKey: ctx.identityKey != null ? String(ctx.identityKey) : '',
+        groupId: ctx.groupId != null ? String(ctx.groupId) : '',
+        userId: ctx.userId != null ? String(ctx.userId) : '',
+        generation: generationValue,
+        signalSeq: signalSeqValue,
+        conversationState: ctx.conversationState != null ? String(ctx.conversationState) : ''
+      }
+    };
+
+    try { await HistoryStore.append(rid, payload); } catch { }
+    try {
+      if (typeof RunEvents.emitIfOpen === 'function') {
+        RunEvents.emitIfOpen(rid, { runId: rid, ts: Date.now(), ...payload });
+      }
+    } catch { }
+    return { success: true, code: 'OK', runId: rid };
+  }
+
+  _normalizeRuntimeSignalAction(raw) {
+    const s = String(raw || '').trim().toLowerCase();
+    if (s === 'cancel') return 'cancel';
+    if (s === 'replan') return 'replan';
+    if (s === 'supplement') return 'supplement';
+    if (s === 'append') return 'append';
+    return 'ignore';
+  }
+
+  /**
+   * Mark one run as cancelled.
+   * Actual stop happens when executor checks cancellation state.
+   * @param {string} runId
+   * @param {object} [meta]
+   */
+  cancelRun(runId, meta = null) {
+    try {
+      cancelRun(runId, meta);
     } catch { }
   }
 }

@@ -5,16 +5,24 @@ import { getEnv } from './envHotReloader.js';
 
 const logger = createLogger('AgentPresetLoader');
 
-/**
- * 同步加载 Agent 预设原始文本（从 agent-presets 目录）
- * - 兼容 AGENT_PRESET_FILE 未配置时默认使用 default.txt
- * - 若指定文件不存在，则回退到 default.txt
- *
- * @returns {{ fileName: string, path: string, isDefaultFallback: boolean, text: string, parsedJson: PresetJsonValue | null }}
- */
+type PresetJsonValue =
+  | Record<string, unknown>
+  | Array<Record<string, unknown> | string | number | boolean | null>;
+
+function resolveFallbackPresetPath(presetDir: string): { fileName: string; fullPath: string } | null {
+  const candidates = ['default.txt', 'default.md', 'default.json'];
+  for (const fileName of candidates) {
+    const fullPath = path.join(presetDir, fileName);
+    if (!fs.existsSync(fullPath)) continue;
+    return { fileName, fullPath };
+  }
+  return null;
+}
+
 export function loadAgentPresetSync() {
+  const presetDir = './agent-presets';
   const presetFileName = getEnv('AGENT_PRESET_FILE', 'default.txt') || 'default.txt';
-  const presetPath = path.join('./agent-presets', presetFileName);
+  const presetPath = path.join(presetDir, presetFileName);
 
   let usedPath = presetPath;
   let usedFileName = presetFileName;
@@ -22,21 +30,19 @@ export function loadAgentPresetSync() {
 
   try {
     if (!fs.existsSync(presetPath)) {
-      logger.warn(`预设文件不存在: ${presetPath}`);
-      logger.warn('尝试使用默认预设: ./agent-presets/default.txt');
-
-      const defaultPath = './agent-presets/default.txt';
-      if (!fs.existsSync(defaultPath)) {
-        throw new Error('默认预设文件 default.txt 也不存在，请检查 agent-presets 文件夹');
+      logger.warn(`preset file not found: ${presetPath}`);
+      const fallback = resolveFallbackPresetPath(presetDir);
+      if (!fallback) {
+        throw new Error('preset fallback not found: default.txt/default.md/default.json');
       }
-
-      usedPath = defaultPath;
-      usedFileName = 'default.txt';
+      usedPath = fallback.fullPath;
+      usedFileName = fallback.fileName;
       isDefaultFallback = true;
+      logger.warn(`fallback preset selected: ${usedPath}`);
     }
 
     const content = fs.readFileSync(usedPath, 'utf8');
-    logger.success(`成功加载 Agent 预设: ${usedFileName}${isDefaultFallback ? ' (fallback)' : ''}`);
+    logger.success(`preset loaded: ${usedFileName}${isDefaultFallback ? ' (fallback)' : ''}`);
 
     const parsedJson = tryParsePresetJson(content, usedFileName);
 
@@ -48,34 +54,20 @@ export function loadAgentPresetSync() {
       parsedJson
     };
   } catch (error) {
-    logger.error('加载 Agent 预设失败', error);
+    logger.error('load preset failed', error);
     throw error;
   }
 }
 
-/**
- * 尝试从原始文本中解析 JSON 角色卡
- * - 仅当首个非空字符为 { 或 [ 时才尝试 JSON.parse
- *
- * @param {string} text
- * @returns {PresetJsonValue | null}
- */
-type PresetJsonValue = Record<string, unknown> | Array<Record<string, unknown> | string | number | boolean | null>;
-
 export function tryParsePresetJson(text: string, fileName: string = ''): PresetJsonValue | null {
   if (!text || typeof text !== 'string') return null;
-
   const ext = String(fileName || '').toLowerCase();
-  if (!ext.endsWith('.json')) {
-    return null;
-  }
+  if (!ext.endsWith('.json')) return null;
+
   const trimmed = text.trim();
   if (!trimmed) return null;
-
   const firstChar = trimmed[0];
-  if (firstChar !== '{' && firstChar !== '[') {
-    return null;
-  }
+  if (firstChar !== '{' && firstChar !== '[') return null;
 
   try {
     const obj = JSON.parse(trimmed);
@@ -84,16 +76,11 @@ export function tryParsePresetJson(text: string, fileName: string = ''): PresetJ
     }
     return null;
   } catch (e) {
-    logger.warn('AgentPresetLoader: JSON.parse 失败，按纯文本处理', { err: String(e) });
+    logger.warn('preset json parse failed, fallback to plain text', { err: String(e) });
     return null;
   }
 }
 
-/**
- * 仅返回原始预设文本（向后兼容旧逻辑）
- *
- * @returns {string}
- */
 export function loadAgentPresetText() {
   const { text } = loadAgentPresetSync();
   return text || '';

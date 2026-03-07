@@ -1,5 +1,9 @@
-﻿import { getEnvBool, getEnvInt, getEnv } from '../utils/envHotReloader.js';
+﻿import { getEnvBool, getEnvInt } from '../utils/envHotReloader.js';
 import { shouldAnalyzeEmotion } from '../utils/emotionGate.js';
+import { collectXmlTagTextValues } from '../utils/xmlUtils.js';
+import { applyScheduledReplyAction, scheduleReplyAction } from '../utils/replyActionScheduler.js';
+import { appendContextMemoryEvent } from '../utils/contextMemoryManager.js';
+import { buildGroupScopeId, buildPrivateScopeId } from '../utils/conversationId.js';
 
 type ClientEvent = 'open' | 'message' | 'error' | 'close' | 'reconnect_exhausted' | 'warn';
 type ClientEventHandler = (payload?: unknown) => void;
@@ -25,8 +29,12 @@ type IncomingMessage = {
   target_id?: string | number;
   target_name?: string;
   summary?: string;
+  summary_text?: string;
+  summary_xml?: string;
   text?: string;
   objective?: string;
+  objective_text?: string;
+  objective_xml?: string;
   event_type?: string;
   at_users?: Array<string | number>;
   time_str?: string;
@@ -37,15 +45,6 @@ type IncomingMessage = {
   [key: string]: unknown;
 };
 
-type PendingMessage = {
-  text?: string;
-  summary?: string;
-  time_str?: string;
-  sender_id?: string | number | null;
-  sender_name?: string;
-  [key: string]: unknown;
-};
-
 type DecisionContextMessage = { text?: string; time?: string; sender_id?: string; sender_name?: string };
 type DecisionContext = {
   group_recent_messages?: DecisionContextMessage[];
@@ -53,27 +52,26 @@ type DecisionContext = {
   bot_recent_messages?: DecisionContextMessage[];
 };
 
-type OverrideDecision = {
-  decision?: 'reply' | 'pending' | 'cancel_only' | 'cancel_and_restart' | string;
-  confidence?: number;
-  reason?: string;
+type DelayPlan = {
+  whenText?: string;
+  fireAt?: number;
+  delayMs?: number;
+  targetISO?: string;
+  timezone?: string;
+  parserMethod?: string;
 };
 
-type ShouldReplyDecision = { needReply: boolean; taskId?: string | null };
-
-type OverrideIntentPayload = {
-  scene: string;
-  senderId: string;
-  groupId: string | null;
-  taskGroupId: string;
-  prevMessages: Array<{ text: string; time: string }>;
-  newMessage: { text: string; time: string };
-  signals: { mentioned_by_at: boolean; mentioned_by_name: boolean };
+type ShouldReplyDecision = {
+  needReply: boolean;
+  taskId?: string | null;
+  action?: 'silent' | 'action' | 'short' | 'delay' | string;
+  delay?: DelayPlan | null;
+  reason?: string;
+  reason_code?: string;
 };
 
 type HistoryManagerLike = {
   addPendingMessage: (groupId: string, summary: string, msg: IncomingMessage) => Promise<void>;
-  getPendingMessagesBySender: (groupId: string, senderId: string) => PendingMessage[];
   getRecentMessagesForDecision: (groupId: string, senderId: string) => DecisionContext;
 };
 
@@ -93,33 +91,113 @@ type SocketHandlerContext = {
   personaManager?: PersonaManagerLike;
   getActiveTaskCount: (conversationId: string) => number;
   handleIncomingMessage: (conversationId: string, msg: IncomingMessage, options: { activeCount: number }) => Promise<{ action: string }>;
-  decideOverrideIntent?: (payload: OverrideIntentPayload) => Promise<OverrideDecision | null>;
-  markTasksCancelledForSender: (conversationId: string) => void | Promise<void>;
-  cancelRunsForSender: (senderId: string, groupId: string | null, options: { mode: string }) => void | Promise<void>;
-  triggerTaskCompletionAnalysis?: (payload: Record<string, unknown>) => Promise<unknown>;
-  agent?: unknown;
-  sdk?: unknown;
+  dispatchRuntimeSignalForActiveRuns: (
+    senderId: string,
+    groupId: string | null,
+    options: {
+      mode: string;
+      action?: string;
+      reason?: string;
+      reasonCode?: string;
+      source?: string;
+      sourceEventId?: string;
+      latestUserObjective?: string;
+      latestUserObjectiveXml?: string;
+    }
+  ) => number | Promise<number>;
+  markConversationRuntimeState?: (
+    senderId: string,
+    conversationId: string,
+    state: 'IDLE' | 'BUNDLING' | 'RUNNING' | 'DRAINING' | 'FINALIZED',
+    meta?: { reasonCode?: string; source?: string; runId?: string; note?: string }
+  ) => void;
   collectBundleForSender: (conversationId: string) => Promise<IncomingMessage | null>;
-  drainPendingMessagesForSender?: (conversationId: string) => IncomingMessage | null;
-  requeuePendingMessageForSender?: (conversationId: string, msg: IncomingMessage) => void | Promise<void>;
   shouldReply: (msg: IncomingMessage, options: { decisionContext?: DecisionContext; forceReply?: boolean; source?: string }) => Promise<ShouldReplyDecision>;
   handleOneMessage: (msg: IncomingMessage, taskId?: string | null) => Promise<void>;
-  handleGroupReplyCandidate?: (
-    payload: { groupId?: string | number; senderId: string; bundledMsg: IncomingMessage; taskId?: string | null },
-    helpers: { handleOneMessage: (msg: IncomingMessage, taskId?: string | null) => Promise<void>; completeTask: (conversationId: string, taskId: string) => Promise<unknown> }
-  ) => Promise<void>;
-  completeTask: (conversationId: string, taskId: string) => Promise<unknown>;
+  triggerContextSummarizationIfNeeded?: (payload: { groupId?: string; chatType?: string; userId?: string }) => Promise<void> | void;
 };
 
-function takeLast<T>(list: T[], count: number): T[] {
-  if (!Array.isArray(list) || count <= 0) return [];
-  const start = Math.max(0, list.length - count);
-  const out: T[] = [];
-  for (let i = start; i < list.length; i++) {
-    const item = list[i];
-    if (item !== undefined) out.push(item);
+function extractSegmentText(msg: IncomingMessage | null | undefined): string {
+  const m = msg && typeof msg === 'object' ? msg : null;
+  if (!m) return '';
+  const segs = Array.isArray((m as any).message)
+    ? (m as any).message
+    : (Array.isArray((m as any).segments) ? (m as any).segments : []);
+  const lines: string[] = [];
+  for (const seg of segs) {
+    if (!seg || typeof seg !== 'object') continue;
+    const type = typeof seg.type === 'string' ? seg.type.trim().toLowerCase() : '';
+    if (type !== 'text') continue;
+    const data = seg.data && typeof seg.data === 'object' ? seg.data : {};
+    const text = typeof (data as any).text === 'string' ? (data as any).text.trim() : '';
+    if (!text) continue;
+    lines.push(text);
   }
-  return out;
+  return lines.join('\n').trim();
+}
+
+function extractTextFromProtocolXml(raw: unknown): string {
+  const xml = typeof raw === 'string' ? raw.trim() : '';
+  if (!xml) return '';
+  if (!xml.includes('<sentra-') && !xml.includes('<message>')) return '';
+  const textMatches = collectXmlTagTextValues(xml, ['text']);
+  if (textMatches.length > 0) {
+    return textMatches.join('\n').trim();
+  }
+  const previewMatch = collectXmlTagTextValues(xml, ['preview_text']);
+  if (previewMatch.length > 0) {
+    return previewMatch[0] || '';
+  }
+  return '';
+}
+
+function extractStructuredObjectiveXml(msg: IncomingMessage | null | undefined): string {
+  const m = msg && typeof msg === 'object' ? msg : null;
+  if (!m) return '';
+  const candidates = [
+    m.objective_xml,
+    m.objective,
+    m.summary_xml,
+    m.summary
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    const text = candidate.trim();
+    if (!text) continue;
+    if (
+      text.startsWith('<sentra-input') ||
+      text.startsWith('<sentra-objective') ||
+      text.startsWith('<sentra-summary') ||
+      text.startsWith('<sentra-message')
+    ) {
+      return text;
+    }
+  }
+  return '';
+}
+
+function extractMessagePlainText(msg: IncomingMessage | null | undefined): string {
+  const m = msg && typeof msg === 'object' ? msg : null;
+  if (!m) return '';
+  const plainCandidates = [
+    m.objective_text,
+    m.summary_text,
+    m.objective,
+    m.summary,
+    m.text
+  ];
+  for (const candidate of plainCandidates) {
+    if (typeof candidate !== 'string') continue;
+    const text = candidate.trim();
+    if (!text) continue;
+    if (text.startsWith('<')) {
+      const fromXml = extractTextFromProtocolXml(text);
+      if (fromXml) return fromXml;
+      continue;
+    }
+    return text;
+  }
+  return extractSegmentText(m);
 }
 
 export function setupSocketHandlers(ctx: SocketHandlerContext) {
@@ -131,20 +209,51 @@ export function setupSocketHandlers(ctx: SocketHandlerContext) {
     personaManager,
     getActiveTaskCount,
     handleIncomingMessage,
-    decideOverrideIntent,
-    markTasksCancelledForSender,
-    cancelRunsForSender,
-    triggerTaskCompletionAnalysis,
-    agent,
-    sdk,
+    dispatchRuntimeSignalForActiveRuns,
+    markConversationRuntimeState,
     collectBundleForSender,
-    drainPendingMessagesForSender,
-    requeuePendingMessageForSender,
     shouldReply,
     handleOneMessage,
-    handleGroupReplyCandidate,
-    completeTask
+    triggerContextSummarizationIfNeeded
   } = ctx;
+
+  const processBundledAsNewTask = async (
+    bundledMsg: IncomingMessage,
+    taskConversationId: string,
+    groupId: string,
+    userid: string
+  ) => {
+    let decisionContext = null;
+    if (bundledMsg.type === 'group') {
+      try {
+        decisionContext = historyManager.getRecentMessagesForDecision(groupId, userid);
+      } catch (e) {
+        logger.debug(`构建轻量决策上下文失败: ${groupId} sender ${userid}`, {
+          err: String(e)
+        });
+      }
+    }
+
+    const replyDecision = await shouldReply(
+      bundledMsg,
+      decisionContext ? { decisionContext } : {}
+    );
+    const taskId = replyDecision.taskId;
+    const actionSchedule = scheduleReplyAction(replyDecision);
+    const action = actionSchedule.action;
+    logger.info(
+      `ReplyDecision: conversation=${taskConversationId} action=${action} needReply=${actionSchedule.needReply ? 'true' : 'false'} taskId=${taskId || 'null'}${action === 'delay' ? ` delayWhen=${actionSchedule.delayWhen || ''}` : ''}${replyDecision.reason_code ? ` reason_code=${replyDecision.reason_code}` : ''}${actionSchedule.reason ? ` reason=${actionSchedule.reason}` : ''}`
+    );
+
+    if (!actionSchedule.needReply) {
+      logger.debug('跳过回复: 根据智能策略，本次不回复（已完成本轮聚合）');
+      return;
+    }
+
+    logger.debug(`进入回复流程: taskId=${taskId || 'null'}`);
+    applyScheduledReplyAction(bundledMsg, actionSchedule);
+    await handleOneMessage(bundledMsg, taskId);
+  };
 
   const incomingDedupTtlMsRaw = getEnvInt('INCOMING_MESSAGE_DEDUP_TTL_MS', 60000) ?? 60000;
   const incomingDedupTtlMs =
@@ -153,10 +262,6 @@ export function setupSocketHandlers(ctx: SocketHandlerContext) {
   const incomingDedupMax =
     Number.isFinite(incomingDedupMaxRaw) && incomingDedupMaxRaw > 0 ? incomingDedupMaxRaw : 5000;
   const recentIncomingByConv = new Map<string, Map<string, number>>();
-  const botNames = String(getEnv('BOT_NAMES', '') ?? '')
-    .split(',')
-    .map((n) => n.trim())
-    .filter(Boolean);
 
   const shouldDropDuplicateIncoming = (conversationKey: unknown, messageId: unknown): boolean => {
     const convKey = String(conversationKey || '');
@@ -238,11 +343,11 @@ export function setupSocketHandlers(ctx: SocketHandlerContext) {
 
         if (isPoke) {
           const scene = msg.type || 'unknown';
-          let convId = msg.group_id ? `G:${msg.group_id}` : `U:${msg.sender_id || ''}`;
+          let convId = msg.group_id ? buildGroupScopeId(msg.group_id) : buildPrivateScopeId(msg.sender_id || '');
           if (!msg.group_id) {
             const selfId = msg.self_id;
             if (selfId && msg.sender_id === selfId) {
-              convId = `U:${msg.target_id || ''}`;
+              convId = buildPrivateScopeId(msg.target_id || '');
             }
           }
           logger.info('<< poke', {
@@ -252,7 +357,7 @@ export function setupSocketHandlers(ctx: SocketHandlerContext) {
             sender_name: msg.sender_name || '',
             target_id: msg.target_id || null,
             target_name: msg.target_name || '',
-            summary: msg.summary || msg.text || '',
+            summary: extractMessagePlainText(msg) || '',
             conv_id: convId,
           });
         } else {
@@ -266,7 +371,7 @@ export function setupSocketHandlers(ctx: SocketHandlerContext) {
           }
         }
 
-        const conversationKey = msg?.group_id ? `G:${msg.group_id}` : `U:${userid}`;
+        const conversationKey = msg?.group_id ? buildGroupScopeId(msg.group_id) : buildPrivateScopeId(userid);
         if (shouldDropDuplicateIncoming(conversationKey, msg?.message_id)) {
           logger.info('重复消息去重: 已丢弃重复投递的 incoming message', {
             conversationKey,
@@ -281,22 +386,48 @@ export function setupSocketHandlers(ctx: SocketHandlerContext) {
           ? (msg?.target_name || '')
           : (msg?.sender_name || '');
 
-        const emoText =
-          (typeof msg?.text === 'string' && msg.text.trim())
-            ? msg.text
-            : ((typeof msg?.objective === 'string' && msg.objective.trim())
-                ? msg.objective
-                : (msg?.summary || ''));
+        const msgSegmentText = extractSegmentText(msg);
+        const msgPlainText = extractMessagePlainText(msg);
+        const emoText = msgPlainText || msgSegmentText;
         const emoEnabled = getEnvBool('SENTRA_EMO_ENABLED', false);
         if (emoEnabled && userid && emoText && emo && shouldAnalyzeEmotion(emoText, userid)) {
           emo.analyze(emoText, { userid, username }).catch(() => {});
         }
         const groupId = conversationKey;
-        const summary =
-          (typeof msg?.objective === 'string' && msg.objective.trim())
-            ? msg.objective
-            : (msg?.summary || msg?.text || '');
+        const summary = msgPlainText || msgSegmentText;
         await historyManager.addPendingMessage(groupId, summary, msg);
+        try {
+          const objectiveXml = extractStructuredObjectiveXml(msg);
+          const rawMsgTs = Number((msg as Record<string, unknown>)?.time);
+          const eventTs = Number.isFinite(rawMsgTs) && rawMsgTs > 0
+            ? (rawMsgTs < 1000000000000 ? rawMsgTs * 1000 : rawMsgTs)
+            : Date.now();
+          await appendContextMemoryEvent(groupId, {
+            kind: 'incoming_message',
+            timestamp: eventTs,
+            chatType: msg?.group_id ? 'group' : 'private',
+            userId: userid || '',
+            objective: summary || '',
+            objectiveXml: objectiveXml || '',
+            contentText: summary || '',
+            ...(objectiveXml ? { contentXml: objectiveXml } : {}),
+            metadata: {
+              senderName: username || '',
+              conversationKey,
+              messageId: msg?.message_id != null ? String(msg.message_id) : '',
+              groupId: msg?.group_id != null ? String(msg.group_id) : ''
+            }
+          });
+        } catch { }
+        if (triggerContextSummarizationIfNeeded && groupId) {
+          Promise.resolve(
+            triggerContextSummarizationIfNeeded({
+              groupId,
+              chatType: msg?.group_id ? 'group' : 'private',
+              userId: userid || ''
+            })
+          ).catch(() => { });
+        }
 
         if (personaManager && userid && summary) {
           await personaManager.recordMessage(userid, {
@@ -315,148 +446,99 @@ export function setupSocketHandlers(ctx: SocketHandlerContext) {
         const activeCount = getActiveTaskCount(taskConversationId);
 
         const incomingDecision = await handleIncomingMessage(taskConversationId, msg, { activeCount });
-                if (incomingDecision.action === 'pending_collect') {
-          // ??????:????????,???? override ??
-          if (activeCount > 0 && typeof decideOverrideIntent === 'function') {
+        if (incomingDecision.action === 'pending_collect') {
+          if (typeof markConversationRuntimeState === 'function') {
+            markConversationRuntimeState(userid, taskConversationId, 'BUNDLING', {
+              reasonCode: 'pending_collect',
+              source: 'socket_handlers'
+            });
+          }
+          if (activeCount > 0) {
             try {
               const bundledMsg = await collectBundleForSender(taskConversationId);
               if (!bundledMsg) {
-                logger.debug('override pending_collect: ??????,????');
+                logger.debug('runtime signal: pending_collect but bundle is empty');
+                if (typeof markConversationRuntimeState === 'function') {
+                  markConversationRuntimeState(userid, taskConversationId, 'RUNNING', {
+                    reasonCode: 'pending_collect_bundle_empty',
+                    source: 'socket_handlers'
+                  });
+                }
                 return;
               }
-
-              const senderMessagesAll = historyManager.getPendingMessagesBySender(groupId, userid);
-              const maxHistory = 5;
-              const prevSlice = Array.isArray(senderMessagesAll)
-                ? takeLast(senderMessagesAll, maxHistory)
-                : [];
-
-              const prevMessagesPayload = prevSlice
-                .map((m) => ({
-                  text: m.text || m.summary || '',
-                  time: m.time_str || ''
-                }))
-                .filter((m) => m.text);
-
-              const newMessagePayload = {
-                text: bundledMsg.text || bundledMsg.summary || '',
-                time: bundledMsg.time_str || ''
-              };
-
-              if (newMessagePayload.text && prevMessagesPayload.length > 0) {
-                const textLower = (newMessagePayload.text || '').toLowerCase();
-                const summaryLower = (bundledMsg.summary || '').toLowerCase();
-                const mentionedByName = botNames.length > 0
-                  ? botNames.some((n) => {
-                      const ln = n.toLowerCase();
-                      return (textLower && textLower.includes(ln)) || (summaryLower && summaryLower.includes(ln));
-                    })
-                  : false;
-                const atUsers = bundledMsg.at_users || msg.at_users || [];
-                const mentionedByAt = Array.isArray(atUsers) && atUsers.some(
-                  (at) => String(at) === String(msg.self_id || '')
-                );
-
-                const overrideDecision = await decideOverrideIntent({
-                  scene: bundledMsg.type || msg.type || 'unknown',
-                  senderId: userid,
-                  groupId: msg.group_id != null ? String(msg.group_id) : null,
-                  taskGroupId: taskConversationId.startsWith('group_')
-                    ? `G:${msg.group_id || ''}`
-                    : `U:${userid}`,
-                  prevMessages: prevMessagesPayload,
-                  newMessage: newMessagePayload,
-                  signals: {
-                    mentioned_by_at: mentionedByAt,
-                    mentioned_by_name: mentionedByName
-                  }
+              const activeCountNow = getActiveTaskCount(taskConversationId);
+              if (activeCountNow <= 0) {
+                logger.debug('runtime signal: active task finished after bundling; fallback to new task dispatch', {
+                  reason_code: 'bundle_after_run_finished',
+                  conversation: taskConversationId,
+                  sender: userid
                 });
-
-                if (overrideDecision && overrideDecision.decision) {
-                  const decision = overrideDecision.decision;
-                  if (decision === 'cancel_and_restart' || decision === 'cancel_only') {
-                    markTasksCancelledForSender(taskConversationId);
-                    cancelRunsForSender(userid, groupId, { mode: 'conversation' });
-                  }
-
-                  if (decision === 'reply') {
-                    bundledMsg._forceReply = true;
-                    bundledMsg._overrideDecision = 'reply';
-                    if (typeof requeuePendingMessageForSender === 'function') {
-                      requeuePendingMessageForSender(taskConversationId, bundledMsg);
-                    }
-                  } else if (decision === 'pending') {
-                    bundledMsg._forcePendingHold = true;
-                    bundledMsg._overrideDecision = 'pending';
-                    if (typeof requeuePendingMessageForSender === 'function') {
-                      requeuePendingMessageForSender(taskConversationId, bundledMsg);
-                    }
-                  } else if (decision === 'cancel_only') {
-                    bundledMsg._forceNoReply = true;
-                    bundledMsg._overrideDecision = 'cancel_only';
-                    if (typeof triggerTaskCompletionAnalysis === 'function') {
-                      const analysisAgent = agent || sdk;
-                      const userObjective =
-                        (newMessagePayload && newMessagePayload.text) ||
-                        bundledMsg.summary ||
-                        summary ||
-                        '';
-                      triggerTaskCompletionAnalysis({
-                        agent: analysisAgent,
-                        groupId,
-                        conversationId: taskConversationId,
-                        userId: userid,
-                        userObjective,
-                        toolInvocations: [],
-                        toolResultEvents: [],
-                        finalResponse: '',
-                        hasToolCalled: false,
-                        forceSaveOutput: true
-                      }).catch((e: unknown) => {
-                        logger.debug('cancel_only: task completion analysis failed', { err: String(e) });
-                      });
-                    }
-                  } else if (decision === 'cancel_and_restart') {
-                    bundledMsg._forceReply = true;
-                    bundledMsg._overrideDecision = 'cancel_and_restart';
-                    const replyDecision = await shouldReply(
-                      bundledMsg,
-                      { forceReply: true, source: 'override_restart' }
-                    );
-                    if (replyDecision.needReply) {
-                      const safeTaskId = replyDecision.taskId ?? null;
-                      if (bundledMsg.type === 'group' && typeof handleGroupReplyCandidate === 'function') {
-                        const groupPayload: { groupId?: string | number; senderId: string; bundledMsg: IncomingMessage; taskId?: string | null } = {
-                          senderId: userid,
-                          bundledMsg,
-                          taskId: safeTaskId
-                        };
-                        if (msg.group_id !== undefined && msg.group_id !== null) {
-                          groupPayload.groupId = msg.group_id;
-                        }
-                        await handleGroupReplyCandidate(
-                          groupPayload,
-                          {
-                            handleOneMessage,
-                            completeTask
-                          }
-                        );
-                      } else {
-                        await handleOneMessage(bundledMsg, replyDecision.taskId);
-                      }
-                    }
-                  }
-
-                  const conf = (overrideDecision.confidence != null && Number.isFinite(overrideDecision.confidence))
-                    ? (overrideDecision.confidence * 100).toFixed(1)
-                    : 'n/a';
-                  logger.info(
-                    `Override decision: sender=${userid} decision=${decision}, confidence=${conf}%, reason=${overrideDecision.reason}`
-                  );
+                if (typeof markConversationRuntimeState === 'function') {
+                  markConversationRuntimeState(userid, taskConversationId, 'FINALIZED', {
+                    reasonCode: 'bundle_after_run_finished',
+                    source: 'socket_handlers'
+                  });
+                }
+                await processBundledAsNewTask(bundledMsg, taskConversationId, groupId, userid);
+                return;
+              }
+              const runtimeObjective = String(
+                extractMessagePlainText(bundledMsg) ||
+                extractMessagePlainText(msg) ||
+                summary ||
+                ''
+              ).trim();
+              const runtimeObjectiveXml = String(
+                extractStructuredObjectiveXml(bundledMsg) ||
+                extractStructuredObjectiveXml(msg) ||
+                ''
+              ).trim();
+              if (!runtimeObjective) {
+                logger.debug('runtime signal: skip empty follow-up objective');
+                return;
+              }
+              const dispatchedCount = await Promise.resolve(
+                dispatchRuntimeSignalForActiveRuns(userid, taskConversationId, {
+                  mode: 'conversation',
+                  source: 'runtime_followup_message',
+                  reason: 'active_task_followup',
+                  reasonCode: 'active_task_followup',
+                  sourceEventId: msg?.message_id != null ? String(msg.message_id) : '',
+                  latestUserObjective: runtimeObjective,
+                  latestUserObjectiveXml: runtimeObjectiveXml
+                })
+              );
+              if (dispatchedCount > 0) {
+                if (typeof markConversationRuntimeState === 'function') {
+                  markConversationRuntimeState(userid, taskConversationId, 'DRAINING', {
+                    reasonCode: 'runtime_signal_forwarded',
+                    source: 'socket_handlers'
+                  });
+                }
+                logger.info(
+                  `Runtime signal forwarded: sender=${userid} conversation=${taskConversationId} dispatchedRuns=${dispatchedCount} objectiveLen=${runtimeObjective.length}`
+                );
+              } else {
+                logger.debug(
+                  `runtime signal: no active MCP run matched after bundling (sender=${userid}, conversation=${taskConversationId})`,
+                  { reason_code: 'no_active_run_matched_after_bundle' }
+                );
+                if (typeof markConversationRuntimeState === 'function') {
+                  markConversationRuntimeState(userid, taskConversationId, 'FINALIZED', {
+                    reasonCode: 'no_active_run_matched_after_bundle',
+                    source: 'socket_handlers'
+                  });
                 }
               }
             } catch (e) {
-              logger.debug(`Override decision failed: ${groupId} sender ${userid}`, { err: String(e) });
+              logger.debug(`Runtime signal dispatch failed: ${groupId} sender ${userid}`, { err: String(e) });
+              if (typeof markConversationRuntimeState === 'function') {
+                markConversationRuntimeState(userid, taskConversationId, 'RUNNING', {
+                  reasonCode: 'runtime_signal_dispatch_failed',
+                  source: 'socket_handlers',
+                  note: String(e)
+                });
+              }
             }
           }
           return;
@@ -468,59 +550,34 @@ export function setupSocketHandlers(ctx: SocketHandlerContext) {
 
         if (incomingDecision.action === 'buffered' || incomingDecision.action === 'ignore') {
           // 仍在聚合窗口或无需触发回复
+          if (incomingDecision.action === 'buffered' && typeof markConversationRuntimeState === 'function') {
+            markConversationRuntimeState(userid, taskConversationId, 'BUNDLING', {
+              reasonCode: 'buffered_window',
+              source: 'socket_handlers'
+            });
+          }
           return;
         }
 
         // start_bundle: 作为一轮新会话的起点，先等待聚合窗口结束拿到合并后的消息，再做智能回复决策
+        if (typeof markConversationRuntimeState === 'function') {
+          markConversationRuntimeState(userid, taskConversationId, 'BUNDLING', {
+            reasonCode: 'start_bundle',
+            source: 'socket_handlers'
+          });
+        }
         const bundledMsg = await collectBundleForSender(taskConversationId);
         if (!bundledMsg) {
           logger.debug('聚合结果为空，跳过本次消息');
-          return;
-        }
-        let decisionContext = null;
-        if (bundledMsg.type === 'group') {
-          try {
-            decisionContext = historyManager.getRecentMessagesForDecision(groupId, userid);
-          } catch (e) {
-            logger.debug(`构建轻量决策上下文失败: ${groupId} sender ${userid}`, {
-              err: String(e)
+          if (typeof markConversationRuntimeState === 'function') {
+            markConversationRuntimeState(userid, taskConversationId, 'IDLE', {
+              reasonCode: 'bundle_empty_skip',
+              source: 'socket_handlers'
             });
           }
-        }
-
-        const replyDecision = await shouldReply(
-          bundledMsg,
-          decisionContext ? { decisionContext } : {}
-        );
-        const taskId = replyDecision.taskId;
-
-        if (!replyDecision.needReply) {
-          logger.debug('跳过回复: 根据智能策略，本次不回复（已完成本轮聚合）');
           return;
         }
-
-        logger.debug(`进入回复流程: taskId=${taskId || 'null'}`);
-
-        if (bundledMsg.type === 'group' && typeof handleGroupReplyCandidate === 'function') {
-          const safeTaskId = taskId ?? null;
-          const groupPayload: { groupId?: string | number; senderId: string; bundledMsg: IncomingMessage; taskId?: string | null } = {
-            senderId: userid,
-            bundledMsg,
-            taskId: safeTaskId
-          };
-          if (msg.group_id !== undefined && msg.group_id !== null) {
-            groupPayload.groupId = msg.group_id;
-          }
-          await handleGroupReplyCandidate(
-            groupPayload,
-            {
-              handleOneMessage,
-              completeTask
-            }
-          );
-        } else {
-          await handleOneMessage(bundledMsg, taskId);
-        }
+        await processBundledAsNewTask(bundledMsg, taskConversationId, groupId, userid);
         return;
       }
     } catch (e) {

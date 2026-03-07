@@ -90,11 +90,20 @@ export function loadConfig(): AdapterConfig {
 
 function parseNumberArray(v: string | undefined): number[] {
   if (!v || !v.trim()) return [];
-  return v.split(',')
-    .map(s => s.trim())
-    .filter(s => s.length > 0)
-    .map(s => parseInt(s, 10))
-    .filter(n => Number.isFinite(n));
+  const seen = new Set<number>();
+  const out: number[] = [];
+  const parts = String(v).split(/[\s,;|，]+/g);
+  for (const raw of parts) {
+    const s = String(raw || '').trim();
+    if (!s) continue;
+    const n = Number(s);
+    if (!Number.isFinite(n)) continue;
+    const id = Math.trunc(n);
+    if (id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
 }
 
 function toInt(v: string | undefined, def: number): number {

@@ -1,7 +1,8 @@
 // Function-call fallback utilities: parse <sentra-tools> blocks and build instructions
 // Prompts are loaded from JSON under src/agent/prompts/ via loader.
-import { loadPrompt, renderTemplate } from '../agent/prompts/loader.js';
+import { loadPrompt, renderTemplate, pickLocalizedPrompt, resolvePromptLocale } from '../agent/prompts/loader.js';
 import { XMLParser } from 'fast-xml-parser';
+import { buildToolResultContract } from './tool_artifacts.js';
 
 /**
  * Extract <sentra-tools> ... </sentra-tools> blocks from text and parse to calls
@@ -17,12 +18,13 @@ import { XMLParser } from 'fast-xml-parser';
  */
 export function parseFunctionCalls(text = '', opts = {}) {
   if (!text || typeof text !== 'string') return [];
-  // Relaxed <sentra-tools> matching: allow spaces/dashes/underscores and attributes, case-insensitive
-  const reSentra = /<\s*sentra[-_\s]*tools\b[^>]*>([\s\S]*?)<\s*\/\s*sentra[-_\s]*tools\s*>/gi;
   const out = [];
-  let m;
-  while ((m = reSentra.exec(text)) !== null) {
-    const raw = (m[1] || '').trim();
+  const blocks = extractAllFullXmlTagsOrdered(text, ['sentra-tools', 'sentra_tools']);
+  for (const block of blocks) {
+    const lower = String(block || '').toLowerCase();
+    const tagName = lower.includes('<sentra_tools') ? 'sentra_tools' : 'sentra-tools';
+    const raw = extractInnerXmlFromFullTag(block, tagName).trim();
+    if (!raw) continue;
     // Parse Sentra XML tool call
     const xmlCall = parseSentraXML(raw);
     if (xmlCall) {
@@ -32,16 +34,164 @@ export function parseFunctionCalls(text = '', opts = {}) {
   return out;
 }
 
+function isTagBoundary(ch) {
+  return ch === '' || ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t' || ch === '>' || ch === '/';
+}
+
+function findTagEnd(text, from) {
+  let quote = '';
+  for (let i = from; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '>') return i;
+  }
+  return -1;
+}
+
+function isSelfClosingTag(text, openEnd) {
+  for (let i = openEnd - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t') continue;
+    return ch === '/';
+  }
+  return false;
+}
+
+function extractFullXmlTagAt(text, tagName, openPos) {
+  const s = String(text || '');
+  const tag = String(tagName || '').trim();
+  if (!s || !tag || openPos < 0 || openPos >= s.length) return null;
+  const lower = s.toLowerCase();
+  const lowerTag = tag.toLowerCase();
+  if (!lower.startsWith(`<${lowerTag}`, openPos)) return null;
+  const afterName = lower[openPos + lowerTag.length + 1] || '';
+  if (!isTagBoundary(afterName)) return null;
+
+  const firstOpenEnd = findTagEnd(s, openPos);
+  if (firstOpenEnd < 0) return null;
+  if (isSelfClosingTag(s, firstOpenEnd)) return s.slice(openPos, firstOpenEnd + 1);
+
+  let depth = 1;
+  let cursor = firstOpenEnd + 1;
+  while (cursor < s.length) {
+    const nextLt = lower.indexOf('<', cursor);
+    if (nextLt < 0) return null;
+
+    if (lower.startsWith('<!--', nextLt)) {
+      const endComment = lower.indexOf('-->', nextLt + 4);
+      if (endComment < 0) return null;
+      cursor = endComment + 3;
+      continue;
+    }
+
+    const isClose = lower.startsWith(`</${lowerTag}`, nextLt);
+    const isOpen = lower.startsWith(`<${lowerTag}`, nextLt);
+    if (!isClose && !isOpen) {
+      const skipEnd = findTagEnd(s, nextLt);
+      if (skipEnd < 0) return null;
+      cursor = skipEnd + 1;
+      continue;
+    }
+
+    const nameAfter = lower[nextLt + lowerTag.length + (isClose ? 2 : 1)] || '';
+    if (!isTagBoundary(nameAfter)) {
+      cursor = nextLt + 1;
+      continue;
+    }
+
+    const tagEnd = findTagEnd(s, nextLt);
+    if (tagEnd < 0) return null;
+
+    if (isClose) {
+      depth -= 1;
+      if (depth === 0) return s.slice(openPos, tagEnd + 1);
+    } else if (!isSelfClosingTag(s, tagEnd)) {
+      depth += 1;
+    }
+    cursor = tagEnd + 1;
+  }
+  return null;
+}
+
+function findNextOpenPos(text, tagName, from) {
+  const s = String(text || '');
+  const lower = s.toLowerCase();
+  const lowerTag = String(tagName || '').trim().toLowerCase();
+  if (!lowerTag) return -1;
+  let pos = lower.indexOf(`<${lowerTag}`, from);
+  while (pos >= 0) {
+    const afterName = lower[pos + lowerTag.length + 1] || '';
+    if (isTagBoundary(afterName)) return pos;
+    pos = lower.indexOf(`<${lowerTag}`, pos + 1);
+  }
+  return -1;
+}
+
+function extractAllFullXmlTagsOrdered(text, tagNames) {
+  const s = String(text || '');
+  const tags = (Array.isArray(tagNames) ? tagNames : [])
+    .map((t) => String(t || '').trim())
+    .filter(Boolean);
+  if (!s || tags.length === 0) return [];
+
+  const out = [];
+  let cursor = 0;
+  while (cursor < s.length) {
+    let bestPos = -1;
+    let bestTag = '';
+    for (const tag of tags) {
+      const pos = findNextOpenPos(s, tag, cursor);
+      if (pos < 0) continue;
+      if (bestPos < 0 || pos < bestPos) {
+        bestPos = pos;
+        bestTag = tag;
+      }
+    }
+    if (bestPos < 0 || !bestTag) break;
+
+    const full = extractFullXmlTagAt(s, bestTag, bestPos);
+    if (!full) {
+      cursor = bestPos + 1;
+      continue;
+    }
+    out.push(full);
+    cursor = bestPos + full.length;
+  }
+  return out;
+}
+
+function extractInnerXmlFromFullTag(fullTagXml, tagName) {
+  const xml = String(fullTagXml || '');
+  const tag = String(tagName || '').trim().toLowerCase();
+  if (!xml || !tag) return '';
+  const openStart = xml.indexOf('<');
+  if (openStart < 0) return '';
+  const openEnd = findTagEnd(xml, openStart);
+  if (openEnd < 0) return '';
+
+  const lower = xml.toLowerCase();
+  const closeStart = lower.lastIndexOf(`</${tag}`);
+  if (closeStart < 0 || closeStart < openEnd) return '';
+  return xml.slice(openEnd + 1, closeStart);
+}
+
 /**
  * Build instruction text to ask the model to emit a single <function_call> block for a given function
  */
-export async function buildFunctionCallInstruction({ name, parameters, locale = 'zh-CN' } = {}) {
+export async function buildFunctionCallInstruction({ name, parameters, locale = 'en' } = {}) {
   const prettySchema = parameters ? JSON.stringify(parameters, null, 2) : '{}';
   const req = Array.isArray(parameters?.required) ? parameters.required : [];
-  let reqHintZh = req.length ? `- 必须包含必填字段: ${req.join(', ')}` : '- 如 schema 未列出必填字段：仅包含必要字段，避免冗余';
-  let reqHintEn = req.length ? `- Must include required fields: ${req.join(', ')}` : '- If no required fields: include only necessary fields, avoid extras';
+  const reqHintEn = req.length
+    ? `- Must include required fields: ${req.join(', ')}`
+    : '- If no required fields: include only necessary fields, avoid extras';
 
-  // Highlight batch / array-style parameters for higher efficiency
   const arrayFields = [];
   if (parameters && typeof parameters === 'object' && parameters.properties && typeof parameters.properties === 'object') {
     for (const [key, value] of Object.entries(parameters.properties)) {
@@ -52,61 +202,55 @@ export async function buildFunctionCallInstruction({ name, parameters, locale = 
     }
   }
 
+  let reqHint = reqHintEn;
   if (arrayFields.length > 0) {
     const list = arrayFields.join(', ');
-    reqHintZh += `\n- 下列参数在 schema 中是数组类型，适合批量处理：${list}。当用户希望对多个同类实体执行相同操作时，必须将它们合并到这些数组参数中，一次性调用该工具，而不是拆成多次单独调用。即便当前只有一个实体，只要 schema 要求 array，也要传入数组形式（例如 ["北京"]、["关键词"]）。`;
-    reqHintEn += `\n- The following parameters are array-typed in the schema and are intended for batch processing: ${list}. When the user wants to apply the same operation to multiple similar items, you MUST combine them into these array parameters in a single tool call instead of issuing many nearly identical calls. Even for a single item, if the schema requires an array, you MUST still pass an array (e.g., ["Beijing"], ["keyword"]).`;
+    reqHint += `\n- The following parameters are array-typed in the schema and intended for batching: ${list}. Merge similar targets into one call.`;
   } else {
-    reqHintZh += '\n- 如果 schema 中出现数组类型参数（例如表示城市列表、查询列表、关键词列表等），应优先将多个同类目标合并到该数组中，一次性批量调用该工具，而不是多次单独调用。';
-    reqHintEn += '\n- When the schema contains array-typed parameters (for example lists of cities, queries, or keywords), you should prefer batching multiple similar targets into that array and calling the tool once, instead of issuing many separate calls.';
+    reqHint += '\n- Prefer batched calls when array-typed fields exist (cities/queries/keywords/etc.).';
   }
 
   const pf = await loadPrompt('fc_function_sentra');
-  const tpl = String(locale).toLowerCase().startsWith('zh') ? pf.zh : pf.en;
-  const vars = {
-    name,
-    schema: prettySchema,
-    req_hint: String(locale).toLowerCase().startsWith('zh') ? reqHintZh : reqHintEn,
-  };
-  return renderTemplate(tpl, vars);
+  const tpl = pickLocalizedPrompt(pf, resolvePromptLocale(locale));
+  return renderTemplate(tpl, { name, schema: prettySchema, req_hint: reqHint });
 }
 
 /**
  * Build planning instruction to emit emit_plan function call with plan schema and allowed tool names.
  */
-export async function buildPlanFunctionCallInstruction({ allowedAiNames = [], locale = 'zh-CN' } = {}) {
-  const allow = Array.isArray(allowedAiNames) && allowedAiNames.length ? allowedAiNames.join(', ') : '(无)';
+export async function buildPlanFunctionCallInstruction({ allowedAiNames = [], locale = 'en' } = {}) {
+  const allow = Array.isArray(allowedAiNames) && allowedAiNames.length ? allowedAiNames.join(', ') : '(none)';
   const hasAllow = Array.isArray(allowedAiNames) && allowedAiNames.length > 0;
   const schemaHint = JSON.stringify({
-    overview: 'string (可选，总体目标与策略简述)',
-    steps: [
-      {
-        stepId: 'string (必须，唯一 stepId)',
-        aiName: 'string (必须在允许列表中)',
-        reason: ['string', 'string', '...'] + ' (数组，每项为一个具体操作或理由)',
-        nextStep: 'string',
-        draftArgs: { '...': '...' },
-        dependsOnStepIds: ['string stepId 数组，可省略，仅引用前序步骤的 stepId']
-      }
-    ]
+    overview: 'string (optional)',
+    steps: [{
+      stepId: 'string (required, unique)',
+      executor: 'string (optional: mcp|sandbox)',
+      actionRef: 'string (optional, e.g. terminal.run for sandbox)',
+      aiName: 'string (required, from allowed list)',
+      reason: ['string', 'string'],
+      nextStep: 'string',
+      draftArgs: { '...': '...' },
+      dependsOnStepIds: ['string stepId array (optional)']
+    }]
   }, null, 2);
-  const pf = await loadPrompt('fc_plan_sentra');
-  const tpl = String(locale).toLowerCase().startsWith('zh') ? pf.zh : pf.en;
 
-  // 加载规划约束提示（中英文+是否有 allowed 列表 两种分支）
+  const pf = await loadPrompt('fc_plan_sentra');
+  const localeResolved = resolvePromptLocale(locale);
+  const isZh = localeResolved === 'zh';
+  const tpl = pickLocalizedPrompt(pf, localeResolved);
+
   const pfReq = await loadPrompt('fc_plan_require_line');
-  const isZh = String(locale).toLowerCase().startsWith('zh');
   const localeKey = isZh ? 'zh' : 'en';
   const reqBlock = (pfReq && pfReq[localeKey]) || {};
   const rawReqTpl = hasAllow ? reqBlock.has_allow : reqBlock.no_allow;
   const require_line = renderTemplate(rawReqTpl || '', { allowed_list: allow });
 
-  const vars = {
+  return renderTemplate(tpl, {
     allowed_list: allow,
     require_line,
     schema_hint: schemaHint,
-  };
-  return renderTemplate(tpl, vars);
+  });
 }
 
 /**
@@ -114,13 +258,13 @@ export async function buildPlanFunctionCallInstruction({ allowedAiNames = [], lo
  */
 export async function buildFCPolicy({ locale = 'en' } = {}) {
   const pf = await loadPrompt('fc_policy_sentra');
-  const tpl = String(locale).toLowerCase().startsWith('zh') ? pf.zh : pf.en;
-  const isZh = String(locale).toLowerCase().startsWith('zh');
+  const localeResolved = resolvePromptLocale(locale);
+  const isZh = localeResolved === 'zh';
+  const tpl = pickLocalizedPrompt(pf, localeResolved);
   const base = renderTemplate(tpl, { tag: '<sentra-tools>' });
 
-  const batchSectionZh = '\n\n## 批量调用与数组参数（效率优先）\n\n- 许多工具支持使用数组类型参数（例如 cities、queries、keywords 等）在一次调用中处理多个实体。\n- 在规划步骤和生成工具调用时，如果多个子需求可以由同一个工具完成，并且该工具有数组参数可用于批量输入，你必须优先将这些目标合并到一次批量调用中，而不是拆成多次几乎相同的调用。\n- 示例：用户要求“同时查询北京和上海的天气”，应规划并生成一次 weather 调用，参数形如 {"cities": ["北京", "上海"]}，而不是分别调用两次 weather。\n- 当某个工具已经将旧的单值参数升级为数组参数（例如 city → cities, query → queries, keyword → keywords），严禁继续使用旧的单值参数名称，也不要为每个实体分别创建步骤来模拟批量。\n- 始终关注用户体验与系统资源消耗，在保证正确性的前提下优先采用高效的批量调用方案。';
-
-  const batchSectionEn = '\n\n## Batch Calls and Array Parameters (Efficiency First)\n\n- Many tools support array-typed parameters (for example cities, queries, keywords) to process multiple entities in a single call.\n- When planning steps and generating tool invocations, if multiple sub-tasks can be handled by the same tool and that tool exposes array parameters for batch input, you MUST prefer merging these targets into one batched call instead of issuing many nearly identical calls.\n- Example: when the user asks to "check the weather for both Beijing and Shanghai", you should plan and emit a single weather call with arguments like {"cities": ["Beijing", "Shanghai"]}, instead of calling weather twice.\n- When a tool has migrated from single-value parameters to array parameters (for example city → cities, query → queries, keyword → keywords), you MUST NOT keep using the old single-value parameter names, and you MUST NOT simulate batching by creating one step per entity.\n- Always care about user experience and resource usage: under correctness constraints, prefer efficient batched calls whenever possible.';
+  const batchSectionZh = '\n\n## 批量调用与数组参数（效率优先）\n\n- 优先用数组参数一次处理多个同类目标。\n- 避免把可批量的任务拆成多次几乎相同的调用。';
+  const batchSectionEn = '\n\n## Batch Calls and Array Parameters (Efficiency First)\n\n- Prefer array-typed parameters to process multiple similar targets in one call.\n- Avoid splitting batchable work into many nearly identical calls.';
 
   return base + (isZh ? batchSectionZh : batchSectionEn);
 }
@@ -192,105 +336,34 @@ function parseStructuredXmlValue(raw) {
   if (!raw) return { matched: false };
   const t = stripCodeFences(String(raw)).trim();
   if (!t) return { matched: false };
-
-  // <array>...</array>
-  const mArr = t.match(/<\s*array\b[^>]*>([\s\S]*?)<\s*\/\s*array\s*>/i);
-  if (mArr) {
-    const val = parseXmlArray(mArr[1] || '');
-    return { matched: true, value: val };
+  try {
+    const parsed = sentraToolsXmlParser.parse(`<root>${t}</root>`);
+    const root = parsed && typeof parsed === 'object' ? parsed.root : null;
+    if (!root || typeof root !== 'object') return { matched: false };
+    const typeKeys = ['array', 'object', 'string', 'number', 'boolean', 'null'];
+    const hitKey = typeKeys.find((k) => Object.prototype.hasOwnProperty.call(root, k));
+    if (!hitKey) return { matched: false };
+    const wrapper = { [hitKey]: root[hitKey] };
+    return { matched: true, value: decodeAstTypedValue(wrapper) };
+  } catch {
+    return { matched: false };
   }
-
-  // self-closing <array /> represents an empty array
-  const mArrSelf = t.match(/<\s*array\b[^>]*\/\s*>/i);
-  if (mArrSelf) {
-    return { matched: true, value: [] };
-  }
-
-  // <object>...</object>
-  const mObj = t.match(/<\s*object\b[^>]*>([\s\S]*?)<\s*\/\s*object\s*>/i);
-  if (mObj) {
-    const val = parseXmlObject(mObj[1] || '');
-    return { matched: true, value: val };
-  }
-
-  // self-closing <object /> represents an empty object
-  const mObjSelf = t.match(/<\s*object\b[^>]*\/\s*>/i);
-  if (mObjSelf) {
-    return { matched: true, value: {} };
-  }
-
-  // <string>...</string>
-  const mStr = t.match(/<\s*string\b[^>]*>([\s\S]*?)<\s*\/\s*string\s*>/i);
-  if (mStr) {
-    const inner = mStr[1] || '';
-    return { matched: true, value: unescapeXmlEntities(inner) };
-  }
-
-  // <number>...</number>
-  const mNum = t.match(/<\s*number\b[^>]*>([\s\S]*?)<\s*\/\s*number\s*>/i);
-  if (mNum) {
-    const n = Number(String(mNum[1] || '').trim());
-    if (!Number.isNaN(n)) {
-      return { matched: true, value: n };
-    }
-  }
-
-  // <boolean>...</boolean>
-  const mBool = t.match(/<\s*boolean\b[^>]*>([\s\S]*?)<\s*\/\s*boolean\s*>/i);
-  if (mBool) {
-    const v = String(mBool[1] || '').trim().toLowerCase();
-    if (v === 'true' || v === 'false') {
-      return { matched: true, value: v === 'true' };
-    }
-  }
-
-  // <null></null>
-  const mNull = t.match(/<\s*null\b[^>]*>([\s\S]*?)<\s*\/\s*null\s*>/i);
-  if (mNull) {
-    return { matched: true, value: null };
-  }
-
-  return { matched: false };
 }
 
 function parseXmlArray(inner) {
   if (!inner || typeof inner !== 'string') return [];
-  const items = [];
-  const reChild = /<\s*(object|string|number|boolean|null|array)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi;
-  let m;
-  while ((m = reChild.exec(inner)) !== null) {
-    const block = m[0] || '';
-    const parsed = parseStructuredXmlValue(block);
-    if (parsed && parsed.matched) {
-      items.push(parsed.value);
-    }
-  }
-  return items;
+  const parsed = parseStructuredXmlValue(`<array>${inner}</array>`);
+  if (!parsed || !parsed.matched || !Array.isArray(parsed.value)) return [];
+  return parsed.value;
 }
 
 function parseXmlObject(inner) {
-  const obj = {};
-  if (!inner || typeof inner !== 'string') return obj;
-
-  const seenKeys = new Set();
-
-  // Object form: <object><parameter name="field">VALUE</parameter>...</object>
-  const reParam = /<\s*parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\s*\/\s*parameter\s*>/gi;
-  let m;
-  while ((m = reParam.exec(inner)) !== null) {
-    const key = String(m[1] || '').trim();
-    const body = m[2] || '';
-    if (!key || seenKeys.has(key)) continue;
-    const parsed = parseStructuredXmlValue(body);
-    if (parsed && parsed.matched) {
-      obj[key] = parsed.value;
-    } else {
-      obj[key] = inferScalarType(body);
-    }
-    seenKeys.add(key);
+  if (!inner || typeof inner !== 'string') return {};
+  const parsed = parseStructuredXmlValue(`<object>${inner}</object>`);
+  if (!parsed || !parsed.matched || parsed.value == null || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+    return {};
   }
-
-  return obj;
+  return parsed.value;
 }
 
 // Extract concatenated text content from a fast-xml-parser AST node.
@@ -449,7 +522,7 @@ function parseSentraXMLFast(raw) {
     args[paramName] = val;
   }
 
-  if (Object.keys(args).length === 0) return null;
+  // Some tools have no required args. Empty parameter lists are valid.
   return { name, arguments: args };
 }
 /**
@@ -568,10 +641,20 @@ ${params}
  * @param {Object} params.result - Tool execution result
  * @returns {string} XML formatted result
  */
-export function formatSentraResult({ stepIndex, stepId, aiName, reason, args, result }) {
+export function formatSentraResult({
+  stepIndex,
+  stepId,
+  aiName,
+  reason,
+  args,
+  result,
+  includeResultData = false
+}) {
   const reasonText = Array.isArray(reason) ? reason.join('; ') : String(reason || '');
-  const resultData = result?.data !== undefined ? result.data : result;
-  const success = result?.success !== false;
+  const contract = buildToolResultContract(result || {});
+  const success = contract.success === true;
+  const code = String(contract.code || '');
+  const provider = String(contract.provider || '');
 
   const fallbackId = Number.isFinite(Number(stepIndex)) ? `step_${Number(stepIndex)}` : 'step_0';
   const safeStepId = escapeXmlEntities(
@@ -579,30 +662,96 @@ export function formatSentraResult({ stepIndex, stepId, aiName, reason, args, re
   );
   const safeTool = escapeXmlEntities(String(aiName ?? ''));
   const safeSuccess = escapeXmlEntities(String(success));
+  const safeCode = escapeXmlEntities(code);
+  const safeProvider = escapeXmlEntities(provider);
   const safeReason = escapeXmlEntities(reasonText);
   const argsXml = valueToTypedXml(args || {});
-  const dataXml = valueToTypedXml(resultData);
+  const dataSource = (result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'data'))
+    ? result.data
+    : result;
+  const dataXml = includeResultData
+    ? `\n  <data>${valueToTypedXml(dataSource)}</data>`
+    : '';
+  const ref = contract.resultRef && typeof contract.resultRef === 'object' ? contract.resultRef : null;
+  const refXml = ref
+    ? [
+      '  <result_ref>',
+      `    <uuid>${escapeXmlEntities(String(ref.uuid || ''))}</uuid>`,
+      `    <path>${escapeXmlEntities(String(ref.path || ''))}</path>`,
+      `    <type>${escapeXmlEntities(String(ref.type || ''))}</type>`,
+      `    <role>${escapeXmlEntities(String(ref.role || ''))}</role>`,
+      `    <hash>${escapeXmlEntities(String(ref.hash || ''))}</hash>`,
+      `    <size>${escapeXmlEntities(String(ref.size ?? ''))}</size>`,
+      '  </result_ref>'
+    ].join('\n')
+    : '  <result_ref />';
+  const uuids = Array.isArray(contract.artifactUuids) ? contract.artifactUuids : [];
+  const idsXml = uuids.map((u) => `    <uuid>${escapeXmlEntities(String(u || ''))}</uuid>`).join('\n');
+  const errXml = contract.error ? `\n  <error>${escapeXmlEntities(String(contract.error || ''))}</error>` : '';
   
-  return `<sentra-result step_id="${safeStepId}" tool="${safeTool}" success="${safeSuccess}">
+  return `<sentra-result>
+  <step_id>${safeStepId}</step_id>
+  <tool>${safeTool}</tool>
+  <success>${safeSuccess}</success>
+  <code>${safeCode}</code>
+  <provider>${safeProvider}</provider>
   <reason>${safeReason}</reason>
   <args>${argsXml}</args>
-  <data>${dataXml}</data>
+  ${dataXml}
+  ${refXml}
+  <artifact_uuids>
+${idsXml}
+  </artifact_uuids>${errXml}
 </sentra-result>`;
 }
 
 /**
- * Format user question to Sentra XML format
- * @param {string} question - User question text
- * @returns {string} XML formatted question
+ * Format message text into unified <sentra-input> XML.
+ * @param {string} text
+ * @returns {string}
  */
+export function formatSentraInput(text) {
+  const safe = escapeXmlEntities(String(text ?? ''));
+  return `<sentra-input><current_messages><sentra-message><chat_type>system_task</chat_type><message><segment index="1"><type>text</type><data><text>${safe}</text></data></segment></message></sentra-message></current_messages></sentra-input>`;
+}
+
+// Backward-compatible alias: some older stage modules still import this name.
 export function formatSentraUserQuestion(question) {
-  return `<sentra-user-question>${escapeXmlEntities(String(question ?? ''))}</sentra-user-question>`;
+  return formatSentraInput(question);
 }
 
 /**
  * Parse <sentra-result> XML format
  * Returns { stepIndex, aiName, reason, args, result, success }
  */
+function toArray(v) {
+  if (Array.isArray(v)) return v;
+  if (v === undefined || v === null) return [];
+  return [v];
+}
+
+function findFirstTagNode(node, tagName) {
+  if (!node || typeof node !== 'object') return null;
+  if (Object.prototype.hasOwnProperty.call(node, tagName)) {
+    const hit = node[tagName];
+    return Array.isArray(hit) ? hit[0] : hit;
+  }
+  for (const v of Object.values(node)) {
+    const found = findFirstTagNode(v, tagName);
+    if (found) return found;
+  }
+  return null;
+}
+
+function parseTrailingDigits(s, fallback = 0) {
+  const str = String(s || '');
+  let end = str.length - 1;
+  while (end >= 0 && str[end] >= '0' && str[end] <= '9') end -= 1;
+  const numText = str.slice(end + 1);
+  const n = Number.parseInt(numText, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export function parseSentraResult(text) {
   if (!text || typeof text !== 'string') return null;
   const withoutFences = stripCodeFences(text);
@@ -610,28 +759,42 @@ export function parseSentraResult(text) {
   try {
     const wrapped = `<root>${withoutFences}</root>`;
     const doc = sentraResultXmlParser.parse(wrapped);
-    const node = doc?.root?.['sentra-result'];
-    const sr = Array.isArray(node) ? node[0] : node;
+    const sr = findFirstTagNode(doc?.root || doc, 'sentra-result');
     if (!sr || typeof sr !== 'object') return null;
 
-    const stepId = (typeof sr['@_step_id'] === 'string' && sr['@_step_id'].trim()) ? sr['@_step_id'].trim() : '';
+    const readNodeText = (node) => String(extractAstText(node)).trim();
+    const stepId = (typeof sr['@_step_id'] === 'string' && sr['@_step_id'].trim())
+      ? sr['@_step_id'].trim()
+      : readNodeText(sr.step_id);
     let stepIndex = parseInt(String(sr['@_step'] ?? ''), 10);
-    if (!Number.isFinite(stepIndex)) {
-      const m = stepId.match(/(\d+)$/);
-      stepIndex = m ? parseInt(m[1], 10) : 0;
-    }
-    const aiName = typeof sr['@_tool'] === 'string' ? sr['@_tool'].trim() : '';
-    const success = String(sr['@_success'] ?? 'true').toLowerCase() === 'true';
+    if (!Number.isFinite(stepIndex)) stepIndex = parseTrailingDigits(stepId, 0);
+    const aiName = typeof sr['@_tool'] === 'string' && sr['@_tool'].trim()
+      ? sr['@_tool'].trim()
+      : readNodeText(sr.tool || sr.aiName);
+    const successRaw = sr['@_success'] ?? readNodeText(sr.success) ?? 'true';
+    const success = String(successRaw).toLowerCase() === 'true';
+    const code = typeof sr['@_code'] === 'string' && sr['@_code'].trim()
+      ? sr['@_code'].trim()
+      : readNodeText(sr.code);
+    const provider = typeof sr['@_provider'] === 'string' && sr['@_provider'].trim()
+      ? sr['@_provider'].trim()
+      : readNodeText(sr.provider);
     if (!aiName) return null;
 
-    const reason = typeof sr.reason === 'string' ? unescapeXmlEntities(sr.reason) : '';
-    const rawArgs = typeof sr.args === 'string'
-      ? sr.args
-      : (typeof sr.arguments === 'string' ? sr.arguments : '');
-    const rawData = typeof sr.data === 'string' ? sr.data : '';
+    const reasonRaw = typeof sr.reason === 'string' ? sr.reason : readNodeText(sr.reason);
+    const reason = reasonRaw ? unescapeXmlEntities(reasonRaw) : '';
+    const argsNode = sr.args !== undefined ? sr.args : sr.arguments;
+    const rawArgs = typeof argsNode === 'string' ? argsNode : '';
+    const dataNode = sr.data;
+    const rawData = typeof dataNode === 'string' ? dataNode : '';
 
     let args = {};
-    if (rawArgs) {
+    if (argsNode && typeof argsNode === 'object') {
+      const decoded = decodeAstTypedValue(argsNode);
+      if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
+        args = decoded;
+      }
+    } else if (rawArgs) {
       const jsonArgs = safeParseJson(rawArgs);
       if (jsonArgs && typeof jsonArgs === 'object') {
         args = jsonArgs;
@@ -644,6 +807,12 @@ export function parseSentraResult(text) {
     }
 
     let data = null;
+    if (dataNode && typeof dataNode === 'object') {
+      const decoded = decodeAstTypedValue(dataNode);
+      if (decoded !== undefined) {
+        data = decoded;
+      }
+    }
     if (rawData) {
       const jsonData = safeParseJson(rawData);
       if (jsonData !== null && jsonData !== undefined) {
@@ -657,91 +826,73 @@ export function parseSentraResult(text) {
         }
       }
     }
-
-    return { stepIndex, stepId: stepId || undefined, aiName, reason, args, result: data, success };
+    const refNodeRaw = Array.isArray(sr.result_ref) ? sr.result_ref[0] : sr.result_ref;
+    const resultRef = (refNodeRaw && typeof refNodeRaw === 'object')
+      ? {
+        uuid: String(refNodeRaw['@_uuid'] || readNodeText(refNodeRaw.uuid) || ''),
+        path: String(refNodeRaw['@_path'] || readNodeText(refNodeRaw.path) || ''),
+        type: String(refNodeRaw['@_type'] || readNodeText(refNodeRaw.type) || ''),
+        role: String(refNodeRaw['@_role'] || readNodeText(refNodeRaw.role) || ''),
+        hash: String(refNodeRaw['@_hash'] || readNodeText(refNodeRaw.hash) || ''),
+        size: Number.isFinite(Number(refNodeRaw['@_size']))
+          ? Number(refNodeRaw['@_size'])
+          : (Number.isFinite(Number(readNodeText(refNodeRaw.size))) ? Number(readNodeText(refNodeRaw.size)) : null),
+      }
+      : null;
+    const uuidsNode = sr.artifact_uuids;
+    const uuidItemsRaw = toArray(uuidsNode?.uuid);
+    const artifactUuids = uuidItemsRaw.map((x) => String(x || '').trim()).filter(Boolean);
+    const resultObj = {
+      success,
+      code,
+      provider,
+      resultRef,
+      artifactUuids,
+    };
+    const errText = typeof sr.error === 'string' ? sr.error.trim() : readNodeText(sr.error);
+    if (errText) resultObj.error = unescapeXmlEntities(errText);
+    if (data !== null && data !== undefined) resultObj.data = data;
+    return { stepIndex, stepId: stepId || undefined, aiName, reason, args, result: resultObj, success };
   } catch {
-    try {
-      const reResult = /<\s*sentra-result\b([^>]*)>([\s\S]*?)<\s*\/\s*sentra-result\s*>/i;
-      const mResult = withoutFences.match(reResult);
-      if (!mResult) return null;
-      const attrs = mResult[1] || '';
-      const contentBlock = mResult[2] || '';
-      const mStep = attrs.match(/\bstep\s*=\s*["']([^"']+)["']/i);
-      const mStepId = attrs.match(/\bstep_id\s*=\s*["']([^"']+)["']/i);
-      const mTool = attrs.match(/\btool\s*=\s*["']([^"']+)["']/i);
-      const mSuccess = attrs.match(/\bsuccess\s*=\s*["']([^"']+)["']/i);
-
-      const stepId = mStepId ? String(mStepId[1] || '').trim() : '';
-      let stepIndex = mStep ? parseInt(mStep[1], 10) : NaN;
-      if (!Number.isFinite(stepIndex)) {
-        const m = stepId.match(/(\d+)$/);
-        stepIndex = m ? parseInt(m[1], 10) : 0;
-      }
-      const aiName = mTool ? String(mTool[1] || '').trim() : '';
-      const success = String(mSuccess?.[1] || 'true').toLowerCase() === 'true';
-      if (!aiName) return null;
-
-      const reReason = /<\s*reason\s*>([\s\S]*?)<\s*\/\s*reason\s*>/i;
-      const reArgs = /<\s*args\s*>([\s\S]*?)<\s*\/\s*args\s*>/i;
-      const reArgsLegacy = /<\s*arguments\s*>([\s\S]*?)<\s*\/\s*arguments\s*>/i;
-      const reData = /<\s*data\s*>([\s\S]*?)<\s*\/\s*data\s*>/i;
-
-      const mReason = contentBlock.match(reReason);
-      const mArgs = contentBlock.match(reArgs) || contentBlock.match(reArgsLegacy);
-      const mData = contentBlock.match(reData);
-
-      const reason = mReason ? String(mReason[1] || '').trim() : '';
-
-      let args = {};
-      if (mArgs) {
-        const rawArgs = mArgs[1] || '';
-        const jsonArgs = safeParseJson(rawArgs);
-        if (jsonArgs && typeof jsonArgs === 'object') {
-          args = jsonArgs;
-        } else {
-          const parsed = parseStructuredXmlValue(rawArgs);
-          if (parsed && parsed.matched) {
-            args = parsed.value;
-          }
-        }
-      }
-
-      let data = null;
-      if (mData) {
-        const rawData = mData[1] || '';
-        const jsonData = safeParseJson(rawData);
-        if (jsonData !== null && jsonData !== undefined) {
-          data = jsonData;
-        } else {
-          const parsed = parseStructuredXmlValue(rawData);
-          if (parsed && parsed.matched) {
-            data = parsed.value;
-          } else {
-            data = rawData;
-          }
-        }
-      }
-
-      return { stepIndex, stepId: stepId || undefined, aiName, reason, args, result: data, success };
-    } catch {
-      return null;
-    }
+    return null;
   }
 }
 
 /**
- * Parse <sentra-user-question> XML format
- * Returns the question text
+ * Parse <sentra-input> XML and return plain text from message segments.
  */
-export function parseSentraUserQuestion(text) {
+export function parseSentraInput(text) {
   if (!text || typeof text !== 'string') return null;
   const withoutFences = stripCodeFences(text);
-  
-  const reQuestion = /<\s*sentra-user-question\s*>([\s\S]*?)<\s*\/\s*sentra-user-question\s*>/i;
-  const mQuestion = withoutFences.match(reQuestion);
-  if (!mQuestion) return null;
-  
-  return unescapeXmlEntities(String(mQuestion[1] || '').trim());
+  try {
+    const wrapped = `<root>${withoutFences}</root>`;
+    const doc = sentraResultXmlParser.parse(wrapped);
+    const input = findFirstTagNode(doc?.root || doc, 'sentra-input');
+    const current = input && typeof input === 'object'
+      ? findFirstTagNode(input, 'current_messages')
+      : null;
+    const currentMessage = current && typeof current === 'object'
+      ? findFirstTagNode(current, 'sentra-message')
+      : null;
+    const message = currentMessage && typeof currentMessage === 'object'
+      ? findFirstTagNode(currentMessage, 'message')
+      : null;
+    const segmentsRaw = message && typeof message === 'object' ? (message.segment ?? message.segments?.segment) : null;
+    const segments = Array.isArray(segmentsRaw) ? segmentsRaw : (segmentsRaw ? [segmentsRaw] : []);
+    const texts = [];
+    for (const seg of segments) {
+      if (!seg || typeof seg !== 'object') continue;
+      const type = String(seg.type || '').trim().toLowerCase();
+      if (type !== 'text') continue;
+      const data = seg.data && typeof seg.data === 'object' ? seg.data : {};
+      const value = typeof data.text === 'string' ? data.text : '';
+      if (value.trim()) texts.push(unescapeXmlEntities(value.trim()));
+    }
+    if (texts.length > 0) return texts.join('\n');
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export default { 
@@ -751,7 +902,10 @@ export default {
   buildFCPolicy,
   formatSentraToolCall,
   formatSentraResult,
+  formatSentraInput,
   formatSentraUserQuestion,
   parseSentraResult,
-  parseSentraUserQuestion
+  parseSentraInput
 };
+
+

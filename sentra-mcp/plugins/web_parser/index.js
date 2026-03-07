@@ -860,3 +860,6 @@ export default async function webParserHandler(args, options = {}) {
 
   return ok(data);
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);

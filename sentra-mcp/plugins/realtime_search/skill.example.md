@@ -57,9 +57,22 @@
   - `cache_hit`（可选，缓存命中）
   - `model/created/completion_id/usage`
 - 批量模式：`{ mode: 'batch', results: [{ query, success, data|error|code|advice }] }`
+- Execute web-grounded search through configured search-capable LLM endpoint.
+- Supports single query, batch queries, and raw request passthrough.
 
 ## Failure modes
+
+- `INVALID`
+- `TIMEOUT`
+- `ERR`
+
+## Success Criteria
 
 - `INVALID`: 未提供 `query/queries/rawRequest`。
 - `TIMEOUT`: 上游搜索或模型请求超时。
 - `ERR`: 全链路 provider 均失败或其他异常。
+- Single-query success requires `result.success === true`, `result.code === "OK"`, and non-empty `data.answer_text`.
+- Single-query evidence must include `data.model`; `data.citations` must exist as array (can be empty).
+- Batch success requires `result.success === true`, `result.data.mode === "batch"`, non-empty `result.data.results`, and at least one item with `success === true`.
+- For successful batch items, `item.data.answer_text` must be non-empty.
+- If all batch items fail, this step must not pass.

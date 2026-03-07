@@ -2,51 +2,65 @@
 
 ## Capability
 
-- 查询 GitHub 仓库信息（基础信息、提交、贡献者、Issues/PR、分支等），并可按开关补充 languages/topics/releases/tags/readme/community/stats。
-- 支持单仓库或多仓库批量。
+- Query GitHub repository information through GitHub REST API.
+- Support both single repository query and batch repository query.
+- Support optional enrichments (languages/topics/releases/tags/readme/community/stats).
 
-## Real-world impact
+## Real-world Impact
 
-- 外部网络请求：调用 GitHub REST API（默认 `https://api.github.com`）。
-- 可能触发 GitHub 速率限制；配置 `GITHUB_TOKEN`/`GH_TOKEN` 可提升配额。
+- Makes outbound network requests to GitHub API.
+- May hit GitHub rate limit when unauthenticated.
 
 ## When to use
 
-- 快速了解某个仓库的基本情况与活跃度（stars、最近更新、开放 issue/pr）。
-- 需要批量对比多个仓库。
+- You need repository inspection data (metadata, commits, contributors, open issues/PRs, branches).
+- You can provide either `repoUrl` (single) or `repoUrls` (batch).
+- You need read-only analysis, not mutation operations.
 
-## When NOT to use
+## When not to use
 
-- 用户没给出明确仓库地址/owner/repo（不要猜）。
+- Neither `repoUrl` nor `repoUrls` is available.
+- Task requires writing/modifying/deleting resources.
 
-## Input
+## Success Criteria
 
-- Provide one of:
-  - `repoUrl` (string)：`owner/repo` 或 `https://github.com/owner/repo`
-  - `repoUrls` (string[])：批量
-- Optional (limits):
+- Single-repo success requires `result.success === true`, `result.code === "OK"`, and `result.data` as a non-empty object.
+- Single-repo evidence must include repository basics block, summary block, quick links block, and metadata block.
+- Quick links block should include link fields such as `Issues`, `PullRequests`, `Actions`, `Releases`, `Contributors`.
+- Metadata block should include `rate_limit`; `partial_errors` may be empty or non-empty depending on optional endpoints.
+- Batch success requires `result.success === true`, `result.code === "OK"`, `result.data.mode === "batch"`, non-empty `result.data.results`, and at least one item with `success === true`.
+- Retry guidance: timeout/rate-limit can retry once with backoff; repo spec/schema errors should `retry_regen`; 404/permission failures should `replan`.
+
+## Inputs
+
+- One of:
+  - `repoUrl` (string): `owner/repo` or full GitHub repo URL.
+  - `repoUrls` (string[]): batch input.
+- Optional limits:
   - `max_commits` (1-50)
   - `max_contributors` (1-50)
   - `max_tags` (1-50)
   - `readme_preview_chars` (50-5000)
-- Optional (include flags):
-  - `include_languages`, `include_topics`, `include_releases`, `include_tags`, `include_readme_preview`, `include_community_profile`
-  - `include_stats.commit_activity`（注意 GitHub 可能返回 202 calculating）
+- Optional include flags:
+  - `include_languages`
+  - `include_topics`
+  - `include_releases`
+  - `include_tags`
+  - `include_readme_preview`
+  - `include_community_profile`
+  - `include_stats.commit_activity`
 
-## Output
+## Outputs
 
-- 单仓库：返回一个结构化对象（中文字段为主），包括：
-  - `基本信息` / `概要` / `最近提交` / `主要贡献者` / `快速链接`
-  - 可选：`语言统计`/`话题`/`最新发布`/`标签`/`README预览`/`社区健康`/`统计`
-  - `元数据.rate_limit`（从响应头提取）与 `元数据.partial_errors`（部分端点失败列表）
-- 多仓库：`{ mode: 'batch', results: [{ input, success, code, data, error, hint, advice }] }`
+- Single repo: structured repository object (contains basics, summary, commits, contributors, links, and metadata).
+- Batch: `{ mode: "batch", results: [{ input, success, code, data, error, hint, advice }] }`.
 
-## Failure modes
+## Failure Modes
 
-- `INVALID`: 缺 `repoUrl/repoUrls` 或格式无法解析。
-- `NOT_FOUND`: 仓库不存在/已重命名/无权限。
-- `UNAUTHORIZED`: 令牌无效或访问私有仓库需要权限。
-- `FORBIDDEN`: 被拒绝访问。
-- `RATE_LIMIT`: 命中速率限制（建议配置 token）。
-- `BATCH_FAILED`: 批量模式全部失败。
-- `ERR`: 其它网络/解析错误。
+- `INVALID`: missing or invalid repo identifier.
+- `NOT_FOUND`: repository not found or inaccessible.
+- `UNAUTHORIZED`: token invalid or missing permission for private repo.
+- `FORBIDDEN`: access denied.
+- `RATE_LIMIT`: GitHub API rate limit reached.
+- `BATCH_FAILED`: all batch items failed.
+- `ERR`: other upstream/network/parsing errors.

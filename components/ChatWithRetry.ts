@@ -1,18 +1,43 @@
-﻿import { createLogger } from '../utils/logger.js';
+import { createLogger } from '../utils/logger.js';
 import { tokenCounter } from '../src/token-counter.js';
 import { getEnv, getEnvInt, getEnvBool } from '../utils/envHotReloader.js';
-import { extractAllFullXMLTags } from '../utils/xmlUtils.js';
+import { extractAllFullXMLTags, extractXMLTag, extractXmlAttrValue, tryParseXmlFragment } from '../utils/xmlUtils.js';
 import { preprocessPlainModelOutput } from './OutputPreprocessor.js';
-import { parseReplyGateDecisionFromSentraTools, parseSentraResponse } from '../utils/protocolUtils.js';
+import { parseSentraMessage, parseSentraToolsInvocations } from '../utils/protocolUtils.js';
 import type { ExpectedOutput, FormatCheckResult, ChatMessage, ModelFormatFixParams } from '../src/types.js';
+import type { SentraMessageSegment } from '../utils/protocolUtils.js';
+import { tRuntimeFormat } from '../utils/i18n/runtimeFormatCatalog.js';
 import {
-  guardAndNormalizeSentraResponse,
+  guardAndNormalizeSentraMessage,
   shouldAttemptModelFormatFix,
   attemptModelFormatFixWithAgent,
   runSentraFormatFixPipeline
 } from '../utils/responseFormatGuard.js';
+import {
+  buildSentraContractPolicyText,
+  getSentraContractParameterEnum,
+  getSentraContractRequiredInvokeName,
+  getSentraContractOutputInstruction,
+} from '../utils/sentraToolsContractEngine.js';
 
 const logger = createLogger('ChatWithRetry');
+const REPLY_GATE_CONTRACT_ID = 'reply_gate_decision';
+const OVERRIDE_CONTRACT_ID = 'override_intent_decision';
+const REPLY_GATE_INVOKE_NAME =
+  getSentraContractRequiredInvokeName(REPLY_GATE_CONTRACT_ID, 'reply_gate_decision') ||
+  'reply_gate_decision';
+const OVERRIDE_INVOKE_NAME =
+  getSentraContractRequiredInvokeName(OVERRIDE_CONTRACT_ID, 'override_intent_decision') ||
+  'override_intent_decision';
+const OVERRIDE_ALLOWED_DECISIONS = new Set(
+  getSentraContractParameterEnum(OVERRIDE_CONTRACT_ID, 'decision')
+    .map((x) => String(x || '').trim().toLowerCase())
+    .filter(Boolean)
+);
+const REPLY_GATE_OUTPUT_INSTRUCTION = getSentraContractOutputInstruction(REPLY_GATE_CONTRACT_ID);
+const REPLY_GATE_POLICY_TEXT = buildSentraContractPolicyText(REPLY_GATE_CONTRACT_ID);
+const OVERRIDE_OUTPUT_INSTRUCTION = getSentraContractOutputInstruction(OVERRIDE_CONTRACT_ID);
+const OVERRIDE_POLICY_TEXT = buildSentraContractPolicyText(OVERRIDE_CONTRACT_ID);
 
 type ChatOptions = Record<string, unknown> & {
   model?: string;
@@ -51,19 +76,19 @@ function isFormatRepairEnabled(): boolean {
   return v === undefined ? true : v;
 }
 
-function extractFirstSentraResponseBlock(text: unknown): string | null {
+function extractFirstSentraMessageBlock(text: unknown): string | null {
   if (!text || typeof text !== 'string') return null;
-  const start = text.indexOf('<sentra-response>');
+  const start = text.indexOf('<sentra-message>');
   if (start < 0) return null;
-  const end = text.indexOf('</sentra-response>', start);
+  const end = text.indexOf('</sentra-message>', start);
   if (end < 0) return null;
-  return text.substring(start, end + '</sentra-response>'.length);
+  return text.substring(start, end + '</sentra-message>'.length);
 }
 
-function extractOnlySentraResponseBlock(text: unknown): string | null {
+function extractOnlySentraMessageBlock(text: unknown): string | null {
   const s = String(text || '').trim();
   if (!s) return null;
-  const normalized = extractFirstSentraResponseBlock(s);
+  const normalized = extractFirstSentraMessageBlock(s);
   if (!normalized) return null;
   const trimmed = s.trim();
   const normTrimmed = String(normalized || '').trim();
@@ -83,18 +108,71 @@ function extractOnlySentraToolsBlock(text: unknown): string | null {
   return merged;
 }
 
+function normalizeToArray<T>(value: T | T[] | null | undefined): T[] {
+  if (Array.isArray(value)) return value;
+  if (value == null) return [];
+  return [value];
+}
+
+function getSentraMessageRootNode(xml: unknown): Record<string, unknown> | null {
+  const parsed = tryParseXmlFragment(xml, 'root');
+  if (!parsed || typeof parsed !== 'object') return null;
+  const rootObj = parsed as Record<string, unknown>;
+  const raw = rootObj['sentra-message'];
+  const node = Array.isArray(raw)
+    ? raw.find((item) => item && typeof item === 'object')
+    : raw;
+  return node && typeof node === 'object' ? node as Record<string, unknown> : null;
+}
+
+function diagnoseSentraMessageShape(xml: unknown): string[] {
+  const issues: string[] = [];
+  const root = getSentraMessageRootNode(xml);
+  if (!root) {
+    issues.push('shape:no_sentra_message_root');
+    return issues;
+  }
+  const hasMessageContainer = root.message != null;
+  const directSegments = normalizeToArray((root as Record<string, unknown>).segment);
+  const messageNode = (root as Record<string, unknown>).message;
+  const messageSegments = normalizeToArray(
+    messageNode && typeof messageNode === 'object'
+      ? (messageNode as Record<string, unknown>).segment
+      : undefined
+  );
+
+  if (!hasMessageContainer) {
+    issues.push('shape:missing_message_container');
+    if (directSegments.length > 0) issues.push('shape:segment_not_under_message');
+    return issues;
+  }
+
+  if (messageSegments.length === 0) {
+    issues.push('shape:message_without_segment');
+    if (directSegments.length > 0) issues.push('shape:segment_not_under_message');
+  }
+  return issues;
+}
+
+function withSentraMessageReasonTrace(baseReason: string, xml: unknown): string {
+  const reason = String(baseReason || '').trim() || tRuntimeFormat('invalid_sentra_message_segments');
+  const issues = diagnoseSentraMessageShape(xml);
+  if (!issues.length) return reason;
+  return `${reason} [trace:${issues.join('|')}]`;
+}
+
 function validateSentraToolsOnlyFormat(response: unknown): FormatCheckResult {
   if (!response || typeof response !== 'string') {
-    return { valid: false, reason: 'empty or non-string response' };
+    return { valid: false, reason: tRuntimeFormat('empty_or_non_string_response') };
   }
 
   const normalized = extractOnlySentraToolsBlock(response);
   if (!normalized) {
-    return { valid: false, reason: 'missing <sentra-tools> block' };
+    return { valid: false, reason: tRuntimeFormat('missing_sentra_tools_block') };
   }
 
-  if (normalized.includes('<sentra-response>')) {
-    return { valid: false, reason: 'unexpected <sentra-response> block' };
+  if (normalized.includes('<sentra-message>')) {
+    return { valid: false, reason: tRuntimeFormat('unexpected_sentra_message_block') };
   }
 
   return { valid: true, normalized };
@@ -102,45 +180,106 @@ function validateSentraToolsOnlyFormat(response: unknown): FormatCheckResult {
 
 function validateSentraToolsOrResponseFormat(response: unknown): FormatCheckResult {
   if (!response || typeof response !== 'string') {
-    return { valid: false, reason: 'empty or non-string response' };
+    return { valid: false, reason: tRuntimeFormat('empty_or_non_string_response') };
   }
 
   const toolsXml = extractOnlySentraToolsBlock(response);
   if (toolsXml) {
-    if (toolsXml.includes('<sentra-response>')) {
-      return { valid: false, reason: 'unexpected <sentra-response> block' };
+    if (toolsXml.includes('<sentra-message>')) {
+      return { valid: false, reason: tRuntimeFormat('unexpected_sentra_message_block') };
     }
     return { valid: true, normalized: toolsXml, toolsOnly: true, rawToolsXml: toolsXml };
   }
 
-  const respXml = extractOnlySentraResponseBlock(response);
+  const respXml = extractOnlySentraMessageBlock(response);
   if (respXml) {
+    const msgCheck = validateSentraMessageSegments(respXml);
+    if (!msgCheck.valid) {
+      return { valid: false, reason: msgCheck.reason || tRuntimeFormat('invalid_sentra_message_segments') };
+    }
     return { valid: true, normalized: respXml };
   }
 
   return {
     valid: false,
-    reason: 'must output exactly one top-level <sentra-tools> or <sentra-response> block'
+    reason: tRuntimeFormat('must_output_one_tools_or_message_block')
   };
+}
+
+
+function hasMeaningfulSegmentData(value: unknown, depth = 0): boolean {
+  if (value == null) return false;
+  if (depth > 3) return true;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number' || typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.some((item) => hasMeaningfulSegmentData(item, depth + 1));
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return false;
+    for (const [, v] of entries) {
+      if (hasMeaningfulSegmentData(v, depth + 1)) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+function isValidSentraMessageSegment(seg: SentraMessageSegment): boolean {
+  const type = typeof seg?.type === 'string' ? seg.type.trim().toLowerCase() : '';
+  if (!type) return false;
+  const data = seg?.data && typeof seg.data === 'object'
+    ? seg.data
+    : {};
+  if (type === 'text') {
+    const text = typeof data.text === 'string' ? data.text.trim() : '';
+    return text.length > 0;
+  }
+  return hasMeaningfulSegmentData(data);
+}
+
+function validateSentraMessageSegments(xml: unknown): { valid: boolean; reason?: string } {
+  try {
+    const parsed = parseSentraMessage(xml);
+    const segments = Array.isArray(parsed?.message) ? parsed.message : [];
+    if (segments.length === 0) {
+      return {
+        valid: false,
+        reason: withSentraMessageReasonTrace(tRuntimeFormat('sentra_message_must_contain_segment'), xml)
+      };
+    }
+    const validSegments = segments.filter((seg) => isValidSentraMessageSegment(seg));
+    if (validSegments.length === 0) {
+      return {
+        valid: false,
+        reason: withSentraMessageReasonTrace(tRuntimeFormat('sentra_message_must_contain_valid_segment'), xml)
+      };
+    }
+    return { valid: true };
+  } catch {
+    return {
+      valid: false,
+      reason: withSentraMessageReasonTrace(tRuntimeFormat('sentra_message_parse_failed'), xml)
+    };
+  }
 }
 
 function validateReplyGateDecisionToolsFormat(response: unknown): FormatCheckResult {
   if (!response || typeof response !== 'string') {
-    return { valid: false, reason: 'empty or non-string response' };
+    return { valid: false, reason: tRuntimeFormat('empty_or_non_string_response') };
   }
 
   const normalized = extractOnlySentraToolsBlock(response);
   if (!normalized) {
-    return { valid: false, reason: 'missing <sentra-tools> block' };
+    return { valid: false, reason: tRuntimeFormat('missing_sentra_tools_block') };
   }
 
-  if (normalized.includes('<sentra-response>')) {
-    return { valid: false, reason: 'unexpected <sentra-response> block' };
+  if (normalized.includes('<sentra-message>')) {
+    return { valid: false, reason: tRuntimeFormat('unexpected_sentra_message_block') };
   }
 
-  const decision = parseReplyGateDecisionFromSentraTools(normalized);
+  const decision = parseReplyGateDecisionFromXml(normalized);
   if (!decision || typeof decision.enter !== 'boolean') {
-    return { valid: false, reason: 'invalid reply_gate_decision enter value' };
+    return { valid: false, reason: tRuntimeFormat('invalid_reply_gate_decision_enter') };
   }
 
   return {
@@ -151,52 +290,31 @@ function validateReplyGateDecisionToolsFormat(response: unknown): FormatCheckRes
 
 function validateOverrideDecisionToolsFormat(response: unknown): FormatCheckResult {
   if (!response || typeof response !== 'string') {
-    return { valid: false, reason: 'empty or non-string response' };
+    return { valid: false, reason: tRuntimeFormat('empty_or_non_string_response') };
   }
 
   const repaired = repairOverrideDecisionToolsOutput(response);
   let toolsXml = repaired || extractOnlySentraToolsBlock(response);
   if (!toolsXml) {
-    return { valid: false, reason: 'missing <sentra-tools> block' };
+    return { valid: false, reason: tRuntimeFormat('missing_sentra_tools_block') };
   }
 
-  if (toolsXml.includes('<sentra-response>')) {
-    return { valid: false, reason: 'unexpected <sentra-response> block' };
+  if (toolsXml.includes('<sentra-message>')) {
+    return { valid: false, reason: tRuntimeFormat('unexpected_sentra_message_block') };
   }
 
-  const invokeMatch = toolsXml.match(/<invoke[^>]*name=["']override_intent_decision["'][^>]*>([\s\S]*?)<\/invoke>/i);
-  if (!invokeMatch) {
-    return { valid: false, reason: 'missing override_intent_decision invoke' };
+  const invocations = parseSentraToolsInvocations(toolsXml);
+  const invoke = invocations.find((it) => String(it?.aiName || '').trim() === OVERRIDE_INVOKE_NAME);
+  if (!invoke) {
+    return { valid: false, reason: tRuntimeFormat('missing_override_intent_invoke') };
   }
 
-  const body = invokeMatch[1] || '';
-  let decision = '';
-  const decisionMatch = body.match(/<parameter[^>]*name=["']decision["'][^>]*>[\s\S]*?<string>([\s\S]*?)<\/string>[\s\S]*?<\/parameter>/i);
-  if (decisionMatch) {
-    const decisionValue = decisionMatch[1];
-    if (typeof decisionValue === 'string') {
-      decision = decisionValue.trim().toLowerCase();
-    }
-  } else {
-    const decisionBareMatch = body.match(/<parameter[^>]*name=["']decision["'][^>]*>([\s\S]*?)<\/parameter>/i);
-    if (decisionBareMatch) {
-      const decisionValue = decisionBareMatch[1];
-      if (typeof decisionValue === 'string') {
-        decision = decisionValue.trim().toLowerCase();
-      }
-    } else {
-      const decisionTagMatch = body.match(/<decision>([\s\S]*?)<\/decision>/i);
-      if (decisionTagMatch) {
-        const decisionValue = decisionTagMatch[1];
-        if (typeof decisionValue === 'string') {
-          decision = decisionValue.trim().toLowerCase();
-        }
-      }
-    }
+  const decision = String(invoke?.args?.decision ?? '').trim().toLowerCase();
+  if (!decision) {
+    return { valid: false, reason: tRuntimeFormat('invalid_override_decision_value') };
   }
-  const allowed = new Set(['reply', 'pending', 'cancel_and_restart', 'cancel_only']);
-  if (!decision || !allowed.has(decision)) {
-    return { valid: false, reason: 'invalid override decision value' };
+  if (OVERRIDE_ALLOWED_DECISIONS.size > 0 && !OVERRIDE_ALLOWED_DECISIONS.has(decision)) {
+    return { valid: false, reason: tRuntimeFormat('invalid_override_decision_value') };
   }
 
   return {
@@ -212,28 +330,23 @@ function repairOverrideDecisionToolsOutput(raw: unknown): string {
   if (toolsBlock) return toolsBlock;
 
   // Try to recover from invoke-only output.
-  const invokeMatch = text.match(/<invoke[^>]*name=["']override_intent_decision["'][^>]*>[\s\S]*?<\/invoke>/i);
-  if (invokeMatch) {
-    return `<sentra-tools>\n${invokeMatch[0]}\n</sentra-tools>`;
+  const invokeBlocks = extractAllFullXMLTags(text, 'invoke');
+  const overrideInvoke = invokeBlocks.find((block) => String(extractXmlAttrValue(block, 'name') || '').trim() === OVERRIDE_INVOKE_NAME);
+  if (overrideInvoke) {
+    return `<sentra-tools>\n${overrideInvoke}\n</sentra-tools>`;
   }
 
   // Try to recover from bare decision/fields.
-  const decisionMatch = text.match(/<decision>([\s\S]*?)<\/decision>/i);
-  const reasonMatch = text.match(/<reason>([\s\S]*?)<\/reason>/i);
-  const confMatch = text.match(/<confidence>([\s\S]*?)<\/confidence>/i);
-  if (decisionMatch) {
-    const decisionValue = decisionMatch[1];
-    const decision = typeof decisionValue === 'string' ? decisionValue.trim() : '';
-    const reasonValue = reasonMatch ? reasonMatch[1] : '';
-    const reason = typeof reasonValue === 'string' ? reasonValue.trim() : '';
-    const confValue = confMatch ? confMatch[1] : '';
-    const confidence = typeof confValue === 'string' ? confValue.trim() : '';
+  const decision = String(extractXMLTag(text, 'decision') || '').trim();
+  const reason = String(extractXMLTag(text, 'reason') || '').trim();
+  const confidence = String(extractXMLTag(text, 'confidence') || '').trim();
+  if (decision) {
     return [
       '<sentra-tools>',
-      '  <invoke name="override_intent_decision">',
+      `  <invoke name="${OVERRIDE_INVOKE_NAME}">`,
       `    <parameter name="decision"><string>${decision}</string></parameter>`,
       `    <parameter name="confidence"><number>${confidence || '0.5'}</number></parameter>`,
-      `    <parameter name="reason"><string>${reason || 'repaired override decision'}</string></parameter>`,
+      `    <parameter name="reason"><string>${reason || tRuntimeFormat('repaired_override_decision')}</string></parameter>`,
       '  </invoke>',
       '</sentra-tools>'
     ].join('\n');
@@ -241,7 +354,33 @@ function repairOverrideDecisionToolsOutput(raw: unknown): string {
 
   return '';
 }
-function validateResponseFormat(response: unknown, expectedOutput: ExpectedOutput = 'sentra_response'): FormatCheckResult {
+
+function parseReplyGateDecisionFromXml(rawText: unknown): { enter: boolean; action: string; reason: string } | null {
+  const raw = typeof rawText === 'string' ? rawText : String(rawText ?? '');
+  if (!raw.trim()) return null;
+
+  const invocations = parseSentraToolsInvocations(raw);
+  const invoke = invocations.find((it) => String(it?.aiName || '').trim() === REPLY_GATE_INVOKE_NAME);
+  if (invoke && invoke.args && typeof invoke.args === 'object') {
+    const args = invoke.args as Record<string, unknown>;
+    const enterRaw = args.enter;
+    const enter =
+      typeof enterRaw === 'boolean'
+        ? enterRaw
+        : String(enterRaw ?? '').trim().toLowerCase() === 'true'
+          ? true
+          : String(enterRaw ?? '').trim().toLowerCase() === 'false'
+            ? false
+            : null;
+    if (typeof enter !== 'boolean') return null;
+    const action = String(args.action ?? '').trim().toLowerCase();
+    const reason = String(args.reason ?? '').trim();
+    return { enter, action, reason };
+  }
+  return null;
+}
+
+function validateResponseFormat(response: unknown, expectedOutput: ExpectedOutput = 'sentra_message'): FormatCheckResult {
   const expected = expectedOutput;
 
   if (expected === 'reply_gate_decision_tools') {
@@ -256,15 +395,15 @@ function validateResponseFormat(response: unknown, expectedOutput: ExpectedOutpu
     return validateSentraToolsOnlyFormat(response);
   }
 
-  if (expected === 'sentra_tools_or_response') {
+  if (expected === 'sentra_tools_or_message') {
     return validateSentraToolsOrResponseFormat(response);
   }
 
   if (!response || typeof response !== 'string') {
-    return { valid: false, reason: '响应为空或非字符串' };
+    return { valid: false, reason: tRuntimeFormat('empty_or_non_string_response') };
   }
 
-  // Special-case: When we EXPECT <sentra-response> but the model outputs ONLY <sentra-tools>,
+  // Special-case: When we EXPECT <sentra-message> but the model outputs ONLY <sentra-tools>,
   // allow the upper layer to decide how to handle it (fallback/restart) in normal mode.
   // Tool-only output is treated as a control signal and is bubbled to the upper layer.
   const toolsOnlyXml = extractOnlySentraToolsBlock(response);
@@ -272,14 +411,14 @@ function validateResponseFormat(response: unknown, expectedOutput: ExpectedOutpu
     return { valid: true, toolsOnly: true, rawToolsXml: toolsOnlyXml };
   }
 
-  const normalized = extractFirstSentraResponseBlock(response);
+  const normalized = extractFirstSentraMessageBlock(response);
   if (!normalized) {
-    return { valid: false, reason: '缺少 <sentra-response> 标签' };
+    return { valid: false, reason: tRuntimeFormat('missing_sentra_message_block') };
   }
 
   // Target routing tags are REQUIRED by protocol, but we do NOT fail strict format checks on missing/duplicate tags.
   // Rationale: The upper layer (MessagePipeline) will auto-inject / normalize the target tag based on current chat.
-  // This avoids unnecessary retries for otherwise well-formed <sentra-response>.
+  // This avoids unnecessary retries for otherwise well-formed <sentra-message>.
   let missingTarget = false;
   let targetConflict = false;
   try {
@@ -289,12 +428,12 @@ function validateResponseFormat(response: unknown, expectedOutput: ExpectedOutpu
     targetConflict = hasGroup && hasUser;
   } catch { }
 
-  // Enforce: output MUST be exactly one <sentra-response> block (no extra text/tags outside)
+  // Enforce: output MUST be exactly one <sentra-message> block (no extra text/tags outside)
   try {
     const trimmed = String(response || '').trim();
     const normTrimmed = String(normalized || '').trim();
     if (trimmed !== normTrimmed) {
-      return { valid: false, reason: '检测到 <sentra-response> 外存在额外内容（不允许）' };
+      return { valid: false, reason: tRuntimeFormat('extra_content_outside_sentra_message') };
     }
   } catch { }
 
@@ -302,7 +441,7 @@ function validateResponseFormat(response: unknown, expectedOutput: ExpectedOutpu
     '<sentra-tools>',
     '<sentra-result>',
     '<sentra-result-group>',
-    '<sentra-user-question>',
+    '<sentra-input>',
     '<sentra-pending-messages>',
     '<sentra-emo>',
     '<sentra-memory>'
@@ -310,8 +449,13 @@ function validateResponseFormat(response: unknown, expectedOutput: ExpectedOutpu
 
   for (const tag of forbiddenTags) {
     if (normalized.includes(tag)) {
-      return { valid: false, reason: `包含非法的只读标签: ${tag}` };
+      return { valid: false, reason: tRuntimeFormat('forbidden_readonly_tag', { tag }) };
     }
+  }
+
+  const msgCheck = validateSentraMessageSegments(normalized);
+  if (!msgCheck.valid) {
+    return { valid: false, reason: msgCheck.reason || tRuntimeFormat('invalid_sentra_message_segments') };
   }
 
   return { valid: true, normalized };
@@ -322,33 +466,90 @@ function getFormatCheckReason(check: FormatCheckResult): string {
   return '';
 }
 
+function collectTokenPayloadFromData(
+  value: unknown,
+  keyPath: string,
+  out: string[],
+  depth = 0
+): void {
+  if (value == null || depth > 8) return;
+
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (!s) return;
+    out.push(`${keyPath}:${s}`);
+    return;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    out.push(`${keyPath}:${String(value)}`);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      collectTokenPayloadFromData(value[i], `${keyPath}[${i}]`, out, depth + 1);
+    }
+    return;
+  }
+
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    for (const [k, v] of entries) {
+      const nextPath = keyPath ? `${keyPath}.${k}` : k;
+      collectTokenPayloadFromData(v, nextPath, out, depth + 1);
+    }
+  }
+}
+
 function extractAndCountTokens(response: string): { text: string; tokens: number } {
-  const textMatches = response.match(/<text\d+>([\s\S]*?)<\/text\d+>/g) || [];
-  const texts = textMatches
-    .map((match: string) => {
-      const content = match.replace(/<\/?text\d+>/g, '').trim();
-      return content;
-    })
-    .filter(Boolean);
+  const payloadParts: string[] = [];
+  try {
+    const parsed = parseSentraMessage(response);
+    const segments = Array.isArray(parsed?.message) ? parsed.message : [];
+    for (const seg of segments) {
+      if (!isValidSentraMessageSegment(seg)) continue;
+      const type = String(seg?.type || '').trim().toLowerCase();
+      if (!type) continue;
+      payloadParts.push(`segment.type:${type}`);
+      const data = seg?.data && typeof seg.data === 'object' ? seg.data : {};
+      collectTokenPayloadFromData(data, 'segment.data', payloadParts);
+    }
+  } catch {
+    // Keep empty payload; caller will continue to noReply/non-text checks.
+  }
 
-  const combinedText = texts.join(' ');
-  const tokens = tokenCounter.countTokens(combinedText);
-
-  return { text: combinedText, tokens };
+  const combinedPayload = payloadParts.join('\n');
+  const tokens = tokenCounter.countTokens(combinedPayload);
+  return { text: combinedPayload, tokens };
 }
 
 function hasNonTextPayload(response: string): boolean {
   try {
-    const parsed = parseSentraResponse(response);
-    const hasResources = parsed && Array.isArray(parsed.resources) && parsed.resources.length > 0;
-    const hasEmoji = parsed && parsed.emoji && parsed.emoji.source;
-    return !!(hasResources || hasEmoji);
+    const parsed = parseSentraMessage(response);
+    const segments = Array.isArray(parsed?.message) ? parsed.message : [];
+    for (const seg of segments) {
+      const type = typeof seg?.type === 'string' ? seg.type.trim().toLowerCase() : '';
+      if (!type || type === 'text') continue;
+      if (isValidSentraMessageSegment(seg)) return true;
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
-function buildProtocolReminder(expectedOutput: ExpectedOutput = 'sentra_response', lastFormatReason = ''): string {
+function isModelFixSupportedExpectedOutput(expectedOutput: ExpectedOutput): boolean {
+  return (
+    expectedOutput === 'sentra_message' ||
+    expectedOutput === 'sentra_tools' ||
+    expectedOutput === 'sentra_tools_or_message' ||
+    expectedOutput === 'reply_gate_decision_tools' ||
+    expectedOutput === 'override_intent_decision_tools'
+  );
+}
+
+function buildProtocolReminder(expectedOutput: ExpectedOutput = 'sentra_message', lastFormatReason = ''): string {
   const escapeXml = (v: unknown) => {
     try {
       return String(v ?? '')
@@ -363,57 +564,54 @@ function buildProtocolReminder(expectedOutput: ExpectedOutput = 'sentra_response
   };
 
   const reason = lastFormatReason ? escapeXml(lastFormatReason) : '';
-  const expected = escapeXml(expectedOutput || 'sentra_response');
-
+  const expected = escapeXml(expectedOutput || 'sentra_message');
   const isToolsOnly = expectedOutput === 'sentra_tools' || expectedOutput === 'reply_gate_decision_tools' || expectedOutput === 'override_intent_decision_tools';
-  const isToolsOrResponse = expectedOutput === 'sentra_tools_or_response';
+  const isToolsOrResponse = expectedOutput === 'sentra_tools_or_message';
+
+  const outputRule = isToolsOnly
+    ? `    <item>${escapeXml(tRuntimeFormat('c_single_tools_only'))}</item>`
+    : isToolsOrResponse
+      ? `    <item>${escapeXml(tRuntimeFormat('c_tools_or_message_only'))}</item>`
+      : `    <item>${escapeXml(tRuntimeFormat('c_single_message_only'))}</item>`;
 
   return [
     '<sentra-root-directive>',
     '  <id>format_retry_v1</id>',
     '  <type>format_repair</type>',
     '  <scope>single_turn</scope>',
-    '  <objective>修复上一条输出的格式，并重新输出最终给用户看的内容。</objective>',
+    `  <objective>${escapeXml(tRuntimeFormat('protocol_fix_objective'))}</objective>`,
     `  <expected_output>${expected}</expected_output>`,
     ...(reason ? [`  <last_error>${reason}</last_error>`] : []),
     '  <constraints>',
-    '    <item>你必须且只能输出一个顶层块，除此之外不能输出任何额外文本。</item>',
-    ...(isToolsOnly
-      ? ['    <item>本轮只能输出 &lt;sentra-tools&gt;...&lt;/sentra-tools&gt;，禁止输出任何其它内容或标签（包括 sentra-response/sentra-result/sentra-user-question 等）。</item>']
-      : isToolsOrResponse
-        ? ['    <item>本轮必须且只能输出二选一：&lt;sentra-tools&gt;...&lt;/sentra-tools&gt; 或 &lt;sentra-response&gt;...&lt;/sentra-response&gt;，除此之外禁止输出任何字符。</item>']
-        : ['    <item>本轮只能输出 &lt;sentra-response&gt;...&lt;/sentra-response&gt;，禁止输出任何其它 sentra-xxx 标签（包括 sentra-tools/sentra-result/sentra-user-question/sentra-pending-messages 等）。</item>']),
-    '    <item>&lt;sentra-response&gt; 内只能包含允许字段：&lt;group_id&gt; 或 &lt;user_id&gt;（二选一且仅一个）、&lt;textN&gt;、&lt;resources&gt;、可选 &lt;emoji&gt;、可选 &lt;send&gt;。</item>',
-    '    <item>目标路由标签必须显式写出：群聊用 &lt;group_id&gt;...&lt;/group_id&gt;；私聊用 &lt;user_id&gt;...&lt;/user_id&gt;；两者不可同时出现。</item>',
-    '    <item>不要输出任何“工具/字段/返回值/执行步骤”的叙述；只说用户能理解的人话。</item>',
+    `    <item>${escapeXml(tRuntimeFormat('c_xml_only'))}</item>`,
+    outputRule,
+    `    <item>${escapeXml(tRuntimeFormat('c_message_structure'))}</item>`,
+    `    <item>${escapeXml(tRuntimeFormat('c_text_segment_non_empty'))}</item>`,
+    `    <item>${escapeXml(tRuntimeFormat('c_route_required'))}</item>`,
     '  </constraints>',
     '  <output_template>',
-    '    <sentra-response>',
+    '    <sentra-message>',
     '      <group_id_or_user_id>...</group_id_or_user_id>',
-    '      <text1>...</text1>',
-    '      <resources></resources>',
-    '    </sentra-response>',
+    '      <message>',
+    '        <segment index="1"><type>text</type><data><text>...</text></data></segment>',
+    '      </message>',
+    '    </sentra-message>',
     '  </output_template>',
     '</sentra-root-directive>'
   ].join('\n');
 }
-
 function buildOverrideDecisionToolsReminder(): string {
   return [
     'CRITICAL OUTPUT RULES:',
-    '1) Output exactly ONE <sentra-tools>...</sentra-tools> block with ONE <invoke name="override_intent_decision">.',
-    '2) The invoke must include decision(string) / confidence(number) / reason(string).',
-    '3) Do NOT output any <sentra-response> block.',
-    '4) Do NOT wrap XML in markdown fences.'
+    OVERRIDE_OUTPUT_INSTRUCTION,
+    OVERRIDE_POLICY_TEXT
   ].join('\n');
 }
 function buildReplyGateDecisionToolsReminder(): string {
   return [
     'CRITICAL OUTPUT RULES:',
-    '1) Output exactly ONE <sentra-tools>...</sentra-tools> block with ONE <invoke name="reply_gate_decision">.',
-    '2) The invoke must include enter(boolean) and reason(string).',
-    '3) Do NOT output any <sentra-response> block or extra text.',
-    '4) Do NOT wrap XML in markdown fences.'
+    REPLY_GATE_OUTPUT_INSTRUCTION,
+    REPLY_GATE_POLICY_TEXT
   ].join('\n');
 }
 
@@ -454,7 +652,7 @@ function getErrorMessage(err: unknown): string {
   try {
     return JSON.stringify(err);
   } catch {
-    return 'unknown error';
+    return tRuntimeFormat('reason_unknown_error');
   }
 }
 
@@ -498,14 +696,14 @@ export async function chatWithRetry(
       ? { model: modelOrOptions }
       : (modelOrOptions || {});
 
-  const expectedOutput = (options.__sentraExpectedOutput || 'sentra_response') as ExpectedOutput;
+  const expectedOutput = (options.__sentraExpectedOutput || 'sentra_message') as ExpectedOutput;
   const chatOptions: ChatOptions = { ...options };
   delete chatOptions.__sentraExpectedOutput;
 
   while (retries <= maxResponseRetries) {
     try {
       const attemptIndex = retries + 1;
-      logger.debug(`[${groupId}] AI请求第${attemptIndex}次尝试`);
+      logger.debug(`[${groupId}] ${tRuntimeFormat('log_attempt', { attempt: attemptIndex })}`);
 
       let convThisTry = conversations;
       if (strictFormatCheck && lastFormatReason) {
@@ -518,14 +716,14 @@ export async function chatWithRetry(
         convThisTry = Array.isArray(conversations)
           ? [...conversations, { role: 'system', content: reminder }]
           : conversations;
-        logger.info(`[${groupId}] 协议复述注入: ${lastFormatReason}`);
+        logger.info(`[${groupId}] ${tRuntimeFormat('log_protocol_reminder_injected', { reason: lastFormatReason })}`);
       }
 
       let response = await agent.chat(convThisTry, {
         ...chatOptions,
         expectedOutput,
         onEarlyTerminate: (event: EarlyTerminateEvent) => {
-          logger.info(`[${groupId}] 流式早终止: ${event?.reason || 'unknown'}`);
+          logger.info(`[${groupId}] ${tRuntimeFormat('log_stream_early_terminated', { reason: event?.reason || 'unknown' })}`);
         }
       });
       const rawResponse = response;
@@ -535,9 +733,9 @@ export async function chatWithRetry(
         response = null;
       }
 
-      // 本地格式守卫：优先提取/截断为第一段 <sentra-response>，减少无意义重试
-      if (expectedOutput === 'sentra_response' && typeof response === 'string' && response.trim()) {
-        const guarded = guardAndNormalizeSentraResponse(response);
+      // 本地格式守卫：优先提取/截断为第一段 <sentra-message>，减少无意义重试
+      if (expectedOutput === 'sentra_message' && typeof response === 'string' && response.trim()) {
+        const guarded = guardAndNormalizeSentraMessage(response);
         if (guarded && guarded.ok && typeof guarded.normalized === 'string' && guarded.normalized.trim()) {
           response = guarded.normalized;
         }
@@ -550,7 +748,7 @@ export async function chatWithRetry(
         let formatCheck = validateResponseFormat(response, expectedOutput);
 
         // 在进入重试前，优先用 root directive 让模型“就地修复格式”，减少无意义重试
-        if (!formatCheck.valid && (expectedOutput === 'sentra_response' || expectedOutput === 'sentra_tools' || expectedOutput === 'sentra_tools_or_response')) {
+        if (!formatCheck.valid && isModelFixSupportedExpectedOutput(expectedOutput)) {
           const allowFix = shouldAttemptModelFormatFix({
             expectedOutput,
             lastErrorReason: getFormatCheckReason(formatCheck),
@@ -559,6 +757,7 @@ export async function chatWithRetry(
 
           if (allowFix) {
             modelFormatFixTried = true;
+            logger.info(`[${groupId}] model format-fix attempt: expected=${expectedOutput} reason=${getFormatCheckReason(formatCheck)}`);
             try {
               const fixParams: ModelFormatFixParams = {
                 agent,
@@ -575,18 +774,27 @@ export async function chatWithRetry(
                 response = fixed;
                 lastResponse = response;
                 formatCheck = validateResponseFormat(response, expectedOutput);
+                if (!formatCheck.valid) {
+                  logger.warn(
+                    `[${groupId}] model format-fix output still invalid: reason=${getFormatCheckReason(formatCheck)}`
+                  );
+                }
               }
-            } catch { }
+            } catch (e) {
+              logger.warn(
+                `[${groupId}] model format-fix attempt failed: ${getErrorMessage(e)}`
+              );
+            }
           }
         }
 
         if (!formatCheck.valid) {
           lastFormatReason = getFormatCheckReason(formatCheck);
-          logger.warn(`[${groupId}] 格式验证失败: ${getFormatCheckReason(formatCheck)}`);
-          logger.debug(`[${groupId}] 原始响应片段(格式失败): ${getResponsePreview(response)}`);
+          logger.warn(`[${groupId}] ${tRuntimeFormat('log_format_check_failed', { reason: getFormatCheckReason(formatCheck) })}`);
+          logger.debug(`[${groupId}] ${tRuntimeFormat('log_raw_response_on_format_failed', { preview: getResponsePreview(response) })}`);
 
           if (
-            expectedOutput === 'sentra_response' &&
+            expectedOutput === 'sentra_message' &&
             !appendRepairTried &&
             typeof response === 'string' &&
             response.trim()
@@ -599,36 +807,36 @@ export async function chatWithRetry(
                 ...chatOptions,
                 expectedOutput,
                 onEarlyTerminate: (event: EarlyTerminateEvent) => {
-                  logger.info(`[${groupId}] 修复流式早终止: ${event?.reason || 'unknown'}`);
+                  logger.info(`[${groupId}] ${tRuntimeFormat('log_stream_early_terminated', { reason: event?.reason || 'unknown' })}`);
                 }
               });
               if (typeof repaired === 'string') {
                 repaired = preprocessPlainModelOutput(repaired);
               }
-              if (expectedOutput === 'sentra_response' && typeof repaired === 'string' && repaired.trim()) {
-                const guarded = guardAndNormalizeSentraResponse(repaired);
+              if (expectedOutput === 'sentra_message' && typeof repaired === 'string' && repaired.trim()) {
+                const guarded = guardAndNormalizeSentraMessage(repaired);
                 if (guarded && guarded.ok && typeof guarded.normalized === 'string' && guarded.normalized.trim()) {
                   repaired = guarded.normalized;
                 }
               }
               const repairedCheck = validateResponseFormat(repaired, expectedOutput);
               if (repairedCheck.valid && !repairedCheck.toolsOnly) {
-                logger.success(`[${groupId}] 格式修复成功(追加root指令)`);
+                logger.success(`[${groupId}] ${tRuntimeFormat('log_format_fix_success_append_root')}`);
                 return { response: repaired, rawResponse: repaired, retries, success: true };
               }
             } catch (e) {
-              logger.warn(`[${groupId}] 追加root指令修复失败: ${getErrorMessage(e)}`);
+              logger.warn(`[${groupId}] ${tRuntimeFormat('log_format_fix_append_root_failed', { reason: getErrorMessage(e) })}`);
             }
           }
 
           if (retries < maxResponseRetries) {
             retries++;
-            logger.debug(`[${groupId}] 格式验证失败，直接重试（第${retries + 1}次）...`);
+            logger.debug(`[${groupId}] ${tRuntimeFormat('log_retry_after_format_fail', { attempt: retries + 1 })}`);
             await sleep(1000);
             continue;
           }
 
-          const allowRepair = expectedOutput === 'sentra_response' || expectedOutput === 'sentra_tools' || expectedOutput === 'sentra_tools_or_response';
+          const allowRepair = isModelFixSupportedExpectedOutput(expectedOutput);
           if (allowRepair && formatRepairEnabled && typeof response === 'string' && response.trim()) {
             try {
               const fixParams: ModelFormatFixParams = {
@@ -645,25 +853,23 @@ export async function chatWithRetry(
               if (repaired && typeof repaired === 'string' && repaired.trim()) {
                 const repairedCheck = validateResponseFormat(repaired, expectedOutput);
                 if (repairedCheck.valid) {
-                  logger.success(`[${groupId}] 格式已自动修复`);
+                  logger.success(`[${groupId}] ${tRuntimeFormat('log_format_fix_pipeline_success')}`);
                   return { response: repaired, rawResponse: repaired, retries, success: true };
                 }
-                logger.debug(`[${groupId}] 修复后仍不合规，修复响应片段: ${getResponsePreview(repaired)}`);
+                logger.debug(`[${groupId}] ${tRuntimeFormat('log_format_fix_pipeline_failed_preview', { preview: getResponsePreview(repaired) })}`);
               }
             } catch (e) {
-              logger.warn(`[${groupId}] 格式修复失败: ${getErrorMessage(e)}`);
+              logger.warn(`[${groupId}] ${tRuntimeFormat('log_format_fix_pipeline_failed', { reason: getErrorMessage(e) })}`);
             }
           }
 
-          logger.error(`[${groupId}] 格式验证失败-最终: 已达最大重试次数`);
-          logger.error(`[${groupId}] 最后原始响应片段: ${getResponsePreview(lastResponse)}`);
+          logger.error(`[${groupId}] ${tRuntimeFormat('log_format_final_failed')}`);
+          logger.error(`[${groupId}] ${tRuntimeFormat('log_last_raw_response', { preview: getResponsePreview(lastResponse) })}`);
           return { response: null, retries, success: false, reason: getFormatCheckReason(formatCheck) };
         }
 
         if (formatCheck.toolsOnly) {
-          logger.warn(
-            `[${groupId}] 期望 <sentra-response> 但收到纯 <sentra-tools>，将上抛 toolsOnly 交由上层回退处理`
-          );
+          logger.warn(`[${groupId}] ${tRuntimeFormat('log_expected_message_got_tools')}`);
           return {
             response: null,
             rawResponse,
@@ -682,59 +888,40 @@ export async function chatWithRetry(
 
       const responseText = typeof response === 'string' ? response : String(response ?? '');
       let tokenText = '';
+      let tokens = 0;
       if (expectedOutput === 'reply_gate_decision_tools') {
-        const decision = parseReplyGateDecisionFromSentraTools(responseText);
+        const decision = parseReplyGateDecisionFromXml(responseText);
         tokenText = decision && typeof decision.reason === 'string' ? decision.reason : '';
+        tokens = tokenCounter.countTokens(tokenText || '');
       } else if (expectedOutput === 'override_intent_decision_tools') {
-        const raw = responseText;
-        let reasonText = '';
-        const reasonMatch = raw.match(/<parameter[^>]*name=["']reason["'][^>]*>[\s\S]*?<string>([\s\S]*?)<\/string>[\s\S]*?<\/parameter>/i);
-        if (reasonMatch) {
-          const reasonValue = reasonMatch[1];
-          if (typeof reasonValue === 'string') {
-            reasonText = reasonValue.trim();
-          }
-        } else {
-          const reasonBareMatch = raw.match(/<parameter[^>]*name=["']reason["'][^>]*>([\s\S]*?)<\/parameter>/i);
-          if (reasonBareMatch) {
-            const reasonValue = reasonBareMatch[1];
-            if (typeof reasonValue === 'string') {
-              reasonText = reasonValue.trim();
-            }
-          } else {
-            const reasonTagMatch = raw.match(/<reason>([\s\S]*?)<\/reason>/i);
-            if (reasonTagMatch) {
-              const reasonValue = reasonTagMatch[1];
-              if (typeof reasonValue === 'string') {
-                reasonText = reasonValue.trim();
-              }
-            }
-          }
-        }
-        tokenText = reasonText;
+        const invokes = parseSentraToolsInvocations(responseText);
+        const override = invokes.find((it) => String(it?.aiName || '').trim() === OVERRIDE_INVOKE_NAME);
+        tokenText = String(override?.args?.reason ?? '').trim();
+        tokens = tokenCounter.countTokens(tokenText || '');
       } else {
-        tokenText = extractAndCountTokens(responseText).text;
+        const tokenInfo = extractAndCountTokens(responseText);
+        tokenText = tokenInfo.text;
+        tokens = tokenInfo.tokens;
       }
-      const tokens = tokenCounter.countTokens(tokenText || '');
       const text = tokenText || '';
-      logger.debug(`[${groupId}] Token统计: ${tokens} tokens, 文本长度: ${text.length}`);
+      logger.debug(`[${groupId}] ${tRuntimeFormat('log_token_stats', { tokens, length: text.length })}`);
 
       if (maxResponseTokens > 0 && tokens > maxResponseTokens) {
-        logger.warn(`[${groupId}] Token超限: ${tokens} > ${maxResponseTokens}`);
-        logger.debug(`[${groupId}] 原始响应片段(Token超限): ${getResponsePreview(response)}`);
+        logger.warn(`[${groupId}] ${tRuntimeFormat('log_token_exceeded', { tokens, max: maxResponseTokens })}`);
+        logger.debug(`[${groupId}] ${tRuntimeFormat('log_raw_response_on_token_exceeded', { preview: getResponsePreview(response) })}`);
         if (retries < maxResponseRetries) {
           retries++;
-          logger.debug(`[${groupId}] Token超限，直接重试（第${retries + 1}次）...`);
+          logger.debug(`[${groupId}] ${tRuntimeFormat('log_retry_after_token_exceeded', { attempt: retries + 1 })}`);
           await sleep(500);
           continue;
         }
-        logger.error(`[${groupId}] Token超限-最终: 已达最大重试次数`);
-        logger.error(`[${groupId}] 最后原始响应片段: ${getResponsePreview(lastResponse)}`);
+        logger.error(`[${groupId}] ${tRuntimeFormat('log_token_final_failed')}`);
+        logger.error(`[${groupId}] ${tRuntimeFormat('log_last_raw_response', { preview: getResponsePreview(lastResponse) })}`);
         return {
           response: null,
           retries,
           success: false,
-          reason: `Token超限: ${tokens}>${maxResponseTokens}`
+          reason: tRuntimeFormat('reason_token_exceeded', { tokens, max: maxResponseTokens })
         };
       }
 
@@ -742,34 +929,32 @@ export async function chatWithRetry(
         expectedOutput === 'reply_gate_decision_tools' ||
           expectedOutput === 'override_intent_decision_tools' ||
           expectedOutput === 'sentra_tools' ||
-          expectedOutput === 'sentra_tools_or_response'
+          expectedOutput === 'sentra_tools_or_message'
           ? false
           : (tokens === 0 && !hasNonTextPayload(responseText));
       if (noReply) {
-        logger.warn(
-          `[${groupId}] Token统计为 0，本轮按“保持沉默/不回复”处理（不应向用户发送任何内容）`
-        );
+        logger.warn(`[${groupId}] ${tRuntimeFormat('log_no_reply_by_zero_token')}`);
       }
       const limitDisplay = maxResponseTokens > 0 ? maxResponseTokens : 'unlimited';
-      logger.success(`[${groupId}] AI响应成功 (${tokens}/${limitDisplay} tokens)`);
+      logger.success(`[${groupId}] ${tRuntimeFormat('log_ai_success', { tokens, limit: limitDisplay })}`);
       return { response, rawResponse, retries, success: true, tokens, text, noReply };
     } catch (error) {
-      logger.error(`[${groupId}] AI请求失败 - 第${retries + 1}次尝试`, error);
+      logger.error(`[${groupId}] ${tRuntimeFormat('log_ai_request_failed_attempt', { attempt: retries + 1 })}`, error);
       lastError = error;
       lastFormatReason = '';
       const responseData = getErrorResponseData(error);
       if (responseData !== undefined) {
-        logger.error(`[${groupId}] API失败响应体: ${getResponsePreview(responseData)}`);
+        logger.error(`[${groupId}] ${tRuntimeFormat('log_api_error_data', { preview: getResponsePreview(responseData) })}`);
       }
       if (retries < maxResponseRetries) {
         retries++;
-        logger.warn(`[${groupId}] 网络错误，1秒后第${retries + 1}次重试...`);
+        logger.warn(`[${groupId}] ${tRuntimeFormat('log_retry_after_network_error', { attempt: retries + 1 })}`);
         await sleep(1000);
         continue;
       }
-      logger.error(`[${groupId}] AI请求失败 - 已达最大重试次数${maxResponseRetries}次`);
+      logger.error(`[${groupId}] ${tRuntimeFormat('log_ai_request_failed_final', { max: maxResponseRetries })}`);
       if (lastResponse) {
-        logger.error(`[${groupId}] 最后成功响应片段: ${getResponsePreview(lastResponse)}`);
+        logger.error(`[${groupId}] ${tRuntimeFormat('log_last_success_response', { preview: getResponsePreview(lastResponse) })}`);
       }
       return { response: null, retries, success: false, reason: getErrorMessage(lastError) };
     }
@@ -779,8 +964,15 @@ export async function chatWithRetry(
     response: null,
     retries,
     success: false,
-    reason: lastError ? getErrorMessage(lastError) : '未知错误'
+    reason: lastError ? getErrorMessage(lastError) : tRuntimeFormat('reason_unknown_error')
   };
 }
+
+
+
+
+
+
+
 
 

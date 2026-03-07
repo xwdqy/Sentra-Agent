@@ -186,10 +186,8 @@ import {
   getRepairPersonaPromptSystem,
   getPersonaInitialPromptSystem,
   getPersonaRefinePromptSystem,
-  getPresetConverterPromptSystem,
   getPresetTeachingPromptSystem,
-  getToolPreReplyConstraints,
-  getTaskCompletionAnalyzerPromptSystem
+  getToolPreReplyConstraints
 } from './platform.js';
 
 /**
@@ -349,10 +347,8 @@ const functionRegistry = {
   getRepairPersonaPromptSystem,
   getPersonaInitialPromptSystem,
   getPersonaRefinePromptSystem,
-  getPresetConverterPromptSystem,
   getPresetTeachingPromptSystem,
   getToolPreReplyConstraints,
-  getTaskCompletionAnalyzerPromptSystem,
 
   // Sentra 协议板块（可自由拼接）
   getSentraProtocolSectionOutputContract,

@@ -11,13 +11,21 @@
 
 ## When to use
 
-- 用户明确要求把账号改成“隐身/离开/忙碌/勿扰”等。
-- 需要同时设置 `status/ext_status/battery_status`。
+- 目标与工具能力一致：设置当前 QQ 账号的在线状态，比如在线、离开、隐身等。
+- 可提供必需入参：`battery_status`、`ext_status`、`status`。
+- 你明确接受该操作可能产生的副作用（发送/修改/写入/生成）。
 
-## When NOT to use
+## When not to use
 
-- 用户只说“改下状态”但没说具体想要哪种状态码。
+- 缺少必需入参时不要调用：`battery_status`、`ext_status`、`status`。
+- 仅希望查询信息、且不希望产生副作用时，不要调用。
 
+## Success Criteria
+
+- Must have `result.success === true` and `result.code === "OK"`.
+- `data.request.path` must be non-empty, `data.request.requestId` must be present, and `data.request.args` must match this call (`status, ext_status, battery_status`).
+- `data.response` must be present (non-null object/string), proving RPC was sent and acknowledged.
+- Retry guidance: timeout/network may retry once with same args; input/schema errors should regenerate args; business rejection should replan.
 ## Input
 
 - Required:

@@ -4,65 +4,77 @@ import logger from '../logger/index.js';
 import { clip } from '../utils/text.js';
 import { embedTexts } from '../openai/client.js';
 
-// 简单内存向量检索实现：
-// - 使用 Redis Hash 保存文档：mem:doc:<id>
-// - 使用 ZSET 保存最近文档索引：
-//   - 规划：mem:index:plan
-//   - 工具：mem:index:tool:<aiName>
-// - 不强依赖 RediSearch；先取最近 N 条，在应用层做余弦相似度排序，便于快速落地
+const NS = 'sentra-mcp';
+const PREFIX = config.memory.prefix || 'sentra_mcp_mem';
+const K_DOC = (id) => `${PREFIX}_doc_${id}`;
+const K_IDX_TOOL = (aiName) => `${PREFIX}_index_tool_${aiName}`;
+const MEMORY_TOOL_TOP_K = 3;
+const MEMORY_MIN_SCORE = 0.7;
+const MEMORY_CANDIDATE_POOL = 200;
+const MEMORY_ONLY_SUCCESSFUL = true;
+const RS_INDEX = 'mem_idx';
+const RS_DIM = 0;
+const RS_ENABLED = false;
+const RS_DISTANCE = 'COSINE';
+const RS_M = 16;
+const RS_EF_CONSTRUCTION = 200;
 
-const NS = config.memory.namespace;
-const PREFIX = config.memory.prefix || 'sentra:mcp:mem';
-const K_DOC = (id) => `${PREFIX}:doc:${id}`;
-const K_IDX_PLAN = () => `${PREFIX}:index:plan`;
-const K_IDX_TOOL = (aiName) => `${PREFIX}:index:tool:${aiName}`;
-const RS_INDEX = String(config.memory.rsIndex || 'mem_idx');
-const RS_DIM = Number(config.memory.rsDim || 0);
-const RS_ENABLED = !!config.memory.enableRediSearch;
+let rsCapability = 'unknown'; // 'available' | 'missing' | 'error'
+let rsWarned = false;
 
-// Cache RediSearch capability to avoid repeated FT.* attempts and warnings
-let __RS_CAP = 'unknown'; // 'available' | 'missing' | 'error'
-let __RS_WARNED = false;
-function __rsWarnOnce(msg, meta = {}) {
-  if (!__RS_WARNED) {
-    logger.warn?.(msg, { label: 'MEM', ...meta });
-    __RS_WARNED = true;
-  } else {
-    logger.debug?.(msg, { label: 'MEM', ...meta });
+function warnRediSearchOnce(message, meta = {}) {
+  if (!rsWarned) {
+    logger.warn?.(message, { label: 'MEM', ...meta });
+    rsWarned = true;
+    return;
   }
+  logger.debug?.(message, { label: 'MEM', ...meta });
 }
 
-function now() { return Date.now(); }
+function now() {
+  return Date.now();
+}
 
 function cosineSim(a = [], b = []) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || a.length === 0) return 0;
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) { const x = a[i]; const y = b[i]; dot += x * y; na += x * x; nb += y * y; }
-  if (na === 0 || nb === 0) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const x = Number(a[i] || 0);
+    const y = Number(b[i] || 0);
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  if (na <= 0 || nb <= 0) return 0;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 
-function genId(prefix) { return `${prefix}:${now()}:${Math.random().toString(36).slice(2, 10)}`; }
+function genId(prefix) {
+  return `${prefix}_${now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
-function sanitizeText(str, max = 1200) {
-  const s = String(str || '');
-  if (s.length <= max) return s;
-  return s.slice(0, max) + `\n...[截断 ${s.length - max} 字符]`;
+function sanitizeText(value, maxChars = 1200) {
+  const text = String(value || '');
+  if (text.length <= maxChars) return text;
+  const omitted = text.length - maxChars;
+  return `${text.slice(0, maxChars)}\n...[truncated ${omitted} chars]`;
 }
 
 async function embedQuery(text) {
-  const [vec] = await embedTexts({
-    texts: [text],
+  const [vector] = await embedTexts({
+    texts: [String(text || '')],
     apiKey: config.embedding.apiKey,
     baseURL: config.embedding.baseURL,
     model: config.embedding.model,
   });
-  return vec;
+  return Array.isArray(vector) ? vector : [];
 }
 
-function toFloat32Buffer(vec = []) {
+function toFloat32Buffer(vector = []) {
   try {
-    const f = new Float32Array(vec);
+    const f = new Float32Array(vector);
     return Buffer.from(f.buffer);
   } catch {
     return null;
@@ -71,280 +83,245 @@ function toFloat32Buffer(vec = []) {
 
 async function ensureRSIndex(dim) {
   if (!RS_ENABLED) return false;
-  if (__RS_CAP === 'missing') return false;
+  if (rsCapability === 'missing') return false;
+
+  const redis = getRedis();
   try {
-    const r = getRedis();
-    // Check index exists
     try {
-      await r.call('FT.INFO', RS_INDEX);
-      __RS_CAP = 'available';
+      await redis.call('FT.INFO', RS_INDEX);
+      rsCapability = 'available';
       return true;
-    } catch {}
-    const d = Number.isFinite(RS_DIM) && RS_DIM > 0 ? RS_DIM : Number(dim) || 0;
-    if (!d) {
-      logger.warn?.('RediSearch 索引创建失败：未知向量维度', { label: 'MEM', index: RS_INDEX });
+    } catch {
+      // Create below.
+    }
+
+    const vectorDim = Number.isFinite(RS_DIM) && RS_DIM > 0 ? RS_DIM : (Number(dim) || 0);
+    if (!vectorDim) {
+      logger.warn?.('RediSearch index creation skipped due to invalid vector dimension.', {
+        label: 'MEM',
+        index: RS_INDEX
+      });
       return false;
     }
-    const metric = String(config.memory.rsDistance || 'COSINE');
-    const m = Number(config.memory.rsM || 16);
-    const efc = Number(config.memory.rsEfConstruction || 200);
-    // FT.CREATE mem_idx ON HASH PREFIX 1 <PREFIX>:doc: SCHEMA ns TAG type TAG aiName TAG stepIndex NUMERIC success TAG embedding_bin VECTOR HNSW 6 TYPE FLOAT32 DIM d DISTANCE_METRIC COSINE M m EF_CONSTRUCTION efc
-    const prefix = `${PREFIX}:doc:`;
-    await r.call(
+
+    const metric = RS_DISTANCE;
+    const m = RS_M;
+    const efConstruction = RS_EF_CONSTRUCTION;
+    const hashPrefix = `${PREFIX}_doc_`;
+
+    await redis.call(
       'FT.CREATE', RS_INDEX,
       'ON', 'HASH',
-      'PREFIX', '1', prefix,
+      'PREFIX', '1', hashPrefix,
       'SCHEMA',
-        'ns', 'TAG',
-        'type', 'TAG',
-        'aiName', 'TAG',
-        'stepIndex', 'NUMERIC',
-        'success', 'TAG',
-        'embedding_bin', 'VECTOR', 'HNSW', '6',
-          'TYPE', 'FLOAT32', 'DIM', String(d), 'DISTANCE_METRIC', metric, 'M', String(m), 'EF_CONSTRUCTION', String(efc)
+      'ns', 'TAG',
+      'type', 'TAG',
+      'aiName', 'TAG',
+      'stepIndex', 'NUMERIC',
+      'success', 'TAG',
+      'embedding_bin', 'VECTOR', 'HNSW', '6',
+      'TYPE', 'FLOAT32', 'DIM', String(vectorDim), 'DISTANCE_METRIC', metric, 'M', String(m), 'EF_CONSTRUCTION', String(efConstruction)
     );
-    logger.info('RediSearch 索引已创建', { label: 'MEM', index: RS_INDEX, dim: d, metric });
-    __RS_CAP = 'available';
+
+    logger.info?.('RediSearch index created for memory retrieval.', {
+      label: 'MEM',
+      index: RS_INDEX,
+      dim: vectorDim,
+      metric
+    });
+    rsCapability = 'available';
     return true;
-  } catch (e) {
-    const msg = String(e && e.message ? e.message : e);
+  } catch (error) {
+    const msg = String(error?.message || error);
     if (msg.includes('unknown command') && msg.includes('FT.')) {
-      __RS_CAP = 'missing';
-      __rsWarnOnce('RediSearch 不可用（回退应用层相似度）', { index: RS_INDEX, error: msg });
+      rsCapability = 'missing';
+      warnRediSearchOnce('RediSearch commands are unavailable; fallback to cosine search.', {
+        index: RS_INDEX,
+        error: msg
+      });
     } else {
-      __RS_CAP = 'error';
-      logger.warn?.('RediSearch 索引创建/检查失败（回退应用层相似度）', { label: 'MEM', index: RS_INDEX, error: msg });
+      rsCapability = 'error';
+      logger.warn?.('RediSearch index ensure failed; fallback search will be used.', {
+        label: 'MEM',
+        index: RS_INDEX,
+        error: msg
+      });
     }
     return false;
   }
 }
 
-// 写入：规划记忆
-export async function upsertPlanMemory({ runId, objective, plan }) {
-  if (!config.memory.enable) return;
-  try {
-    const r = getRedis();
-    const id = genId('plan');
-    const text = sanitizeText([
-      `目标: ${objective}`,
-      `计划步骤(概览): ${clip(Array.isArray(plan?.steps) ? plan.steps.map(s => s.aiName).join(' -> ') : '')}`,
-    ].join('\n'));
-    const emb = await embedQuery(`${objective}`);
-    await r.hset(K_DOC(id), {
-      ns: NS,
-      type: 'plan',
-      runId,
-      objective: String(objective || ''),
-      aiName: '',
-      text,
-      embedding: JSON.stringify(emb),
-      ts: String(now()),
-      success: '1',
-    });
-    if (RS_ENABLED) {
-      const buf = toFloat32Buffer(emb);
-      if (buf) {
-        try {
-          await ensureRSIndex(emb.length);
-          await r.hset(K_DOC(id), { embedding_bin: buf });
-        } catch (e) {
-          logger.warn?.('写入 RediSearch 向量失败（忽略）', { label: 'MEM', e: String(e) });
-        }
-      }
-    }
-    await r.zadd(K_IDX_PLAN(), now(), id);
-    logger.debug?.('Memory upsert plan', { label: 'MEM', id });
-  } catch (e) {
-    logger.warn?.('Memory upsert plan failed', { label: 'MEM', e: String(e) });
-  }
-}
-
-// 写入：工具记忆
 export async function upsertToolMemory({ runId, stepIndex, aiName, objective, reason, args, result, success }) {
   if (!config.memory.enable) return;
+  if (!aiName) return;
+
   try {
-    const r = getRedis();
+    const redis = getRedis();
     const id = genId('tool');
     const argsPreview = clip(args || {});
     const resultPreview = clip(result && (result.data ?? result));
-    const text = sanitizeText([
-      `目标: ${objective}`,
-      `工具: ${aiName}`,
-      reason ? `原因: ${clip(reason)}` : undefined,
-      `参数要点: ${argsPreview}`,
-      `结果摘要: ${resultPreview}`,
+    const previewText = sanitizeText([
+      `objective: ${String(objective || '')}`,
+      `tool: ${String(aiName || '')}`,
+      reason ? `reason: ${clip(reason)}` : '',
+      `args: ${argsPreview}`,
+      `result: ${resultPreview}`,
     ].filter(Boolean).join('\n'));
-    // 仅使用“提示词（reason优先，其次objective）”作为向量键，避免被参数/结果污染
+
     const emb = await embedQuery(String(reason || objective || ''));
-    await r.hset(K_DOC(id), {
+
+    await redis.hset(K_DOC(id), {
       ns: NS,
       type: 'tool',
-      runId,
+      runId: String(runId || ''),
       stepIndex: String(stepIndex ?? -1),
       aiName: String(aiName || ''),
       objective: String(objective || ''),
       reason: String(reason || ''),
-      text,
+      text: previewText,
       args: JSON.stringify(args ?? {}),
       embedding: JSON.stringify(emb),
       ts: String(now()),
       success: success ? '1' : '0',
     });
+
     if (RS_ENABLED) {
       const buf = toFloat32Buffer(emb);
       if (buf) {
         try {
           await ensureRSIndex(emb.length);
-          await r.hset(K_DOC(id), { embedding_bin: buf });
-        } catch (e) {
-          logger.warn?.('写入 RediSearch 向量失败（忽略）', { label: 'MEM', e: String(e) });
+          await redis.hset(K_DOC(id), { embedding_bin: buf });
+        } catch (error) {
+          logger.warn?.('Failed to store vector blob for RediSearch.', {
+            label: 'MEM',
+            error: String(error?.message || error)
+          });
         }
       }
     }
-    await r.zadd(K_IDX_TOOL(aiName), now(), id);
-    logger.debug?.('Memory upsert tool', { label: 'MEM', id, aiName, success });
-  } catch (e) {
-    logger.warn?.('Memory upsert tool failed', { label: 'MEM', e: String(e) });
+
+    await redis.zadd(K_IDX_TOOL(aiName), now(), id);
+    logger.debug?.('Memory upsert tool success.', { label: 'MEM', id, aiName, success: !!success });
+  } catch (error) {
+    logger.warn?.('Memory upsert tool failed.', { label: 'MEM', error: String(error?.message || error) });
   }
 }
 
-async function fetchDocs(r, ids = []) {
+async function fetchDocs(redis, ids = []) {
   if (!ids.length) return [];
-  const pipeline = r.pipeline();
+  const pipeline = redis.pipeline();
   for (const id of ids) pipeline.hgetall(K_DOC(id));
-  const res = await pipeline.exec();
-  return res.map(([, v]) => v || {}).filter(Boolean);
+  const result = await pipeline.exec();
+  return result.map(([, value]) => value || {}).filter(Boolean);
 }
 
-// 读取：相似规划记忆
-export async function searchPlanMemories({ objective, topK = config.memory.topK, minScore = config.memory.minScore }) {
-  if (!config.memory.enable) return [];
+function parseJsonSafely(raw) {
   try {
-    const r = getRedis();
-    const qvec = await embedQuery(objective);
-    if (RS_ENABLED && __RS_CAP !== 'missing') {
-      try {
-        const ok = await ensureRSIndex(qvec.length);
-        if (ok && __RS_CAP === 'available') {
-          const buf = toFloat32Buffer(qvec);
-          if (buf) {
-            // FT.SEARCH mem_idx "@ns:{<NS>} @type:{plan}=>[KNN k embedding_bin $B AS score]" PARAMS 2 B <blob> SORTBY score DIALECT 2
-            const k = Math.max(1, Number(topK || 3));
-            const query = `@ns:{${NS}} @type:{plan}=>[KNN ${k} embedding_bin $VEC AS score]`;
-            const resp = await r.call('FT.SEARCH', RS_INDEX, query, 'PARAMS', '2', 'VEC', buf, 'SORTBY', 'score', 'DIALECT', '2', 'RETURN', '2', 'runId', 'text');
-            // Parse: [total, key, [field, value, ...], key2, [...], ...]
-            const out = [];
-            for (let i = 2; i < resp.length; i += 2) {
-              const fields = resp[i + 1];
-              const obj = {};
-              for (let j = 0; j < fields.length; j += 2) obj[fields[j]] = fields[j + 1];
-              out.push({ score: 0, runId: obj.runId, text: obj.text });
-            }
-            return out.slice(0, k);
-          }
-        }
-      } catch (e) {
-        const msg = String(e && e.message ? e.message : e);
-        if (msg.includes('unknown command') && msg.includes('FT.')) {
-          __RS_CAP = 'missing';
-          __rsWarnOnce('RediSearch 不可用（回退应用层）', { error: msg });
-        } else {
-          logger.warn?.('RediSearch 规划检索失败（回退应用层）', { label: 'MEM', error: msg });
-        }
-      }
-    }
-    const poolN = Math.max(10, Number(config.memory.candidatePool || 200));
-    const ids = await r.zrevrange(K_IDX_PLAN(), 0, poolN - 1);
-    const docs = await fetchDocs(r, ids);
-    const scored = [];
-    for (const d of docs) {
-      if (d?.type !== 'plan') continue;
-      const vec = JSON.parse(d.embedding || '[]');
-      const score = cosineSim(qvec, vec);
-      if (score >= (minScore ?? 0)) scored.push({ score, d });
-    }
-    scored.sort((a, b) => b.score - a.score);
-    const sel = scored.slice(0, Math.max(1, Number(topK || 3)));
-    return sel.map(({ score, d }) => ({
-      score,
-      runId: d.runId,
-      text: d.text,
-    }));
-  } catch (e) {
-    logger.warn?.('Memory search plan failed', { label: 'MEM', e: String(e) });
-    return [];
+    return JSON.parse(raw || '{}');
+  } catch {
+    return undefined;
   }
 }
 
-// 读取：相似工具记忆
-export async function searchToolMemories({ objective, reason, aiName, topK = config.memory.toolTopK, minScore = config.memory.minScore }) {
+function escapeTagValue(raw) {
+  return String(raw || '').replace(/([\\{}|:])/g, '\\$1');
+}
+
+export async function searchToolMemories({
+  objective,
+  reason,
+  aiName,
+  topK = MEMORY_TOOL_TOP_K,
+  minScore = MEMORY_MIN_SCORE
+}) {
   if (!config.memory.enable) return [];
+  if (!aiName) return [];
+
   try {
-    if (!aiName) return [];
-    const r = getRedis();
-    // 使用与写入端一致的向量键：reason 优先，其次 objective
-    const qvec = await embedQuery(String(reason || objective || ''));
-    if (RS_ENABLED && __RS_CAP !== 'missing') {
+    const redis = getRedis();
+    const queryVector = await embedQuery(String(reason || objective || ''));
+
+    if (RS_ENABLED && rsCapability !== 'missing') {
       try {
-        const ok = await ensureRSIndex(qvec.length);
-        if (ok && __RS_CAP === 'available') {
-          const buf = toFloat32Buffer(qvec);
-          if (buf) {
+        const ready = await ensureRSIndex(queryVector.length);
+        if (ready && rsCapability === 'available') {
+          const vectorBlob = toFloat32Buffer(queryVector);
+          if (vectorBlob) {
             const k = Math.max(1, Number(topK || 3));
-            // 仅成功案例时：添加 success 过滤
-            const successFilter = config.memory.onlySuccessful ? ' @success:{1}' : '';
-            const query = `@ns:{${NS}} @type:{tool} @aiName:{${aiName}}${successFilter}=>[KNN ${k} embedding_bin $VEC AS score]`;
-            const resp = await r.call('FT.SEARCH', RS_INDEX, query, 'PARAMS', '2', 'VEC', buf, 'SORTBY', 'score', 'DIALECT', '2', 'RETURN', '4', 'runId', 'text', 'args', 'stepIndex');
-            const out = [];
+            const successFilter = MEMORY_ONLY_SUCCESSFUL ? ' @success:{1}' : '';
+            const aiNameTag = escapeTagValue(aiName);
+            const query = `@ns:{${NS}} @type:{tool} @aiName:{${aiNameTag}}${successFilter}=>[KNN ${k} embedding_bin $VEC AS score]`;
+            const resp = await redis.call(
+              'FT.SEARCH',
+              RS_INDEX,
+              query,
+              'PARAMS', '2', 'VEC', vectorBlob,
+              'SORTBY', 'score',
+              'DIALECT', '2',
+              'RETURN', '5', 'runId', 'text', 'args', 'stepIndex', 'success'
+            );
+
+            const output = [];
             for (let i = 2; i < resp.length; i += 2) {
               const fields = resp[i + 1];
               const obj = {};
               for (let j = 0; j < fields.length; j += 2) obj[fields[j]] = fields[j + 1];
-              out.push({ score: 0, runId: obj.runId, stepIndex: Number(obj.stepIndex || -1), success: true, text: obj.text, args: (() => { try { return JSON.parse(obj.args || '{}'); } catch { return undefined; } })() });
+              output.push({
+                score: 0,
+                runId: obj.runId,
+                stepIndex: Number(obj.stepIndex || -1),
+                success: String(obj.success || '') === '1',
+                text: obj.text,
+                args: parseJsonSafely(obj.args),
+              });
             }
-            return out.slice(0, k);
+            return output.slice(0, k);
           }
         }
-      } catch (e) {
-        const msg = String(e && e.message ? e.message : e);
+      } catch (error) {
+        const msg = String(error?.message || error);
         if (msg.includes('unknown command') && msg.includes('FT.')) {
-          __RS_CAP = 'missing';
-          __rsWarnOnce('RediSearch 不可用（回退应用层）', { error: msg });
+          rsCapability = 'missing';
+          warnRediSearchOnce('RediSearch is unavailable during search; fallback path engaged.', { error: msg });
         } else {
-          logger.warn?.('RediSearch 工具检索失败（回退应用层）', { label: 'MEM', error: msg });
+          logger.warn?.('RediSearch query failed; fallback cosine search will run.', {
+            label: 'MEM',
+            error: msg
+          });
         }
       }
     }
-    const poolN = Math.max(10, Number(config.memory.candidatePool || 200));
-    const ids = await r.zrevrange(K_IDX_TOOL(aiName), 0, poolN - 1);
-    const docs = await fetchDocs(r, ids);
+
+    const poolSize = Math.max(10, Number(MEMORY_CANDIDATE_POOL));
+    const ids = await redis.zrevrange(K_IDX_TOOL(aiName), 0, poolSize - 1);
+    const docs = await fetchDocs(redis, ids);
+
     const scored = [];
-    for (const d of docs) {
-      if (d?.type !== 'tool' || d?.aiName !== aiName) continue;
-      if (config.memory.onlySuccessful && d?.success !== '1') continue;
-      const vec = JSON.parse(d.embedding || '[]');
-      const score = cosineSim(qvec, vec);
-      if (score >= (minScore ?? 0)) scored.push({ score, d });
+    for (const doc of docs) {
+      if (doc?.type !== 'tool' || doc?.aiName !== aiName) continue;
+      if (MEMORY_ONLY_SUCCESSFUL && doc?.success !== '1') continue;
+      const vector = parseJsonSafely(doc.embedding) || [];
+      const score = cosineSim(queryVector, vector);
+      if (score >= (minScore ?? 0)) scored.push({ score, doc });
     }
+
     scored.sort((a, b) => b.score - a.score);
-    const sel = scored.slice(0, Math.max(1, Number(topK || 3)));
-    return sel.map(({ score, d }) => ({
+    const selected = scored.slice(0, Math.max(1, Number(topK || 3)));
+    return selected.map(({ score, doc }) => ({
       score,
-      runId: d.runId,
-      stepIndex: Number(d.stepIndex || -1),
-      success: d.success === '1',
-      text: d.text,
-      args: (() => { try { return JSON.parse(d.args || '{}'); } catch { return undefined; } })(),
+      runId: doc.runId,
+      stepIndex: Number(doc.stepIndex || -1),
+      success: doc.success === '1',
+      text: doc.text,
+      args: parseJsonSafely(doc.args),
     }));
-  } catch (e) {
-    logger.warn?.('Memory search tool failed', { label: 'MEM', e: String(e) });
+  } catch (error) {
+    logger.warn?.('Memory search tool failed.', { label: 'MEM', error: String(error?.message || error) });
     return [];
   }
 }
 
 export default {
-  upsertPlanMemory,
   upsertToolMemory,
-  searchPlanMemories,
   searchToolMemories,
 };

@@ -11,12 +11,24 @@
 
 ## When to use
 
-- 已知群号与成员 QQ 号，想查该成员的群内资料（具体字段取决于 WS 侧回包）。
+- 目标与工具能力一致：QQ平台：查询群成员信息
+- 可提供以下任一入参组合：(`group_id`) 或 (`user_id`) 或 (`user_ids`)。
+- 需要批量处理时，优先使用数组字段：`user_ids`。
+- 目标路由已明确：`group_id`、`user_id`。
 
-## When NOT to use
+## When not to use
 
-- 缺 `group_id`，或缺 `user_id/user_ids`（不要猜成员号）。
+- 无法满足任一入参组合时不要调用：(`group_id`) 或 (`user_id`) 或 (`user_ids`)。
+- 路由不明确时不要调用（需明确 `group_id`、`user_id`）。
+- 参数不满足约束时不要调用：`user_ids` 数量范围需在 1 到 inf。
+- 需要执行发送/修改/删除等动作时，不要调用。
 
+## Success Criteria
+
+- Single-call success: `result.success === true`, `result.code === "OK"`, and `data.request.path/requestId/args` + `data.response` are all present (`group_id, user_id, refresh`).
+- Batch-call success: `data.mode === "batch"` and `data.results` is non-empty.
+- In batch mode, each item must carry identifiers (`group_id,user_id`) plus per-item `success` and `data|error`; treat all-failed batch as incomplete.
+- Retry guidance: timeout/network may retry once for failed items; arg/schema errors regenerate args; persistent remote failure triggers replan.
 ## Input
 
 - Required:

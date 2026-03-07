@@ -276,7 +276,6 @@ sequenceDiagram
   participant SH as SocketHandlers
   participant B as MessageBundler
   participant RP as ReplyPolicy(shouldReply)
-  participant GM as GroupReplyMerger(可选)
   participant MP as MessagePipeline
   participant MCP as Sentra-MCP(sdk.stream)
   participant TOOL as Tools
@@ -299,10 +298,6 @@ sequenceDiagram
       RP-->>SH: skip
     else needReply=true
       RP-->>SH: taskId
-      opt group multi-user merge
-        SH->>GM: handleGroupReplyCandidate
-        GM-->>SH: (可能合并为 mergedMsg)
-      end
       SH->>MP: handleOneMessageCore(bundledMsg, taskId)
       MP->>MCP: stream(objective, conversation, overlays)
       MCP-->>MP: judge(plan/toolNames)
@@ -373,7 +368,6 @@ flowchart LR
   subgraph Control[门禁/聚合/合并]
     MB[MessageBundler]
     RP[ReplyPolicy]
-    GM[GroupReplyMerger]
   end
 
   subgraph Core[核心执行]
@@ -401,8 +395,6 @@ flowchart LR
   SH --> DM
   SH --> MB
   SH --> RP
-  SH --> GM
-  GM --> MP
   RP --> MP
   MP --> MCP
   MP --> CWR

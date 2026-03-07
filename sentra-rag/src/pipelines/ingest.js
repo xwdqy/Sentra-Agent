@@ -84,7 +84,7 @@ function sliceRawSpan(documentText, startChar, endChar) {
 }
 
 async function embedTexts(embeddingOpenai, texts) {
-  const model = getEnv('EMBEDDING_MODEL', { defaultValue: 'text-embedding-3-small' });
+  const model = getEnv('EMBEDDING_MODEL', { defaultValue: 'qwen3-embedding-4b' });
   const resp = await embeddingOpenai.embeddings.create({ model, input: texts });
   const data = resp?.data;
   if (!Array.isArray(data) || data.length !== texts.length) {

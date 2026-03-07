@@ -1,6 +1,8 @@
 import { createLogger } from './logger.js';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { getEnv, getEnvInt, onEnvReload } from './envHotReloader.js';
+import { collectXmlTagTextValues } from './xmlUtils.js';
+import { tMessageBundler } from './i18n/messageBundlerCatalog.js';
 
 const logger = createLogger('MessageBundler');
 
@@ -10,6 +12,13 @@ type MessageLike = {
   message_id?: string | number | null;
   text?: string;
   summary?: string;
+  summary_text?: string;
+  summary_xml?: string;
+  objective?: string;
+  objective_text?: string;
+  objective_xml?: string;
+  message?: Array<{ type?: string; data?: Record<string, unknown> }>;
+  segments?: Array<{ type?: string; data?: Record<string, unknown> }>;
   time_str?: string;
   [key: string]: unknown;
 };
@@ -93,7 +102,7 @@ function resetEmbeddingClient(reason: string, changedKeys: string[] = []) {
   embeddingClient = null;
   embeddingInitFailed = false;
   try {
-    logger.info('Embedding 客户端已重置（等待下次调用时重新初始化）', {
+    logger.info(tMessageBundler('embedding_client_reset'), {
       reason: reason || 'env_reload',
       changedKeys
     });
@@ -141,11 +150,11 @@ function getEmbeddingClient() {
 
   const apiKey = String(getEnv('EMBEDDING_API_KEY', getEnv('API_KEY')) || '');
   const baseURL = String(getEnv('EMBEDDING_API_BASE_URL', getEnv('API_BASE_URL')) || '');
-  const model = String(getEnv('EMBEDDING_MODEL', 'text-embedding-3-small') || 'text-embedding-3-small');
+  const model = String(getEnv('EMBEDDING_MODEL', 'qwen3-embedding-4b') || 'qwen3-embedding-4b');
 
   if (!apiKey) {
     embeddingInitFailed = true;
-    logger.warn('Embedding 未启用: 缺少 EMBEDDING_API_KEY 或 API_KEY');
+    logger.warn(tMessageBundler('embedding_not_enabled_missing_key'));
     return null;
   }
 
@@ -155,11 +164,11 @@ function getEmbeddingClient() {
       clientConfig.configuration = { baseURL };
     }
     embeddingClient = new OpenAIEmbeddings(clientConfig);
-    logger.info(`Embedding 已启用: model=${model}, baseURL=${baseURL || 'default'}`);
+    logger.info(tMessageBundler('embedding_enabled', { model, baseURL: baseURL || 'default' }));
   } catch (e) {
     embeddingInitFailed = true;
     embeddingClient = null;
-    logger.error('初始化 Embedding 客户端失败', e);
+    logger.error(tMessageBundler('embedding_client_init_failed'), e);
   }
 
   return embeddingClient;
@@ -205,22 +214,22 @@ export async function computeSemanticSimilarity(textA: string, textB: string): P
       const vectors = await withTimeout(
         () => client.embedDocuments([a, b]),
         timeoutMs,
-        'Embedding 相似度计算'
+        tMessageBundler('embedding_similarity_compute')
       );
 
       if (!Array.isArray(vectors) || vectors.length < 2) {
-        logger.warn('Embedding 相似度计算返回结果不完整，回退为纯时间聚合');
+        logger.warn(tMessageBundler('embedding_similarity_incomplete_result'));
         return null;
       }
 
       const vA = vectors[0];
       const vB = vectors[1];
       if (!Array.isArray(vA) || !Array.isArray(vB)) {
-        logger.warn('Embedding 相似度计算返回结果不完整，回退为纯时间聚合');
+        logger.warn(tMessageBundler('embedding_similarity_incomplete_result'));
         return null;
       }
       if (vA.length === 0 || vB.length === 0) {
-        logger.warn('Embedding 相似度计算返回结果不完整，回退为纯时间聚合');
+        logger.warn(tMessageBundler('embedding_similarity_incomplete_result'));
         return null;
       }
       const aVals: number[] = [];
@@ -236,7 +245,7 @@ export async function computeSemanticSimilarity(textA: string, textB: string): P
         }
       }
       if (aVals.length === 0 || bVals.length === 0) {
-        logger.warn('Embedding 相似度计算返回结果不完整，回退为纯时间聚合');
+        logger.warn(tMessageBundler('embedding_similarity_incomplete_result'));
         return null;
       }
       const similarity = dot(aVals, bVals) / (norm(aVals) * norm(bVals));
@@ -244,9 +253,16 @@ export async function computeSemanticSimilarity(textA: string, textB: string): P
     } catch (e) {
       const err = e as Error & { code?: string };
       const isTimeout = err && err.code === 'EMBED_TIMEOUT';
-      const reason = isTimeout ? '超时' : '失败';
+      const reason = isTimeout
+        ? tMessageBundler('embedding_reason_timeout')
+        : tMessageBundler('embedding_reason_failed');
       logger.warn(
-        `Embedding 相似度计算${reason}，回退为纯时间聚合 (attempt=${attempt + 1}/${maxAttempts}, timeoutMs=${timeoutMs})`,
+        tMessageBundler('embedding_similarity_failed', {
+          reason,
+          attempt: attempt + 1,
+          maxAttempts,
+          timeoutMs
+        }),
         { err: String(e) }
       );
 
@@ -260,10 +276,65 @@ export async function computeSemanticSimilarity(textA: string, textB: string): P
   return null;
 }
 
+function extractTextFromProtocolXml(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim() : '';
+  if (!s || !s.startsWith('<')) return '';
+  const textMatches = collectXmlTagTextValues(s, ['text']);
+  if (textMatches.length > 0) return textMatches.join('\n').trim();
+  const preview = collectXmlTagTextValues(s, ['preview_text']);
+  if (preview.length > 0) return preview[0] || '';
+  return '';
+}
+
+function normalizeSegments(m: MessageLike | null | undefined): Array<{ type: string; data: Record<string, unknown> }> {
+  const raw = Array.isArray(m?.message)
+    ? m!.message
+    : (Array.isArray(m?.segments) ? m!.segments : []);
+  const out: Array<{ type: string; data: Record<string, unknown> }> = [];
+  for (const seg of raw) {
+    if (!seg || typeof seg !== 'object') continue;
+    const type = typeof seg.type === 'string' ? seg.type.trim() : '';
+    if (!type) continue;
+    const data = (seg.data && typeof seg.data === 'object')
+      ? (seg.data as Record<string, unknown>)
+      : {};
+    out.push({ type, data });
+  }
+  return out;
+}
+
 function extractText(m: MessageLike | null | undefined): string {
-  const t = (typeof m?.text === 'string' && m.text.trim()) ? m.text.trim() : '';
-  const s = (typeof m?.summary === 'string' && m.summary.trim()) ? m.summary.trim() : '';
-  return t || s || '';
+  const plainCandidates = [
+    m?.objective_text,
+    m?.summary_text,
+    m?.objective,
+    m?.summary,
+    m?.text,
+    m?.objective_xml,
+    m?.summary_xml
+  ];
+  for (const candidate of plainCandidates) {
+    if (typeof candidate !== 'string') continue;
+    const t = candidate.trim();
+    if (!t) continue;
+    if (t.startsWith('<')) {
+      const extracted = extractTextFromProtocolXml(t);
+      if (extracted) return extracted;
+      continue;
+    }
+    return t;
+  }
+  const segTexts = normalizeSegments(m)
+    .filter((seg) => seg.type.toLowerCase() === 'text')
+    .map((seg) => {
+      const t = seg.data && typeof seg.data.text === 'string' ? seg.data.text.trim() : '';
+      return t;
+    })
+    .filter(Boolean);
+  if (segTexts.length > 0) {
+    return segTexts.join('\n').trim();
+  }
+  return '';
 }
 
 /**
@@ -303,7 +374,12 @@ export async function handleIncomingMessage(
       }
       bucket.lastUpdate = now;
       bucket.lowSimCount = 0;
-      logger.debug(`聚合: 文本为空，直接追加 (sender=${key}, count=${bucket.messages.length})`);
+      logger.debug(
+        tMessageBundler('bundle_append_empty_text', {
+          sender: key,
+          count: bucket.messages.length
+        })
+      );
       return { action: 'buffered' };
     }
 
@@ -322,7 +398,12 @@ export async function handleIncomingMessage(
         const vioAfter = vioBefore + 1;
         bucket.lowSimCount = vioAfter;
         logger.info(
-          `聚合: 语义相似度偏低 (sender=${key}, sim=${simPercent}, violations=${vioAfter}/${maxLowSimCount})`
+          tMessageBundler('bundle_low_similarity', {
+            sender: key,
+            sim: simPercent,
+            violations: vioAfter,
+            maxLowSimCount
+          })
         );
 
         // 连续低相似超过阈值：认为用户已切换到新话题
@@ -333,7 +414,12 @@ export async function handleIncomingMessage(
             pendingMessagesByUser.set(key, arr);
           }
           arr.push(msg);
-          logger.info(`聚合: 检测到连续低相似度消息，当前会话将尽快收束，新消息转入延迟队列 (sender=${key}, pending=${arr.length})`);
+          logger.info(
+            tMessageBundler('bundle_low_similarity_split', {
+              sender: key,
+              pending: arr.length
+            })
+          );
           // 注意：不更新 lastUpdate，让当前 bucket 按原有时间窗口完成
           return { action: 'pending_queued' };
         }
@@ -347,7 +433,11 @@ export async function handleIncomingMessage(
         }
         bucket.lastUpdate = now;
         logger.info(
-          `聚合: 相似度略低但未达分裂阈值，继续归入当前会话 (sender=${key}, sim=${simPercent}, count=${bucket.messages.length})`
+          tMessageBundler('bundle_low_similarity_continue', {
+            sender: key,
+            sim: simPercent,
+            count: bucket.messages.length
+          })
         );
         return { action: 'buffered' };
       }
@@ -362,7 +452,11 @@ export async function handleIncomingMessage(
       }
       bucket.lastUpdate = now;
       logger.info(
-        `聚合: 语义相似度良好，追加到当前窗口 (sender=${key}, sim=${simPercent}, count=${bucket.messages.length})`
+        tMessageBundler('bundle_similarity_good', {
+          sender: key,
+          sim: simPercent,
+          count: bucket.messages.length
+        })
       );
       return { action: 'buffered' };
     }
@@ -375,7 +469,12 @@ export async function handleIncomingMessage(
       }
     }
     bucket.lastUpdate = now;
-    logger.debug(`聚合: 相似度不可用，回退为时间聚合 (sender=${key}, count=${bucket.messages.length})`);
+    logger.debug(
+      tMessageBundler('bundle_similarity_unavailable', {
+        sender: key,
+        count: bucket.messages.length
+      })
+    );
     return { action: 'buffered' };
   }
 
@@ -388,7 +487,7 @@ export async function handleIncomingMessage(
       lowSimCount: 0
     };
     senderBundles.set(key, bucket);
-    logger.debug(`延迟聚合(override): 进入聚合队列等待 (sender=${key})`);
+    logger.debug(tMessageBundler('bundle_pending_collect_override', { sender: key }));
     return { action: 'pending_collect' };
   }
 
@@ -400,7 +499,7 @@ export async function handleIncomingMessage(
     lowSimCount: 0
   };
   senderBundles.set(key, newBucket);
-  logger.debug(`聚合: 启动新的聚合窗口 (sender=${key})`);
+  logger.debug(tMessageBundler('bundle_start_new_window', { sender: key }));
   return { action: 'start_bundle' };
 }
 
@@ -422,11 +521,16 @@ export function startBundleForQueuedMessage(conversationId: string, msg: Message
     }
     existing.lastUpdate = now;
     existing.lowSimCount = 0;
-    logger.debug(`队列聚合: 复用现有窗口 (sender=${key}, count=${existing.messages.length})`);
+    logger.debug(
+      tMessageBundler('queue_bundle_reuse_window', {
+        sender: key,
+        count: existing.messages.length
+      })
+    );
   } else {
     const bucket: BundleState = { collecting: true, messages: [msg], lastUpdate: now, lowSimCount: 0 };
     senderBundles.set(key, bucket);
-    logger.debug(`队列聚合: 启动新的聚合窗口 (sender=${key})`);
+    logger.debug(tMessageBundler('queue_bundle_start_window', { sender: key }));
   }
 }
 
@@ -446,6 +550,31 @@ export function getMessageBundlerStats(): { senderBundles: number; pendingUsers:
     pendingMessages,
     maxPendingPerUser,
   };
+}
+
+function collectMergedSegments(messages: MessageLike[]): Array<{ type: string; data: Record<string, unknown> }> {
+  const out: Array<{ type: string; data: Record<string, unknown> }> = [];
+  for (const msg of messages) {
+    const segs = normalizeSegments(msg);
+    if (segs.length > 0) out.push(...segs);
+  }
+  return out;
+}
+
+function pickLatestStructuredXml(messages: MessageLike[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    const candidates = [msg?.objective_xml, msg?.objective, msg?.summary_xml, msg?.summary];
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string') continue;
+      const s = candidate.trim();
+      if (!s) continue;
+      if (s.startsWith('<sentra-objective') || s.startsWith('<sentra-summary') || s.startsWith('<sentra-message')) {
+        return s;
+      }
+    }
+  }
+  return '';
 }
 
 /**
@@ -519,23 +648,38 @@ export async function collectBundleForSender(conversationId: string): Promise<Me
     const durationMs = now - start;
     const idleMs = now - (bucket.lastUpdate || start);
     logger.debug(
-      `聚合: 结束窗口 (sender=${key}, messages=${bucket.messages.length}, reason=${endReason}, durationMs=${durationMs}, idleMs=${idleMs})`
+      tMessageBundler('bundle_window_end', {
+        sender: key,
+        messages: bucket.messages.length,
+        reason: endReason,
+        durationMs,
+        idleMs
+      })
     );
   } catch { }
 
   // 组合文本
-  const texts = bucket.messages.map((m) => {
-    const t = (typeof m?.text === 'string' && m.text.trim()) ? m.text.trim() : '';
-    const s = (typeof m?.summary === 'string' && m.summary.trim()) ? m.summary.trim() : '';
-    return t || s || '';
-  }).filter(Boolean);
+  const texts = bucket.messages
+    .map((m) => extractText(m))
+    .filter(Boolean);
 
   const combined = texts.join('\n');
   const firstMsg = bucket.messages[0] || {};
   const bundled = { ...firstMsg };
+  const mergedSegments = collectMergedSegments(bucket.messages);
+  if (mergedSegments.length > 0) {
+    bundled.message = mergedSegments;
+    bundled.segments = mergedSegments;
+  }
+  const latestStructuredXml = pickLatestStructuredXml(bucket.messages);
+  if (latestStructuredXml) {
+    bundled.objective_xml = latestStructuredXml;
+  }
   if (combined) {
     bundled.text = combined;
     bundled.summary = combined;
+    bundled.summary_text = combined;
+    bundled.objective_text = combined;
   }
   return bundled;
 }
@@ -551,17 +695,26 @@ export function drainPendingMessagesForSender(conversationId: string): MessageLi
   }
   pendingMessagesByUser.delete(key);
 
-  const texts = pendingMsgs.map((m) => {
-    const t = (typeof m?.text === 'string' && m.text.trim()) ? m.text.trim() : '';
-    const s = (typeof m?.summary === 'string' && m.summary.trim()) ? m.summary.trim() : '';
-    return t || s || '';
-  }).filter(Boolean);
+  const texts = pendingMsgs
+    .map((m) => extractText(m))
+    .filter(Boolean);
 
   const combined = texts.join('\n');
   const mergedMsg = { ...pendingMsgs[0] };
+  const mergedSegments = collectMergedSegments(pendingMsgs);
+  if (mergedSegments.length > 0) {
+    mergedMsg.message = mergedSegments;
+    mergedMsg.segments = mergedSegments;
+  }
+  const latestStructuredXml = pickLatestStructuredXml(pendingMsgs);
+  if (latestStructuredXml) {
+    mergedMsg.objective_xml = latestStructuredXml;
+  }
   if (combined) {
     mergedMsg.text = combined;
     mergedMsg.summary = combined;
+    mergedMsg.summary_text = combined;
+    mergedMsg.objective_text = combined;
   }
 
   const reversed: MessageLike[] = [];
@@ -579,7 +732,7 @@ export function drainPendingMessagesForSender(conversationId: string): MessageLi
     if (flagSource._overrideDecision) mergedMsg._overrideDecision = flagSource._overrideDecision;
   }
 
-  logger.info(`Delayed bundle drain: sender=${key}, merged=${pendingMsgs.length}`);
+  logger.info(tMessageBundler('delayed_bundle_drain', { sender: key, merged: pendingMsgs.length }));
   return mergedMsg;
 }
 
@@ -592,6 +745,6 @@ export function requeuePendingMessageForSender(conversationId: string, msg: Mess
     pendingMessagesByUser.set(key, arr);
   }
   arr.push(msg);
-  logger.debug(`Delayed bundle: requeued pending message (sender=${key}, pending=${arr.length})`);
+  logger.debug(tMessageBundler('delayed_bundle_requeue', { sender: key, pending: arr.length }));
 }
 
