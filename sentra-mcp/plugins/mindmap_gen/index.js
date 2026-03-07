@@ -68,24 +68,34 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
           paddingX: 8
         }, root);
         
-        setTimeout(() => { 
-          try {
-            mm.fit(${maxScale});
-            const svgEl = document.getElementById('markmap');
-            const g = svgEl?.querySelector('g');
-            if (g) {
-              const bbox = g.getBBox();
-              console.log('MARKMAP_FINAL:', { 
-                bbox: { width: bbox.width, height: bbox.height, x: bbox.x, y: bbox.y },
-                transform: g.getAttribute('transform')
-              });
+        // 核心修复：强制等待字体（如 24MB 的霞鹜文楷）加载完成后，再触发截图就绪信号
+        const finalizeRender = () => {
+          setTimeout(() => { 
+            try {
+              mm.fit(${maxScale});
+              const svgEl = document.getElementById('markmap');
+              const g = svgEl?.querySelector('g');
+              if (g) {
+                const bbox = g.getBBox();
+                console.log('MARKMAP_FINAL:', { 
+                  bbox: { width: bbox.width, height: bbox.height, x: bbox.x, y: bbox.y },
+                  transform: g.getAttribute('transform')
+                });
+              }
+            } catch (e) { 
+              console.warn('MARKMAP_FIT_ERROR:', e); 
             }
-          } catch (e) { 
-            console.warn('MARKMAP_FIT_ERROR:', e); 
-          }
-          window.__MARKMAP_READY__ = true;
-          console.log('MARKMAP_READY: true');
-        }, 500);
+            window.__MARKMAP_READY__ = true;
+            console.log('MARKMAP_READY: true');
+          }, 800); // 预留 800ms 让浏览器充分重绘字体
+        };
+
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(finalizeRender).catch(finalizeRender);
+        } else {
+          finalizeRender();
+        }
+
       } catch (e) {
         console.error('MARKMAP_INIT_ERROR:', e);
         window.__MARKMAP_READY__ = false;
@@ -139,27 +149,28 @@ async function resolveScriptTags(penv = {}) {
   return buildTags(cdnD3, cdnLib, cdnView);
 }
 
-// 动态注入本地字体配置 (方案一：优化字体栈与数字间距)
+// 动态注入本地字体配置
 function defaultStyleCSS(style, fontPaths = {}) {
   let fontFaces = '';
   const fontFamilies =[];
 
-  // 1. 生成 @font-face 声明
+  // 1. 生成 @font-face 声明，增加 format 和 font-display: block 避免截图使用系统字体
   if (fontPaths.emoji) {
-    fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}'); font-display: swap; }\n`;
+    const formatStr = fontPaths.emoji.endsWith('.woff2') ? "format('woff2')" : "format('truetype')";
+    fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}') ${formatStr}; font-display: block; }\n`;
   }
   if (fontPaths.zh) {
-    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}'); font-display: swap; }\n`;
+    const formatStr = fontPaths.zh.endsWith('.woff2') ? "format('woff2')" : "format('truetype')";
+    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}') ${formatStr}; font-display: block; }\n`;
   }
 
   // 2. 编排字体回退顺序 (Font Stack 核心逻辑)
-  // 优先显示 Emoji
   if (fontPaths.emoji) fontFamilies.push("'LocalEmoji'");
   
-  // 其次放入标准的西文字体（优先用它们渲染数字和英文字母，间距更自然）
+  // 其次放入标准的西文字体（确保数字和英文字母间距自然）
   fontFamilies.push("'Helvetica Neue'", "Arial", "'Segoe UI'", "Roboto");
 
-  // 然后放入中文字体 (Noto Sans SC 等)
+  // 然后放入中文字体 (霞鹜文楷 / Noto Sans SC)
   if (fontPaths.zh) fontFamilies.push("'LocalZh'");
 
   // 最后放入兜底字体
@@ -177,7 +188,6 @@ function defaultStyleCSS(style, fontPaths = {}) {
     }
   `;
 
-  // 4. 返回完整 CSS
   switch (ensureStyle(style)) {
     case 'dark':
       return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#1a1a1a}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{color:#fff;}`;
@@ -265,8 +275,10 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
   const zhFontPathTtf = path.join(fontsDir, 'zh.ttf');
   const emojiFontPath = path.join(fontsDir, 'emoji.ttf');
 
+  // 智能寻找并挂载本地字体
   if (await exists(zhFontPathWoff2)) fontPaths.zh = toFileUrl(zhFontPathWoff2);
   else if (await exists(zhFontPathTtf)) fontPaths.zh = toFileUrl(zhFontPathTtf);
+  
   if (await exists(emojiFontPath)) fontPaths.emoji = toFileUrl(emojiFontPath);
 
   const styleCSS = defaultStyleCSS(style, fontPaths);
@@ -280,7 +292,6 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
   
   let browser;
   try {
-    // 写入临时文件放入 try 块中，确保抛错时也能走到 finally 删除垃圾文件
     await fs.writeFile(tempHtml, html, 'utf-8');
 
     browser = await puppeteer.launch({ 
@@ -313,6 +324,8 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
     const readyTimeout = Math.min(30000, maxWait);
     
     try {
+      // 这里的 __MARKMAP_READY__ 已经被我们在 htmlTemplate 中改造过了，
+      // 它不仅代表 markmap 渲染完成，还代表本地中文字体已全部加载成功。
       await page.waitForFunction('window.__MARKMAP_READY__ === true', { timeout: readyTimeout });
     } catch (timeoutErr) {
       const readyState = await page.evaluate(() => window.__MARKMAP_READY__);
