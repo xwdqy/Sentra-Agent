@@ -139,25 +139,45 @@ async function resolveScriptTags(penv = {}) {
   return buildTags(cdnD3, cdnLib, cdnView);
 }
 
-// 动态注入本地字体配置
+// 动态注入本地字体配置 (方案一：优化字体栈与数字间距)
 function defaultStyleCSS(style, fontPaths = {}) {
   let fontFaces = '';
   const fontFamilies =[];
 
+  // 1. 生成 @font-face 声明
   if (fontPaths.emoji) {
     fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}'); font-display: swap; }\n`;
-    fontFamilies.push("'LocalEmoji'");
   }
   if (fontPaths.zh) {
     fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}'); font-display: swap; }\n`;
-    fontFamilies.push("'LocalZh'");
   }
 
-  fontFamilies.push("'Segoe UI Emoji'", "'Segoe UI'", "'Microsoft YaHei'", "Arial", "sans-serif");
+  // 2. 编排字体回退顺序 (Font Stack 核心逻辑)
+  // 优先显示 Emoji
+  if (fontPaths.emoji) fontFamilies.push("'LocalEmoji'");
+  
+  // 其次放入标准的西文字体（优先用它们渲染数字和英文字母，间距更自然）
+  fontFamilies.push("'Helvetica Neue'", "Arial", "'Segoe UI'", "Roboto");
+
+  // 然后放入中文字体 (Noto Sans SC 等)
+  if (fontPaths.zh) fontFamilies.push("'LocalZh'");
+
+  // 最后放入兜底字体
+  fontFamilies.push("'Segoe UI Emoji'", "'Microsoft YaHei'", "sans-serif");
+
   const fontFamilyStr = fontFamilies.join(', ');
 
-  const baseNodeStyle = `.markmap-node { font-family: ${fontFamilyStr} !important; }`;
+  // 3. 增加数字间距优化属性
+  const baseNodeStyle = `
+    .markmap-node { 
+      font-family: ${fontFamilyStr} !important; 
+      font-variant-numeric: proportional-nums !important;
+      font-feature-settings: "pnum" 1, "kern" 1 !important;
+      letter-spacing: -0.2px;
+    }
+  `;
 
+  // 4. 返回完整 CSS
   switch (ensureStyle(style)) {
     case 'dark':
       return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#1a1a1a}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{color:#fff;}`;
