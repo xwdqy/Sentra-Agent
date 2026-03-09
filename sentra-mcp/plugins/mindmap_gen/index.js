@@ -68,7 +68,7 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
           paddingX: 8
         }, root);
         
-        // 核心修复：强制等待字体（如 24MB 的霞鹜文楷）加载完成后，再触发截图就绪信号
+        // 核心修复：强制等待本地大体积字体加载完成后，再触发截图就绪信号
         const finalizeRender = () => {
           setTimeout(() => { 
             try {
@@ -83,11 +83,11 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
                 });
               }
             } catch (e) { 
-              console.warn('MARKMAP_FIT_ERROR:', e); 
+               console.warn('MARKMAP_FIT_ERROR:', e); 
             }
             window.__MARKMAP_READY__ = true;
             console.log('MARKMAP_READY: true');
-          }, 800); // 预留 800ms 让浏览器充分重绘字体
+          }, 800); // 预留 800ms 让浏览器充分重绘字体布局
         };
 
         if (document.fonts && document.fonts.ready) {
@@ -149,12 +149,12 @@ async function resolveScriptTags(penv = {}) {
   return buildTags(cdnD3, cdnLib, cdnView);
 }
 
-// 动态注入本地字体配置
+// 动态注入本地字体配置 - 深度优化数字间距版
 function defaultStyleCSS(style, fontPaths = {}) {
   let fontFaces = '';
   const fontFamilies =[];
 
-  // 1. 生成 @font-face 声明，增加 format 和 font-display: block 避免截图使用系统字体
+  // 1. 生成 @font-face，增加 format 和 font-display: block 避免截图使用系统字体闪烁
   if (fontPaths.emoji) {
     const formatStr = fontPaths.emoji.endsWith('.woff2') ? "format('woff2')" : "format('truetype')";
     fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}') ${formatStr}; font-display: block; }\n`;
@@ -164,27 +164,26 @@ function defaultStyleCSS(style, fontPaths = {}) {
     fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}') ${formatStr}; font-display: block; }\n`;
   }
 
-  // 2. 编排字体回退顺序 (Font Stack 核心逻辑)
+  // 2. 重新编排字体栈：让本地文楷 (LocalZh) 接管一切（最高优先级）
   if (fontPaths.emoji) fontFamilies.push("'LocalEmoji'");
-  
-  // 其次放入标准的西文字体（确保数字和英文字母间距自然）
-  fontFamilies.push("'Helvetica Neue'", "Arial", "'Segoe UI'", "Roboto");
+  if (fontPaths.zh) fontFamilies.push("'LocalZh'"); // 本地汉字直接排在第二位，接管英文和数字
 
-  // 然后放入中文字体 (霞鹜文楷 / Noto Sans SC)
-  if (fontPaths.zh) fontFamilies.push("'LocalZh'");
-
-  // 最后放入兜底字体
-  fontFamilies.push("'Segoe UI Emoji'", "'Microsoft YaHei'", "sans-serif");
+  // 备用西文和系统兜底字体放后面
+  fontFamilies.push("'Helvetica Neue'", "Arial", "'Segoe UI'", "Roboto", "'Segoe UI Emoji'", "'Microsoft YaHei'", "sans-serif");
 
   const fontFamilyStr = fontFamilies.join(', ');
 
-  // 3. 增加数字间距优化属性
+  // 3. 强力优化数字排版：强制使用比例数字 (Proportional)
   const baseNodeStyle = `
     .markmap-node { 
       font-family: ${fontFamilyStr} !important; 
-      font-variant-numeric: proportional-nums !important;
-      font-feature-settings: "pnum" 1, "kern" 1 !important;
-      letter-spacing: -0.2px;
+    }
+    /* 针对 Markmap 内部渲染的文本节点进行深度优化 */
+    .markmap-node > div {
+      font-variant-numeric: proportional-nums !important; /* 强制数字不按等宽排列 */
+      font-feature-settings: "pnum" 1, "kern" 1, "tnum" 0 !important; /* 开启比例数字，关闭等宽数字 */
+      letter-spacing: -0.3px !important; /* 稍微压缩字间距，视觉效果更紧凑 */
+      word-spacing: -1px !important;
     }
   `;
 
@@ -271,15 +270,20 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
   };
 
   const fontPaths = {};
+  
+  // 支持检测 .woff2 与 .ttf
   const zhFontPathWoff2 = path.join(fontsDir, 'zh.woff2');
   const zhFontPathTtf = path.join(fontsDir, 'zh.ttf');
-  const emojiFontPath = path.join(fontsDir, 'emoji.ttf');
+  const emojiFontPathWoff2 = path.join(fontsDir, 'emoji.woff2');
+  const emojiFontPathTtf = path.join(fontsDir, 'emoji.ttf');
 
-  // 智能寻找并挂载本地字体
+  // 智能寻找并挂载本地中文字体 (优先 WOFF2)
   if (await exists(zhFontPathWoff2)) fontPaths.zh = toFileUrl(zhFontPathWoff2);
   else if (await exists(zhFontPathTtf)) fontPaths.zh = toFileUrl(zhFontPathTtf);
   
-  if (await exists(emojiFontPath)) fontPaths.emoji = toFileUrl(emojiFontPath);
+  // 智能寻找并挂载本地 Emoji 字体 (优先 WOFF2)
+  if (await exists(emojiFontPathWoff2)) fontPaths.emoji = toFileUrl(emojiFontPathWoff2);
+  else if (await exists(emojiFontPathTtf)) fontPaths.emoji = toFileUrl(emojiFontPathTtf);
 
   const styleCSS = defaultStyleCSS(style, fontPaths);
   const scriptTags = await resolveScriptTags(penv);
@@ -324,8 +328,7 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
     const readyTimeout = Math.min(30000, maxWait);
     
     try {
-      // 这里的 __MARKMAP_READY__ 已经被我们在 htmlTemplate 中改造过了，
-      // 它不仅代表 markmap 渲染完成，还代表本地中文字体已全部加载成功。
+      // 等待被 document.fonts.ready 释放的标志位
       await page.waitForFunction('window.__MARKMAP_READY__ === true', { timeout: readyTimeout });
     } catch (timeoutErr) {
       const readyState = await page.evaluate(() => window.__MARKMAP_READY__);
