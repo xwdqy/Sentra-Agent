@@ -23,9 +23,7 @@ function generateSystemPrompt() {
 }
 
 function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio = 0.9, maxScale = 2.0 }) {
-  // XSS 防护：防止恶意闭合 script 标签
   const safeMarkdownJson = JSON.stringify(markdown).replace(/</g, '\\u003c');
-  
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -44,36 +42,19 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
           window.__MARKMAP_READY__ = false;
           return;
         }
-        
         const { Transformer, Markmap } = markmap;
         const transformer = new Transformer();
         const { root } = transformer.transform(${safeMarkdownJson});
         const svg = document.getElementById('markmap');
-        
         const mm = Markmap.create(svg, {
-          autoFit: true,
-          zoom: true,
-          pan: true,
-          duration: 0,
-          maxWidth: 0,
-          initialExpandLevel: -1,
-          fitRatio: ${fitRatio},
-          maxInitialScale: ${maxScale},
-          paddingX: 8
+          autoFit: true, zoom: true, pan: true, duration: 0,
+          maxWidth: 0, initialExpandLevel: -1, fitRatio: ${fitRatio},
+          maxInitialScale: ${maxScale}, paddingX: 8
         }, root);
         
         const finalizeRender = () => {
           setTimeout(() => { 
-            try {
-              mm.fit(${maxScale});
-              const svgEl = document.getElementById('markmap');
-              const g = svgEl?.querySelector('g');
-              if (g) {
-                const bbox = g.getBBox();
-              }
-            } catch (e) { 
-               console.warn('MARKMAP_FIT_ERROR:', e); 
-            }
+            try { mm.fit(${maxScale}); } catch (e) {}
             window.__MARKMAP_READY__ = true;
           }, 800);
         };
@@ -83,17 +64,12 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
         } else {
           finalizeRender();
         }
-
       } catch (e) {
-        console.error('MARKMAP_INIT_ERROR:', e);
         window.__MARKMAP_READY__ = false;
       }
     }
-    
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => {
-        setTimeout(initMarkmap, 100);
-      });
+      document.addEventListener('DOMContentLoaded', () => setTimeout(initMarkmap, 100));
     } else {
       setTimeout(initMarkmap, 100);
     }
@@ -108,112 +84,36 @@ async function resolveScriptTags(penv = {}) {
   const __dirname = path.dirname(__filename);
   const assetsDir = path.join(__dirname, 'assets');
   const toFileUrl = (p) => 'file://' + toPosix(p);
+  const localD3 = path.join(assetsDir, 'd3.min.js');
+  const localLib = path.join(assetsDir, 'markmap-lib.min.js');
+  const localView = path.join(assetsDir, 'markmap-view.min.js');
+  const exists = async (p) => { try { await fs.stat(p); return true; } catch { return false; } };
 
-  const localD3 = penv.MINDMAP_ASSET_D3_PATH || process.env.MINDMAP_ASSET_D3_PATH || path.join(assetsDir, 'd3.min.js');
-  const localLib = penv.MINDMAP_ASSET_LIB_PATH || process.env.MINDMAP_ASSET_LIB_PATH || path.join(assetsDir, 'markmap-lib.min.js');
-  const localView = penv.MINDMAP_ASSET_VIEW_PATH || process.env.MINDMAP_ASSET_VIEW_PATH || path.join(assetsDir, 'markmap-view.min.js');
-
-  const buildTags = (d3Src, libSrc, viewSrc) =>[
-    `<script src="${d3Src}"></script>`,
-    `<script src="${libSrc}"></script>`,
-    `<script src="${viewSrc}"></script>`
-  ].join('\n  ');
-
-  const exists = async (p) => {
-    try { await fs.stat(p); return true; } catch { return false; }
-  };
-
-  if (assetMode === 'local') {
-    if (await exists(localD3) && await exists(localLib) && await exists(localView)) {
-      return buildTags(toFileUrl(localD3), toFileUrl(localLib), toFileUrl(localView));
-    }
+  if (assetMode === 'local' && await exists(localD3) && await exists(localLib) && await exists(localView)) {
+    return `<script src="${toFileUrl(localD3)}"></script><script src="${toFileUrl(localLib)}"></script><script src="${toFileUrl(localView)}"></script>`;
   }
-
-  const cdnD3 = 'https://cdn.jsdelivr.net/npm/d3@6/dist/d3.min.js';
-  const cdnLib = 'https://cdn.jsdelivr.net/npm/markmap-lib@0.18.10/dist/browser/index.iife.js';
-  const cdnView = 'https://cdn.jsdelivr.net/npm/markmap-view@0.18.10/dist/browser/index.js';
-  return buildTags(cdnD3, cdnLib, cdnView);
+  return `<script src="https://cdn.jsdelivr.net/npm/d3@6"></script><script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.18.10"></script><script src="https://cdn.jsdelivr.net/npm/markmap-view@0.18.10"></script>`;
 }
 
 function defaultStyleCSS(style, fontPaths = {}) {
   let fontFaces = '';
-  const fontFamilies =[];
-
+  const fontFamilies = [];
   if (fontPaths.emoji) {
-    const formatStr = fontPaths.emoji.endsWith('.woff2') ? "format('woff2')" : "format('truetype')";
-    fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}') ${formatStr}; font-display: block; }\n`;
+    fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}'); font-display: block; }\n`;
+    fontFamilies.push("'LocalEmoji'");
   }
   if (fontPaths.zh) {
-    const formatStr = fontPaths.zh.endsWith('.woff2') ? "format('woff2')" : "format('truetype')";
-    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}') ${formatStr}; font-display: block; }\n`;
+    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}'); font-display: block; }\n`;
+    fontFamilies.push("'LocalZh'");
   }
-
-  // 1. Emoji 优先级最高
-  if (fontPaths.emoji) fontFamilies.push("'LocalEmoji'");
-  
-  // 2. 本地中文字体拥有第二高优先级：让它彻底接管数字和字母，呈现原汁原味的哥特倾斜数字
-  if (fontPaths.zh) fontFamilies.push("'LocalZh'");
-  
-  // 3. 兜底字体
   fontFamilies.push("Arial", "'Microsoft YaHei'", "sans-serif");
-
-  const fontFamilyStr = fontFamilies.join(', ');
-
-  // 去除多余的强制排版属性，尊重方正字体的原版设计
-  const baseNodeStyle = `
-    .markmap-node { 
-      font-family: ${fontFamilyStr} !important; 
-    }
-  `;
+  const baseNodeStyle = `.markmap-node { font-family: ${fontFamilies.join(', ')} !important; }`;
 
   switch (ensureStyle(style)) {
-    case 'dark':
-      return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#1a1a1a}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{color:#fff;}`;
-    case 'minimal':
-      return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#f8f9fa}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{font-weight:300;}`;
-    case 'colorful':
-      return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%)}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{font-weight:bold;}`;
-    default:
-      return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#fff}#markmap{width:100%;height:100%}${baseNodeStyle}`;
+    case 'dark': return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#1a1a1a}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{color:#fff;}`;
+    case 'colorful': return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%)}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{font-weight:bold;}`;
+    default: return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#fff}#markmap{width:100%;height:100%}${baseNodeStyle}`;
   }
-}
-
-function validateMarkdown(md) {
-  if (!md || typeof md !== 'string') return false;
-  const lines = md.split('\n').map((l)=>l.trim()).filter(Boolean);
-  if (!lines.some((l)=>l.startsWith('#'))) return false;
-  if (!lines.some((l)=>l.startsWith('# '))) return false;
-  return true;
-}
-
-function isTimeoutError(e) {
-  const msg = String(e?.message || e || '').toLowerCase();
-  const code = String(e?.code || '').toUpperCase();
-  return (
-    code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT' ||
-    code === 'ECONNABORTED' || msg.includes('timeout') || msg.includes('timed out')
-  );
-}
-
-function buildAdvice(kind, ctx = {}) {
-  const personaHint = '请结合你当前的预设/人设继续作答：当思维导图生成失败时，要说明失败原因，给替代方案。';
-  if (kind === 'INVALID') {
-    return {
-      suggested_reply: '我现在还没拿到要生成思维导图的主题/描述。你把主题和文件名发我一下，我就继续。',
-      next_steps:['补充 prompt', '提供 filename（不含目录）'], persona_hint: personaHint, context: ctx,
-    };
-  }
-  return {
-    suggested_reply: '我尝试帮你生成思维导图，但这次工具执行失败了。我可以先给你文本大纲，或稍后重试。',
-    next_steps:['提供导图大纲供选择', '稍后重试'], persona_hint: personaHint, context: ctx,
-  };
-}
-
-async function ensureDirForFile(filePath) {
-  const outAbs = toAbs(filePath);
-  const dir = path.dirname(outAbs);
-  await fs.mkdir(dir, { recursive: true });
-  return outAbs;
 }
 
 async function renderImage({ markdown, outputFile, width, height, style, waitTime, penv }) {
@@ -224,17 +124,73 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
   const __dirname = path.dirname(__filename);
   const fontsDir = path.join(__dirname, 'assets', 'fonts');
   const toFileUrl = (p) => 'file://' + toPosix(p);
-
-  const exists = async (p) => {
-    try { await fs.access(p); return true; } catch { return false; }
-  };
+  const exists = async (p) => { try { await fs.access(p); return true; } catch { return false; } };
 
   const fontPaths = {};
-  
-  const zhFontPathWoff2 = path.join(fontsDir, 'zh.woff2');
-  const zhFontPathTtf = path.join(fontsDir, 'zh.ttf');
-  const emojiFontPathWoff2 = path.join(fontsDir, 'emoji.woff2');
-  const emojiFontPathTtf = path.join(fontsDir, 'emoji.ttf');
+  if (await exists(path.join(fontsDir, 'zh.woff2'))) fontPaths.zh = toFileUrl(path.join(fontsDir, 'zh.woff2'));
+  else if (await exists(path.join(fontsDir, 'zh.ttf'))) fontPaths.zh = toFileUrl(path.join(fontsDir, 'zh.ttf'));
+  if (await exists(path.join(fontsDir, 'emoji.woff2'))) fontPaths.emoji = toFileUrl(path.join(fontsDir, 'emoji.woff2'));
+  else if (await exists(path.join(fontsDir, 'emoji.ttf'))) fontPaths.emoji = toFileUrl(path.join(fontsDir, 'emoji.ttf'));
 
-  if (await exists(zhFontPathWoff2)) fontPaths.zh = toFileUrl(zhFontPathWoff2);
-  else if (await exists(zhFontPathTtf)) fontPaths
+  const styleCSS = defaultStyleCSS(style, fontPaths);
+  const scriptTags = await resolveScriptTags(penv);
+  const html = htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio: 0.9, maxScale: 2.0 });
+  const outPngAbs = toAbs(outputFile);
+  await fs.mkdir(path.dirname(outPngAbs), { recursive: true });
+  const tempHtml = path.join(path.dirname(outPngAbs), `temp-${Date.now()}.html`);
+  
+  let browser;
+  try {
+    await fs.writeFile(tempHtml, html, 'utf-8');
+    browser = await puppeteer.launch({ headless: 'new', args:['--no-sandbox', '--disable-setuid-sandbox', '--allow-file-access-from-files', '--disable-web-security'] });
+    const page = await browser.newPage();
+    await page.setViewport({ width, height });
+    await page.goto('file://' + toPosix(tempHtml), { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction('window.__MARKMAP_READY__ === true', { timeout: 30000 });
+    await new Promise(r => setTimeout(r, 500));
+    await page.screenshot({ path: outPngAbs, clip: { x: 0, y: 0, width, height } });
+  } finally {
+    if (browser) await browser.close();
+    try { await fs.unlink(tempHtml); } catch {}
+  }
+  return { abs: outPngAbs };
+}
+
+export default async function handler(args = {}, options = {}) {
+  const prompt = String(args.prompt || '').trim();
+  if (!prompt) return fail('prompt is required');
+
+  try {
+    const penv = options?.pluginEnv || {};
+    const width = Math.min(8000, Number(args.width || 2400));
+    const height = Math.min(6000, Number(args.height || 1600));
+    const style = String(args.style || 'default');
+    const rawName = path.basename(String(args.filename || 'mindmap.png'));
+    const outputFile = path.join('artifacts', rawName);
+
+    const resp = await chatCompletion({
+      messages: [{ role: 'system', content: generateSystemPrompt() }, { role: 'user', content: prompt }],
+      temperature: 0.2,
+      omitMaxTokens: true
+    });
+    
+    let content = resp.choices?.[0]?.message?.content?.trim() || '';
+    content = content.replace(/^```(?:markdown)?\s*/i, '').replace(/```\s*$/i, '').trim();
+
+    // 清洗全角数字和空格，确保方正字体的倾斜数字生效
+    content = content.replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+    content = content.replace(/\u3000/g, ' ');
+    content = content.replace(/(\d)\s+(?=\d|℃|C|:|%)/gi, '$1').replace(/(:)\s+(?=\d)/g, '$1');
+
+    const image = await renderImage({ markdown: content, outputFile, width, height, style, penv });
+
+    return ok({
+      prompt,
+      markdown_content: content,
+      path_markdown: `![mindmap](${image.abs})`,
+      width, height, style
+    });
+  } catch (e) {
+    return fail(String(e));
+  }
+}
