@@ -403,16 +403,22 @@ export default async function handler(args = {}, options = {}) {
     const style = ensureStyle(String((args.style ?? penv.MINDMAP_DEFAULT_STYLE ?? 'default')));
     const waitTime = Math.max(1000, Number(args.waitTime ?? penv.MINDMAP_WAIT_TIME ?? 8000));
     
-    // 强制过滤非法文件名与路径越界
-    let rawName = String(args.filename || '').trim();
-    rawName = path.basename(rawName);
-    if (!rawName || rawName === '.' || rawName === '..') {
+    const render = typeof args.render === 'string'
+      ? args.render.toLowerCase() !== 'false'
+      : args.render !== false;
+
+    let outputFile = null;
+    if (render) {
+      // 仅在需要渲染图片时校验文件名，兼容 render=false 的纯 Markdown 工作流
+      let rawName = String(args.filename || '').trim();
+      rawName = path.basename(rawName);
+      if (!rawName || rawName === '.' || rawName === '..') {
         return fail('filename is invalid (filename only, no paths)', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'mindmap_gen' }) });
+      }
+
+      outputFile = path.join('artifacts', rawName);
+      if (!outputFile.toLowerCase().endsWith('.png')) outputFile += '.png';
     }
-    
-    let outputFile = path.join('artifacts', rawName);
-    if (!outputFile.toLowerCase().endsWith('.png')) outputFile += '.png';
-    const render = args.render !== false;
 
     const messages =[
       { role: 'system', content: generateSystemPrompt() },
