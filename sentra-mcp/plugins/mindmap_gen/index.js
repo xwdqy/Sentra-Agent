@@ -68,7 +68,7 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
           paddingX: 8
         }, root);
         
-        // 核心：强制等待本地复杂字体（如哥特明朝）加载完成后，再触发截图就绪信号
+        // 核心修复：强制等待本地大体积字体加载完成后，再触发截图就绪信号
         const finalizeRender = () => {
           setTimeout(() => { 
             try {
@@ -83,11 +83,11 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
                 });
               }
             } catch (e) { 
-              console.warn('MARKMAP_FIT_ERROR:', e); 
+               console.warn('MARKMAP_FIT_ERROR:', e); 
             }
             window.__MARKMAP_READY__ = true;
             console.log('MARKMAP_READY: true');
-          }, 800);
+          }, 800); // 预留 800ms 让浏览器充分重绘字体布局
         };
 
         if (document.fonts && document.fonts.ready) {
@@ -95,6 +95,7 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
         } else {
           finalizeRender();
         }
+
       } catch (e) {
         console.error('MARKMAP_INIT_ERROR:', e);
         window.__MARKMAP_READY__ = false;
@@ -148,32 +149,41 @@ async function resolveScriptTags(penv = {}) {
   return buildTags(cdnD3, cdnLib, cdnView);
 }
 
-// 动态注入本地字体配置
+// 动态注入本地字体配置 - 深度优化数字间距版
 function defaultStyleCSS(style, fontPaths = {}) {
   let fontFaces = '';
   const fontFamilies =[];
 
-  // 1. 生成 @font-face 声明，增加 font-display: block 防止字体闪烁
+  // 1. 生成 @font-face，增加 format 和 font-display: block 避免截图使用系统字体闪烁
   if (fontPaths.emoji) {
-    fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}'); font-display: block; }\n`;
-    fontFamilies.push("'LocalEmoji'");
+    const formatStr = fontPaths.emoji.endsWith('.woff2') ? "format('woff2')" : "format('truetype')";
+    fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}') ${formatStr}; font-display: block; }\n`;
   }
   if (fontPaths.zh) {
-    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}'); font-display: block; }\n`;
-    fontFamilies.push("'LocalZh'");
+    const formatStr = fontPaths.zh.endsWith('.woff2') ? "format('woff2')" : "format('truetype')";
+    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}') ${formatStr}; font-display: block; }\n`;
   }
 
-  // 2. 关键优化：剔除无衬线字体（Arial等），强制使用 serif 兜底
-  // 确保系统不会抢夺本地字体的西文/数字渲染权
-  fontFamilies.push("serif");
+  // 2. 重新编排字体栈：让本地文楷 (LocalZh) 接管一切（最高优先级）
+  if (fontPaths.emoji) fontFamilies.push("'LocalEmoji'");
+  if (fontPaths.zh) fontFamilies.push("'LocalZh'"); // 本地汉字直接排在第二位，接管英文和数字
+
+  // 备用西文和系统兜底字体放后面
+  fontFamilies.push("'Helvetica Neue'", "Arial", "'Segoe UI'", "Roboto", "'Segoe UI Emoji'", "'Microsoft YaHei'", "sans-serif");
+
   const fontFamilyStr = fontFamilies.join(', ');
 
-  // 3. 强力穿透：确保 markmap 的 div 和 span 完全继承字体
+  // 3. 强力优化数字排版：强制使用比例数字 (Proportional)
   const baseNodeStyle = `
-    svg { font-family: ${fontFamilyStr} !important; }
-    .markmap-node, .markmap-node div, .markmap-node span { 
+    .markmap-node { 
       font-family: ${fontFamilyStr} !important; 
-      font-feature-settings: "kern" 1, "liga" 1; 
+    }
+    /* 针对 Markmap 内部渲染的文本节点进行深度优化 */
+    .markmap-node > div {
+      font-variant-numeric: proportional-nums !important; /* 强制数字不按等宽排列 */
+      font-feature-settings: "pnum" 1, "kern" 1, "tnum" 0 !important; /* 开启比例数字，关闭等宽数字 */
+      letter-spacing: -0.3px !important; /* 稍微压缩字间距，视觉效果更紧凑 */
+      word-spacing: -1px !important;
     }
   `;
 
@@ -207,7 +217,6 @@ function isTimeoutError(e) {
   );
 }
 
-// 恢复最完整的容错提示机制
 function buildAdvice(kind, ctx = {}) {
   const personaHint = '请结合你当前的预设/人设继续作答：当思维导图生成失败时，要说明失败原因，给替代方案，并引导用户。';
   if (kind === 'INVALID') {
@@ -262,14 +271,17 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
 
   const fontPaths = {};
   
+  // 支持检测 .woff2 与 .ttf
   const zhFontPathWoff2 = path.join(fontsDir, 'zh.woff2');
   const zhFontPathTtf = path.join(fontsDir, 'zh.ttf');
   const emojiFontPathWoff2 = path.join(fontsDir, 'emoji.woff2');
   const emojiFontPathTtf = path.join(fontsDir, 'emoji.ttf');
 
+  // 智能寻找并挂载本地中文字体 (优先 WOFF2)
   if (await exists(zhFontPathWoff2)) fontPaths.zh = toFileUrl(zhFontPathWoff2);
   else if (await exists(zhFontPathTtf)) fontPaths.zh = toFileUrl(zhFontPathTtf);
   
+  // 智能寻找并挂载本地 Emoji 字体 (优先 WOFF2)
   if (await exists(emojiFontPathWoff2)) fontPaths.emoji = toFileUrl(emojiFontPathWoff2);
   else if (await exists(emojiFontPathTtf)) fontPaths.emoji = toFileUrl(emojiFontPathTtf);
 
@@ -293,7 +305,6 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
     
     const page = await browser.newPage();
     
-    // 恢复控制台日志捕捉机制
     page.on('console', msg => {
       const type = msg.type();
       if (type === 'error' || type === 'warning') {
@@ -317,13 +328,14 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
     const readyTimeout = Math.min(30000, maxWait);
     
     try {
+      // 等待被 document.fonts.ready 释放的标志位
       await page.waitForFunction('window.__MARKMAP_READY__ === true', { timeout: readyTimeout });
     } catch (timeoutErr) {
       const readyState = await page.evaluate(() => window.__MARKMAP_READY__);
       throw new Error(`Markmap initialization timeout after ${readyTimeout}ms (readyState: ${readyState})`);
     }
     
-    await new Promise((r) => setTimeout(r, 800)); // 再次预留重绘时间
+    await new Promise((r) => setTimeout(r, 800));
     
     await page.evaluate(() => new Promise(resolve => {
       const raf = (n) => {
@@ -417,17 +429,6 @@ export default async function handler(args = {}, options = {}) {
     let content = resp.choices?.[0]?.message?.content?.trim() || '';
     content = content.replace(/^```(?:markdown)?\s*/i, '').replace(/```\s*$/i, '').trim();
 
-    // =============== 核心清洗逻辑（安全版） ===============
-    // 仅将全角数字 ０-９ (uff10-uff19) 转为半角数字，绝不误伤中文标点符号！
-    content = content.replace(/[\uff10-\uff19]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
-    // 将全角冒号转换为半角冒号
-    content = content.replace(/\uff1a/g, ':');
-    // 将全角空格替换为标准空格
-    content = content.replace(/\u3000/g, ' ');
-    // 消除数字与冒号、温度符号之间，以及数字之间的多余空格
-    content = content.replace(/(\d)\s+(?=\d|℃|C|:|%)/gi, '$1').replace(/(:)\s+(?=\d)/g, '$1');
-    // ======================================================
-
     if (!validateMarkdown(content)) {
       return fail('生成的Markdown内容无效', 'MARKDOWN_INVALID', {
         advice: buildAdvice('MARKDOWN_INVALID', { tool: 'mindmap_gen', prompt }),
@@ -453,7 +454,6 @@ export default async function handler(args = {}, options = {}) {
       });
     }
 
-    // 恢复了被我误删的 generation_info 元数据，保证组件与后端系统接口完全兼容
     const data = {
       prompt,
       markdown_content: content,
@@ -473,3 +473,6 @@ export default async function handler(args = {}, options = {}) {
     return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'mindmap_gen', prompt }) });
   }
 }
+
+import { runCurrentModuleCliIfMain } from '../../src/plugins/plugin_entry.js';
+runCurrentModuleCliIfMain(import.meta.url);
