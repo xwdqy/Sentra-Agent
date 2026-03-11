@@ -4,7 +4,7 @@ import logger from '../../src/logger/index.js';
 import { config } from '../../src/config/index.js';
 import { chatCompletion } from '../../src/openai/client.js';
 import { toPosix, abs as toAbs } from '../../src/utils/path.js';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url'; // <- 引入官方 URL 处理
 import { ok, fail } from '../../src/utils/result.js';
 
 const STYLES = new Set(['default','colorful','dark','minimal','anime','cyberpunk','nature','business','code','academic','creative','retro']);
@@ -119,7 +119,9 @@ async function resolveScriptTags(penv = {}) {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const assetsDir = path.join(__dirname, 'assets');
-  const toFileUrl = (p) => 'file://' + toPosix(p);
+  
+  // 修复：使用官方的 pathToFileURL 确保所有操作系统路径不出错
+  const toFileUrl = (p) => pathToFileURL(toAbs(p)).href;
 
   const localD3 = penv.MINDMAP_ASSET_D3_PATH || process.env.MINDMAP_ASSET_D3_PATH || path.join(assetsDir, 'd3.min.js');
   const localLib = penv.MINDMAP_ASSET_LIB_PATH || process.env.MINDMAP_ASSET_LIB_PATH || path.join(assetsDir, 'markmap-lib.min.js');
@@ -203,8 +205,6 @@ function validateMarkdown(md) {
   if (!md || typeof md !== 'string') return false;
   const lines = md.split('\n').map((l)=>l.trim()).filter(Boolean);
   if (!lines.some((l)=>l.startsWith('#'))) return false;
-  // 放宽校验，允许 Markdown 中出现偶尔的说明性文字，只要存在 # 结构即可
-  if (!lines.some((l)=>l.startsWith('# '))) return false;
   return true;
 }
 
@@ -263,7 +263,9 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const fontsDir = path.join(__dirname, 'assets', 'fonts');
-  const toFileUrl = (p) => 'file://' + toPosix(p);
+  
+  // 修复：使用官方的 pathToFileURL 确保所有操作系统路径不出错
+  const toFileUrl = (p) => pathToFileURL(toAbs(p)).href;
 
   const exists = async (p) => {
     try { await fs.access(p); return true; } catch { return false; }
@@ -271,17 +273,14 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
 
   const fontPaths = {};
   
-  // 支持检测 .woff2 与 .ttf
   const zhFontPathWoff2 = path.join(fontsDir, 'zh.woff2');
   const zhFontPathTtf = path.join(fontsDir, 'zh.ttf');
   const emojiFontPathWoff2 = path.join(fontsDir, 'emoji.woff2');
   const emojiFontPathTtf = path.join(fontsDir, 'emoji.ttf');
 
-  // 智能寻找并挂载本地中文字体 (优先 WOFF2)
   if (await exists(zhFontPathWoff2)) fontPaths.zh = toFileUrl(zhFontPathWoff2);
   else if (await exists(zhFontPathTtf)) fontPaths.zh = toFileUrl(zhFontPathTtf);
   
-  // 智能寻找并挂载本地 Emoji 字体 (优先 WOFF2)
   if (await exists(emojiFontPathWoff2)) fontPaths.emoji = toFileUrl(emojiFontPathWoff2);
   else if (await exists(emojiFontPathTtf)) fontPaths.emoji = toFileUrl(emojiFontPathTtf);
 
@@ -317,7 +316,7 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
     });
     
     await page.setViewport({ width, height });
-    await page.goto('file://' + toPosix(tempHtml), { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(toFileUrl(tempHtml), { waitUntil: 'domcontentloaded', timeout: 30000 });
     
     const hasMarkmap = await page.evaluate(() => typeof window.markmap !== 'undefined');
     if (!hasMarkmap) {
@@ -328,7 +327,6 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
     const readyTimeout = Math.min(30000, maxWait);
     
     try {
-      // 等待被 document.fonts.ready 释放的标志位
       await page.waitForFunction('window.__MARKMAP_READY__ === true', { timeout: readyTimeout });
     } catch (timeoutErr) {
       const readyState = await page.evaluate(() => window.__MARKMAP_READY__);
@@ -394,13 +392,11 @@ export default async function handler(args = {}, options = {}) {
 
   try {
     const penv = options?.pluginEnv || {};
-    // OOM 防护：增加边界限制
     const width = Math.min(8000, Math.max(400, Number(args.width ?? penv.MINDMAP_WIDTH ?? 2400)));
     const height = Math.min(6000, Math.max(300, Number(args.height ?? penv.MINDMAP_HEIGHT ?? 1600)));
     const style = ensureStyle(String((args.style ?? penv.MINDMAP_DEFAULT_STYLE ?? 'default')));
     const waitTime = Math.max(1000, Number(args.waitTime ?? penv.MINDMAP_WAIT_TIME ?? 8000));
     
-    // 强制过滤非法文件名与路径越界
     let rawName = String(args.filename || '').trim();
     rawName = path.basename(rawName);
     if (!rawName || rawName === '.' || rawName === '..') {
@@ -425,9 +421,16 @@ export default async function handler(args = {}, options = {}) {
       omitMaxTokens: true
     });
     
-    // 智能剥离 LLM 输出外层的代码块标记，提高成功率
     let content = resp.choices?.[0]?.message?.content?.trim() || '';
     content = content.replace(/^```(?:markdown)?\s*/i, '').replace(/```\s*$/i, '').trim();
+
+    // ==========================================
+    // 新增：终极文本清理（修复大模型乱加空格和全角符号的问题）
+    // 1. 将全角数字和标点（如 １５：００）强行转成半角 (15:00)
+    content = content.replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+    // 2. 将数字之间的无意义空格抹掉（如将 1 5 : 0 0 变回 15:00，将 2 2 ℃ 变回 22 ℃）
+    content = content.replace(/(\d)\s+(?=\d)/g, '$1').replace(/(\d)\s*:\s*(?=\d)/g, '$1:');
+    // ==========================================
 
     if (!validateMarkdown(content)) {
       return fail('生成的Markdown内容无效', 'MARKDOWN_INVALID', {
