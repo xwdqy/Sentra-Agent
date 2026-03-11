@@ -23,6 +23,7 @@ function generateSystemPrompt() {
 }
 
 function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio = 0.9, maxScale = 2.0 }) {
+  const safeMarkdownJson = JSON.stringify(markdown).replace(/</g, '\\u003c');
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -37,69 +38,38 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
     function initMarkmap() {
       try {
         if (typeof markmap === 'undefined') {
-          console.error('MARKMAP_INIT_ERROR: markmap global is undefined');
           window.__MARKMAP_READY__ = false;
           return;
         }
-        
         const { Transformer, Markmap } = markmap;
-        if (!Transformer || !Markmap) {
-          console.error('MARKMAP_INIT_ERROR: Transformer or Markmap not found in markmap global');
-          window.__MARKMAP_READY__ = false;
-          return;
-        }
-        
         const transformer = new Transformer();
-        const { root } = transformer.transform(${JSON.stringify(markdown)});
+        const { root } = transformer.transform(${safeMarkdownJson});
         const svg = document.getElementById('markmap');
-        
-        // 使用 Markmap 内置配置控制缩放和适配
         const mm = Markmap.create(svg, {
-          autoFit: true,              // 自动适配视口
-          zoom: true,
-          pan: true,
-          duration: 0,                // 禁用动画
-          maxWidth: 0,                // 不限制节点宽度
-          initialExpandLevel: -1,     // 展开所有层级
-          fitRatio: ${fitRatio},      // 适配比例（0.9 = 留 10% 边距）
-          maxInitialScale: ${maxScale}, // 最大初始缩放（防止过度放大）
-          paddingX: 8                 // 水平内边距
+          autoFit: true, zoom: true, pan: true, duration: 0,
+          maxWidth: 0, initialExpandLevel: -1, fitRatio: ${fitRatio},
+          maxInitialScale: ${maxScale}, paddingX: 8
         }, root);
         
-        // 等待渲染完成
-        setTimeout(() => { 
-          try {
-            // 使用内置 fit 方法，传入 maxScale 限制最大缩放
-            mm.fit(${maxScale});
-            
-            // 获取最终渲染信息用于调试
-            const svgEl = document.getElementById('markmap');
-            const g = svgEl?.querySelector('g');
-            if (g) {
-              const bbox = g.getBBox();
-              const transform = g.getAttribute('transform');
-              console.log('MARKMAP_FINAL:', { 
-                bbox: { width: bbox.width, height: bbox.height, x: bbox.x, y: bbox.y },
-                transform: transform
-              });
-            }
-          } catch (e) { 
-            console.warn('MARKMAP_FIT_ERROR:', e); 
-          }
-          window.__MARKMAP_READY__ = true;
-          console.log('MARKMAP_READY: true');
-        }, 500);
+        const finalizeRender = () => {
+          setTimeout(() => { 
+            try { mm.fit(${maxScale}); } catch (e) {}
+            window.__MARKMAP_READY__ = true;
+          }, 800);
+        };
+
+        // 强制等待所有资源（尤其是字体）加载
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(finalizeRender).catch(finalizeRender);
+        } else {
+          finalizeRender();
+        }
       } catch (e) {
-        console.error('MARKMAP_INIT_ERROR:', e);
         window.__MARKMAP_READY__ = false;
       }
     }
-    
-    // Wait for DOM and all scripts to be ready
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => {
-        setTimeout(initMarkmap, 100);
-      });
+      document.addEventListener('DOMContentLoaded', () => setTimeout(initMarkmap, 100));
     } else {
       setTimeout(initMarkmap, 100);
     }
@@ -108,385 +78,139 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
 </html>`;
 }
 
-// Resolve script tags for either local assets (preferred) or CDN fallback
 async function resolveScriptTags(penv = {}) {
   const assetMode = String(penv.MINDMAP_ASSET_MODE || process.env.MINDMAP_ASSET_MODE || 'cdn').toLowerCase();
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = path.dirname(__filename);
   const assetsDir = path.join(__dirname, 'assets');
   const toFileUrl = (p) => 'file://' + toPosix(p);
+  const localD3 = path.join(assetsDir, 'd3.min.js');
+  const localLib = path.join(assetsDir, 'markmap-lib.min.js');
+  const localView = path.join(assetsDir, 'markmap-view.min.js');
+  const exists = async (p) => { try { await fs.stat(p); return true; } catch { return false; } };
 
-  const localD3 = penv.MINDMAP_ASSET_D3_PATH || process.env.MINDMAP_ASSET_D3_PATH || path.join(assetsDir, 'd3.min.js');
-  const localLib = penv.MINDMAP_ASSET_LIB_PATH || process.env.MINDMAP_ASSET_LIB_PATH || path.join(assetsDir, 'markmap-lib.min.js');
-  const localView = penv.MINDMAP_ASSET_VIEW_PATH || process.env.MINDMAP_ASSET_VIEW_PATH || path.join(assetsDir, 'markmap-view.min.js');
+  if (assetMode === 'local' && await exists(localD3) && await exists(localLib) && await exists(localView)) {
+    return `<script src="${toFileUrl(localD3)}"></script><script src="${toFileUrl(localLib)}"></script><script src="${toFileUrl(localView)}"></script>`;
+  }
+  return `<script src="https://cdn.jsdelivr.net/npm/d3@6"></script><script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.18.10"></script><script src="https://cdn.jsdelivr.net/npm/markmap-view@0.18.10"></script>`;
+}
 
-  const buildTags = (d3Src, libSrc, viewSrc) => [
-    `<script src="${d3Src}"></script>`,
-    `<script src="${libSrc}"></script>`,
-    `<script src="${viewSrc}"></script>`
-  ].join('\n  ');
+function defaultStyleCSS(style, fontPaths = {}) {
+  let fontFaces = '';
+  const families = [];
+  
+  if (fontPaths.emoji) {
+    fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}'); font-display: block; }\n`;
+    families.push("'LocalEmoji'");
+  }
+  if (fontPaths.zh) {
+    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}'); font-display: block; }\n`;
+    families.push("'LocalZh'");
+  }
+  
+  // 关键：剔除 Arial，只保留 serif 作为最后的物理回退，强制让 LocalZh 处理数字
+  families.push("serif");
+  const familyStr = families.join(', ');
 
-  // Helper: check if a file exists
-  const exists = async (p) => {
-    try { await fs.stat(p); return true; } catch { return false; }
-  };
-
-  // Prefer local assets if configured and present
-  if (assetMode === 'local') {
-    const okD3 = await exists(localD3);
-    const okLib = await exists(localLib);
-    const okView = await exists(localView);
-    if (okD3 && okLib && okView) {
-      logger.info?.('mindmap_gen: using local assets', { label: 'PLUGIN', assetsDir: assetsDir });
-      return buildTags(toFileUrl(localD3), toFileUrl(localLib), toFileUrl(localView));
+  // 核心修复：针对 .markmap-node 及其内部所有 div/span 强制应用字体
+  const baseNodeStyle = `
+    .markmap-node, .markmap-node div, .markmap-node span { 
+      font-family: ${familyStr} !important; 
+      font-feature-settings: "kern" 1, "liga" 1; /* 开启高级字距调节 */
     }
-    logger.warn?.('mindmap_gen: local assets missing, falling back to CDN', { label: 'PLUGIN', localD3, localLib, localView });
-  }
+    svg { font-family: ${familyStr} !important; }
+  `;
 
-  // CDN fallback
-  const cdnD3 = 'https://cdn.jsdelivr.net/npm/d3@6/dist/d3.min.js';
-  const cdnLib = 'https://cdn.jsdelivr.net/npm/markmap-lib@0.18.10/dist/browser/index.iife.js';
-  const cdnView = 'https://cdn.jsdelivr.net/npm/markmap-view@0.18.10/dist/browser/index.js';
-  logger.info?.('mindmap_gen: using CDN assets', { label: 'PLUGIN', cdnD3, cdnLib, cdnView });
-  return buildTags(cdnD3, cdnLib, cdnView);
-}
-
-function defaultStyleCSS(style) {
   switch (ensureStyle(style)) {
-    case 'dark':
-      return `body,html{margin:0;height:100%;overflow:hidden;background:#1a1a1a}#markmap{width:100%;height:100%}.markmap-node{color:#fff;font-family:Segoe UI,Microsoft YaHei,Arial,sans-serif}`;
-    case 'minimal':
-      return `body,html{margin:0;height:100%;overflow:hidden;background:#f8f9fa}#markmap{width:100%;height:100%}.markmap-node{font-weight:300;font-family:Segoe UI,Microsoft YaHei,Arial,sans-serif}`;
-    case 'colorful':
-      return `body,html{margin:0;height:100%;overflow:hidden;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%)}#markmap{width:100%;height:100%}.markmap-node{font-weight:bold;font-family:Segoe UI,Microsoft YaHei,Arial,sans-serif}`;
-    default:
-      return `body,html{margin:0;height:100%;overflow:hidden;background:#fff}#markmap{width:100%;height:100%}.markmap-node{font-family:Segoe UI,Microsoft YaHei,Arial,sans-serif}`;
+    case 'dark': return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#1a1a1a}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{color:#fff;}`;
+    case 'colorful': return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%)}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{font-weight:bold;}`;
+    default: return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#fff}#markmap{width:100%;height:100%}${baseNodeStyle}`;
   }
 }
 
-function validateMarkdown(md) {
-  if (!md || typeof md !== 'string') return false;
-  const lines = md.split('\n').map((l)=>l.trim()).filter(Boolean);
-  if (!lines.some((l)=>l.startsWith('#'))) return false;
-  if (lines.some((l)=>l.includes('```'))) return false;
-  if (!lines.some((l)=>l.startsWith('# '))) return false;
-  return true;
-}
-
-function isTimeoutError(e) {
-  const msg = String(e?.message || e || '').toLowerCase();
-  const code = String(e?.code || '').toUpperCase();
-  return (
-    code === 'ETIMEDOUT' ||
-    code === 'ESOCKETTIMEDOUT' ||
-    code === 'ECONNABORTED' ||
-    msg.includes('timeout') ||
-    msg.includes('timed out')
-  );
-}
-
-function buildAdvice(kind, ctx = {}) {
-  const personaHint = '请结合你当前的预设/人设继续作答：当思维导图生成失败时，要说明失败原因，给替代方案（简化主题/分步骤/重试/调整渲染参数），并引导用户补充更清晰的结构化要点。';
-  if (kind === 'INVALID') {
-    return {
-      suggested_reply: '我现在还没拿到要生成思维导图的主题/描述（prompt 为空或 filename 不合规），所以没法开始生成。你把主题和文件名发我一下，我就继续。\n\n（请结合你当前的预设/人设继续作答）',
-      next_steps: [
-        '补充 prompt：主题 + 范围 + 受众 + 你希望包含的一级/二级要点',
-        '提供 filename（不含目录），例如：mindmap.png',
-      ],
-      persona_hint: personaHint,
-      context: ctx,
-    };
-  }
-  if (kind === 'MARKDOWN_INVALID') {
-    return {
-      suggested_reply: '我生成到了思维导图的文本草稿，但它的结构不符合可渲染的格式（比如缺少 # 标题层级或混入了代码块），所以这次没法稳定渲染成图。我可以把内容改成更规范的层级结构后再试一次。\n\n（请结合你当前的预设/人设继续作答）',
-      next_steps: [
-        '让我用“# / ## / ###”层级重排一版要点',
-        '你也可以提供你想要的一级目录列表，我按它展开',
-      ],
-      persona_hint: personaHint,
-      context: ctx,
-    };
-  }
-  if (kind === 'RENDER_FAILED') {
-    return {
-      suggested_reply: '我已经生成了思维导图内容，但在渲染成图片时失败了（可能是渲染环境/资源加载问题）。我可以先把 Markdown 导图文本发给你，或者我们调整渲染参数后再重试。\n\n（请结合你当前的预设/人设继续作答）',
-      next_steps: [
-        '先输出 markdown_content 让你直接使用/保存',
-        '稍后重试渲染，或调整 width/height/waitTime/style',
-        '如果本机没有 puppeteer，也可以改成只生成文本不渲染（render=false）',
-      ],
-      persona_hint: personaHint,
-      context: ctx,
-    };
-  }
-  if (kind === 'TIMEOUT') {
-    return {
-      suggested_reply: '我在生成/渲染思维导图时卡住了，像是接口或渲染超时了。我可以先给你导图的 Markdown 文本版本，之后再尝试生成图片版。\n\n（请结合你当前的预设/人设继续作答）',
-      next_steps: [
-        '先交付 markdown_content（文本导图）',
-        '稍后重试渲染，或降低内容规模（减少分支层级/节点数）',
-      ],
-      persona_hint: personaHint,
-      context: ctx,
-    };
-  }
-  return {
-    suggested_reply: '我尝试帮你生成思维导图，但这次工具执行失败了。我可以先按你的主题给一份结构化大纲（文本版），并建议你如何补充要点后再生成图片版。\n\n（请结合你当前的预设/人设继续作答）',
-    next_steps: [
-      '补充：你希望包含的一级模块（3-8 个）',
-      '我也可以先给你 2-3 套不同结构的导图大纲供你选',
-    ],
-    persona_hint: personaHint,
-    context: ctx,
-  };
-}
-
-async function ensureDirForFile(filePath) {
-  const outAbs = toAbs(filePath);
-  const dir = path.dirname(outAbs);
-  await fs.mkdir(dir, { recursive: true });
-  return outAbs;
-}
-
-async function renderImage({ markdown, outputFile, width, height, style, waitTime, penv }) {
+async function renderImage({ markdown, outputFile, width, height, style, penv }) {
   let puppeteer;
   try { ({ default: puppeteer } = await import('puppeteer')); } catch { throw new Error('puppeteer not installed'); }
-  const styleCSS = defaultStyleCSS(style);
-  const scriptTags = await resolveScriptTags(penv);
   
-  // 获取 Markmap 配置参数
-  const fitRatio = Number(penv.MINDMAP_FIT_RATIO || process.env.MINDMAP_FIT_RATIO || 0.9);
-  const maxScale = Number(penv.MINDMAP_MAX_SCALE || process.env.MINDMAP_MAX_SCALE || 2.0);
-  
-  const html = htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio, maxScale });
-  const outPngAbs = await ensureDirForFile(outputFile);
-  const tempHtml = path.join(path.dirname(outPngAbs), `mindmap-${Date.now()}.html`);
-  await fs.writeFile(tempHtml, html, 'utf-8');
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const fontsDir = path.join(__dirname, 'assets', 'fonts');
+  const toFileUrl = (p) => 'file://' + toPosix(p);
+  const exists = async (p) => { try { await fs.access(p); return true; } catch { return false; } };
 
-  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox','--disable-setuid-sandbox','--allow-file-access-from-files'] });
-  let keepTempHtml = false;
-  try {
-    const page = await browser.newPage();
-    
-    // Listen to console logs for debugging
-    page.on('console', msg => {
-      const type = msg.type();
-      if (type === 'error' || type === 'warning') {
-        logger.warn?.(`mindmap_gen: page ${type}`, { label: 'PLUGIN', text: msg.text() });
-      }
-    });
-    
-    // Listen to page errors
-    page.on('pageerror', err => {
-      logger.error?.('mindmap_gen: page error', { label: 'PLUGIN', error: String(err) });
-      keepTempHtml = true;
-    });
-    
-    await page.setViewport({ width, height });
-    // Avoid waiting for external network to be fully idle; rely on readiness flag instead
-    await page.goto('file://' + toPosix(tempHtml), { waitUntil: 'domcontentloaded', timeout: 30000 });
-    
-    // Check if markmap global is available
-    const hasMarkmap = await page.evaluate(() => typeof window.markmap !== 'undefined');
-    if (!hasMarkmap) {
-      keepTempHtml = true;
-      throw new Error('window.markmap is undefined - scripts may not have loaded correctly');
-    }
-    
-    // Prefer readiness flag from the page; fallback to a small Node-side delay
-    const maxWait = Math.max(1000, Number(waitTime) || 8000);
-    const readyTimeout = Math.min(30000, maxWait);
-    
-    try {
-      await page.waitForFunction('window.__MARKMAP_READY__ === true', { timeout: readyTimeout });
-      logger.info?.('mindmap_gen: markmap ready', { label: 'PLUGIN' });
-    } catch (timeoutErr) {
-      keepTempHtml = true;
-      const readyState = await page.evaluate(() => window.__MARKMAP_READY__);
-      logger.error?.('mindmap_gen: timeout waiting for ready flag', { 
-        label: 'PLUGIN', 
-        readyState, 
-        timeout: readyTimeout,
-        tempHtml 
-      });
-      throw new Error(`Markmap initialization timeout after ${readyTimeout}ms (ready state: ${readyState})`);
-    }
-    
-    // 增加延迟确保 fit() 和缩放完全生效
-    await new Promise((r) => setTimeout(r, 800));
-    
-    // 获取思维导图实际渲染尺寸用于调试
-    const bboxInfo = await page.evaluate(() => {
-      try {
-        const svgEl = document.getElementById('markmap');
-        const g = svgEl.querySelector('g');
-        if (!g) return null;
-        const bbox = g.getBBox();
-        return { width: bbox.width, height: bbox.height, x: bbox.x, y: bbox.y };
-      } catch (e) {
-        return null;
-      }
-    });
-    
-    if (bboxInfo) {
-      logger.info?.('mindmap_gen: content bbox', { label: 'PLUGIN', bbox: bboxInfo });
-    }
-    
-    // 等待浏览器完成所有重绘和布局（多重 requestAnimationFrame 确保稳定）
-    await page.evaluate(() => new Promise(resolve => {
-      // 使用多重 RAF 确保所有异步渲染都完成
-      const raf = (n) => {
-        if (n <= 0) {
-          setTimeout(resolve, 200);  // 最后再等 200ms
-        } else {
-          requestAnimationFrame(() => raf(n - 1));
-        }
-      };
-      raf(3);  // 3 次 RAF
-    }));
-    
-    // 验证 SVG 是否存在
-    const svgExists = await page.evaluate(() => {
-      const svg = document.getElementById('markmap');
-      const g = svg?.querySelector('g');
-      return !!g;
-    });
-    
-    if (!svgExists) {
-      keepTempHtml = true;
-      throw new Error('SVG element not found before screenshot');
-    }
-    
-    logger.info?.('mindmap_gen: ready to screenshot', { label: 'PLUGIN', path: outPngAbs });
-    
-    // 添加截图超时保护
-    const screenshotPromise = page.screenshot({ 
-      path: outPngAbs, 
-      type: 'png', 
-      clip: { x: 0, y: 0, width, height } 
-    });
-    
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Screenshot timeout after 30s')), 30000)
-    );
-    
-    await Promise.race([screenshotPromise, timeoutPromise]);
-    logger.info?.('mindmap_gen: screenshot saved', { label: 'PLUGIN', path: outPngAbs });
-  } finally {
-    // 关闭浏览器（带超时保护）
-    logger.info?.('mindmap_gen: closing browser', { label: 'PLUGIN' });
-    try {
-      const closePromise = browser.close();
-      const closeTimeout = new Promise((resolve) => setTimeout(resolve, 5000));
-      await Promise.race([closePromise, closeTimeout]);
-      logger.info?.('mindmap_gen: browser closed', { label: 'PLUGIN' });
-    } catch (e) {
-      logger.warn?.('mindmap_gen: browser close failed', { label: 'PLUGIN', error: String(e) });
-    }
-    
-    // 清理临时文件
-    if (!keepTempHtml) {
-      try { 
-        await fs.unlink(tempHtml); 
-        logger.info?.('mindmap_gen: temp HTML deleted', { label: 'PLUGIN' });
-      } catch {}
-    } else {
-      logger.warn?.('mindmap_gen: temp HTML kept for debugging', { label: 'PLUGIN', path: tempHtml });
-    }
-  }
+  const fontPaths = {};
+  if (await exists(path.join(fontsDir, 'zh.woff2'))) fontPaths.zh = toFileUrl(path.join(fontsDir, 'zh.woff2'));
+  else if (await exists(path.join(fontsDir, 'zh.ttf'))) fontPaths.zh = toFileUrl(path.join(fontsDir, 'zh.ttf'));
+  if (await exists(path.join(fontsDir, 'emoji.woff2'))) fontPaths.emoji = toFileUrl(path.join(fontsDir, 'emoji.woff2'));
+  else if (await exists(path.join(fontsDir, 'emoji.ttf'))) fontPaths.emoji = toFileUrl(path.join(fontsDir, 'emoji.ttf'));
+
+  const styleCSS = defaultStyleCSS(style, fontPaths);
+  const scriptTags = await resolveScriptTags(penv);
+  const html = htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio: 0.9, maxScale: 2.0 });
   
-  logger.info?.('mindmap_gen: render complete', { label: 'PLUGIN', path: outPngAbs });
-  const absPath = outPngAbs;
-  return { abs: absPath };
+  const outPngAbs = toAbs(outputFile);
+  await fs.mkdir(path.dirname(outPngAbs), { recursive: true });
+  const tempHtml = path.join(path.dirname(outPngAbs), `temp-${Date.now()}.html`);
+  
+  let browser;
+  try {
+    await fs.writeFile(tempHtml, html, 'utf-8');
+    browser = await puppeteer.launch({ 
+      headless: 'new', 
+      args:['--no-sandbox', '--disable-setuid-sandbox', '--allow-file-access-from-files', '--disable-web-security'] 
+    });
+    const page = await browser.newPage();
+    await page.setViewport({ width, height });
+    await page.goto('file://' + toPosix(tempHtml), { waitUntil: 'domcontentloaded' });
+    
+    // 等待字体就绪标志
+    await page.waitForFunction('window.__MARKMAP_READY__ === true', { timeout: 30000 });
+    await new Promise(r => setTimeout(r, 600)); // 额外等待重绘
+    
+    await page.screenshot({ path: outPngAbs, clip: { x: 0, y: 0, width, height } });
+  } finally {
+    if (browser) await browser.close();
+    try { await fs.unlink(tempHtml); } catch {}
+  }
+  return { abs: outPngAbs };
 }
 
 export default async function handler(args = {}, options = {}) {
   const prompt = String(args.prompt || '').trim();
-  if (!prompt) return fail('prompt is required', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'mindmap_gen' }) });
+  if (!prompt) return fail('prompt is required');
 
   try {
     const penv = options?.pluginEnv || {};
-    const width = Math.max(400, Number(args.width ?? penv.MINDMAP_WIDTH ?? 2400));
-    const height = Math.max(300, Number(args.height ?? penv.MINDMAP_HEIGHT ?? 1600));
-    const style = ensureStyle(String((args.style ?? penv.MINDMAP_DEFAULT_STYLE ?? 'default')));
-    const waitTime = Math.max(1000, Number(args.waitTime ?? penv.MINDMAP_WAIT_TIME ?? 8000));
-    const baseDir = 'artifacts';
-    const rawName = String(args.filename || '').trim();
-    if (!rawName) return fail('filename is required (filename only, no directories)', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'mindmap_gen' }) });
-    if (/[\\\/]/.test(rawName)) return fail('filename must not contain path separators', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'mindmap_gen', filename: rawName }) });
-    let outputFile = path.join(baseDir, rawName);
-    if (!outputFile.toLowerCase().endsWith('.png')) outputFile += '.png';
-    const render = args.render !== false;
+    const width = Math.min(8000, Number(args.width || 2400));
+    const height = Math.min(6000, Number(args.height || 1600));
+    const style = String(args.style || 'default');
+    const rawName = path.basename(String(args.filename || 'weather_map.png'));
+    const outputFile = path.join('artifacts', rawName);
 
-    // 1) Ask LLM to produce markdown only
-    const messages = [
-      { role: 'system', content: generateSystemPrompt() },
-      { role: 'user', content: `请根据以下描述生成思维导图：${prompt}` }
-    ];
     const resp = await chatCompletion({
-      messages,
+      messages: [{ role: 'system', content: generateSystemPrompt() }, { role: 'user', content: prompt }],
       temperature: 0.2,
-      apiKey: penv.MINDMAP_API_KEY || process.env.MINDMAP_API_KEY || config.llm.apiKey,
-      baseURL: penv.MINDMAP_BASE_URL || process.env.MINDMAP_BASE_URL || config.llm.baseURL || 'https://yuanplus.chat/v1',
-      model: penv.MINDMAP_MODEL || process.env.MINDMAP_MODEL || config.llm.model,
       omitMaxTokens: true
     });
-    const content = resp.choices?.[0]?.message?.content?.trim() || '';
-    if (!validateMarkdown(content)) {
-      return fail('生成的Markdown内容无效', 'MARKDOWN_INVALID', {
-        advice: buildAdvice('MARKDOWN_INVALID', { tool: 'mindmap_gen', prompt }),
-        detail: { prompt, markdown_content: content },
-      });
-    }
+    
+    let content = resp.choices?.[0]?.message?.content?.trim() || '';
+    content = content.replace(/^```(?:markdown)?\s*/i, '').replace(/```\s*$/i, '').trim();
 
-  // 2) Optionally render PNG with Puppeteer
-  let image = null;
-  let renderError = null;
-  if (render) {
-    try {
-      logger.info?.('mindmap_gen: starting render', { label: 'PLUGIN', outputFile });
-      image = await renderImage({ markdown: content, outputFile, width, height, style, waitTime, penv });
-      logger.info?.('mindmap_gen: render returned', { label: 'PLUGIN', imagePath: image?.abs });
-    } catch (e) {
-      renderError = String(e?.message || e);
-      logger.warn?.('mindmap_gen:render_failed', { label: 'PLUGIN', error: renderError });
-    }
-  }
+    // 强力清洗全角数字和空格
+    content = content.replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+    content = content.replace(/\u3000/g, ' ');
+    // 消除数字间的干扰空格
+    content = content.replace(/(\d)\s+(?=\d|℃|C|:|%)/gi, '$1').replace(/(:)\s+(?=\d)/g, '$1');
 
-  if (render && !image?.abs) {
-    return fail(renderError || 'failed to render mindmap image', 'RENDER_FAILED', {
-      advice: buildAdvice('RENDER_FAILED', { tool: 'mindmap_gen', prompt }),
-      detail: {
-        prompt,
-        markdown_content: content,
-        width,
-        height,
-        style,
-      }
+    const image = await renderImage({ markdown: content, outputFile, width, height, style, penv });
+
+    return ok({
+      prompt,
+      markdown_content: content,
+      path_markdown: `![mindmap](${image.abs})`,
+      width, height, style
     });
-  }
-
-  logger.info?.('mindmap_gen: preparing response', { label: 'PLUGIN' });
-  const data = {
-    prompt,
-    markdown_content: content,
-    path_markdown: image?.abs ? `![${path.basename(image.abs)}](${image.abs})` : null,
-    width,
-    height,
-    style,
-    generation_info: {
-      model: resp.model,
-      created: resp.created,
-      baseURL: (penv.MINDMAP_BASE_URL || process.env.MINDMAP_BASE_URL || config.llm.baseURL || 'https://yuanplus.chat/v1')
-    }
-  };
-  logger.info?.('mindmap_gen: handler returning success', { label: 'PLUGIN', hasImage: !!image });
-  return ok(data);
   } catch (e) {
-    const rawErr = String(e?.message || e);
-    const isTimeout = isTimeoutError(e);
-    return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'mindmap_gen', prompt }) });
+    return fail(String(e));
   }
 }
