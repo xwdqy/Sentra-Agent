@@ -40,18 +40,10 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
     function initMarkmap() {
       try {
         if (typeof markmap === 'undefined') {
-          console.error('MARKMAP_INIT_ERROR: markmap global is undefined');
           window.__MARKMAP_READY__ = false;
           return;
         }
-        
         const { Transformer, Markmap } = markmap;
-        if (!Transformer || !Markmap) {
-          console.error('MARKMAP_INIT_ERROR: Transformer or Markmap not found in markmap global');
-          window.__MARKMAP_READY__ = false;
-          return;
-        }
-        
         const transformer = new Transformer();
         const { root } = transformer.transform(${safeMarkdownJson});
         const svg = document.getElementById('markmap');
@@ -97,15 +89,12 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
         }
 
       } catch (e) {
-        console.error('MARKMAP_INIT_ERROR:', e);
         window.__MARKMAP_READY__ = false;
       }
     }
     
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => {
-        setTimeout(initMarkmap, 100);
-      });
+      document.addEventListener('DOMContentLoaded', () => setTimeout(initMarkmap, 100));
     } else {
       setTimeout(initMarkmap, 100);
     }
@@ -120,6 +109,10 @@ async function resolveScriptTags(penv = {}) {
   const __dirname = path.dirname(__filename);
   const assetsDir = path.join(__dirname, 'assets');
   const toFileUrl = (p) => 'file://' + toPosix(p);
+  const localD3 = path.join(assetsDir, 'd3.min.js');
+  const localLib = path.join(assetsDir, 'markmap-lib.min.js');
+  const localView = path.join(assetsDir, 'markmap-view.min.js');
+  const exists = async (p) => { try { await fs.stat(p); return true; } catch { return false; } };
 
   const localD3 = penv.MINDMAP_ASSET_D3_PATH || process.env.MINDMAP_ASSET_D3_PATH || path.join(assetsDir, 'd3.min.js');
   const localLib = penv.MINDMAP_ASSET_LIB_PATH || process.env.MINDMAP_ASSET_LIB_PATH || path.join(assetsDir, 'markmap-lib.min.js');
@@ -200,6 +193,7 @@ function defaultStyleCSS(style, fontPaths = {}) {
     default:
       return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#fff}#markmap{width:100%;height:100%}${baseNodeStyle}`;
   }
+  return `<script src="https://cdn.jsdelivr.net/npm/d3@6"></script><script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.18.10"></script><script src="https://cdn.jsdelivr.net/npm/markmap-view@0.18.10"></script>`;
 }
 
 function validateMarkdown(md) {
@@ -252,14 +246,14 @@ function buildAdvice(kind, ctx = {}) {
   };
 }
 
-async function ensureDirForFile(filePath) {
-  const outAbs = toAbs(filePath);
-  const dir = path.dirname(outAbs);
-  await fs.mkdir(dir, { recursive: true });
-  return outAbs;
+  switch (ensureStyle(style)) {
+    case 'dark': return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#1a1a1a}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{color:#fff;}`;
+    case 'colorful': return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%)}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{font-weight:bold;}`;
+    default: return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#fff}#markmap{width:100%;height:100%}${baseNodeStyle}`;
+  }
 }
 
-async function renderImage({ markdown, outputFile, width, height, style, waitTime, penv }) {
+async function renderImage({ markdown, outputFile, width, height, style, penv }) {
   let puppeteer;
   try { ({ default: puppeteer } = await import('puppeteer')); } catch { throw new Error('puppeteer not installed'); }
   
@@ -393,7 +387,7 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
 
 export default async function handler(args = {}, options = {}) {
   const prompt = String(args.prompt || '').trim();
-  if (!prompt) return fail('prompt is required', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'mindmap_gen' }) });
+  if (!prompt) return fail('prompt is required');
 
   try {
     const penv = options?.pluginEnv || {};
@@ -426,11 +420,8 @@ export default async function handler(args = {}, options = {}) {
     ];
     
     const resp = await chatCompletion({
-      messages,
+      messages: [{ role: 'system', content: generateSystemPrompt() }, { role: 'user', content: prompt }],
       temperature: 0.2,
-      apiKey: penv.MINDMAP_API_KEY || process.env.MINDMAP_API_KEY || config.llm.apiKey,
-      baseURL: penv.MINDMAP_BASE_URL || process.env.MINDMAP_BASE_URL || config.llm.baseURL || 'https://yuanplus.chat/v1',
-      model: penv.MINDMAP_MODEL || process.env.MINDMAP_MODEL || config.llm.model,
       omitMaxTokens: true
     });
     
