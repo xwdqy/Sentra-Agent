@@ -38,7 +38,6 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
     function initMarkmap() {
       try {
         if (typeof markmap === 'undefined') {
-          console.error('MARKMAP_INIT_ERROR: markmap global is undefined');
           window.__MARKMAP_READY__ = false;
           return;
         }
@@ -59,6 +58,7 @@ function htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio 
           }, 800);
         };
 
+        // 强制等待所有资源（尤其是字体）加载
         if (document.fonts && document.fonts.ready) {
           document.fonts.ready.then(finalizeRender).catch(finalizeRender);
         } else {
@@ -97,17 +97,29 @@ async function resolveScriptTags(penv = {}) {
 
 function defaultStyleCSS(style, fontPaths = {}) {
   let fontFaces = '';
-  const fontFamilies = [];
+  const families = [];
+  
   if (fontPaths.emoji) {
     fontFaces += `@font-face { font-family: 'LocalEmoji'; src: url('${fontPaths.emoji}'); font-display: block; }\n`;
-    fontFamilies.push("'LocalEmoji'");
+    families.push("'LocalEmoji'");
   }
   if (fontPaths.zh) {
     fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}'); font-display: block; }\n`;
-    fontFamilies.push("'LocalZh'");
+    families.push("'LocalZh'");
   }
-  fontFamilies.push("Arial", "'Microsoft YaHei'", "sans-serif");
-  const baseNodeStyle = `.markmap-node { font-family: ${fontFamilies.join(', ')} !important; }`;
+  
+  // 关键：剔除 Arial，只保留 serif 作为最后的物理回退，强制让 LocalZh 处理数字
+  families.push("serif");
+  const familyStr = families.join(', ');
+
+  // 核心修复：针对 .markmap-node 及其内部所有 div/span 强制应用字体
+  const baseNodeStyle = `
+    .markmap-node, .markmap-node div, .markmap-node span { 
+      font-family: ${familyStr} !important; 
+      font-feature-settings: "kern" 1, "liga" 1; /* 开启高级字距调节 */
+    }
+    svg { font-family: ${familyStr} !important; }
+  `;
 
   switch (ensureStyle(style)) {
     case 'dark': return `${fontFaces}body,html{margin:0;height:100%;overflow:hidden;background:#1a1a1a}#markmap{width:100%;height:100%}${baseNodeStyle}.markmap-node{color:#fff;}`;
@@ -116,7 +128,7 @@ function defaultStyleCSS(style, fontPaths = {}) {
   }
 }
 
-async function renderImage({ markdown, outputFile, width, height, style, waitTime, penv }) {
+async function renderImage({ markdown, outputFile, width, height, style, penv }) {
   let puppeteer;
   try { ({ default: puppeteer } = await import('puppeteer')); } catch { throw new Error('puppeteer not installed'); }
   
@@ -135,6 +147,7 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
   const styleCSS = defaultStyleCSS(style, fontPaths);
   const scriptTags = await resolveScriptTags(penv);
   const html = htmlTemplate(markdown, { width, height, styleCSS, scriptTags, fitRatio: 0.9, maxScale: 2.0 });
+  
   const outPngAbs = toAbs(outputFile);
   await fs.mkdir(path.dirname(outPngAbs), { recursive: true });
   const tempHtml = path.join(path.dirname(outPngAbs), `temp-${Date.now()}.html`);
@@ -142,12 +155,18 @@ async function renderImage({ markdown, outputFile, width, height, style, waitTim
   let browser;
   try {
     await fs.writeFile(tempHtml, html, 'utf-8');
-    browser = await puppeteer.launch({ headless: 'new', args:['--no-sandbox', '--disable-setuid-sandbox', '--allow-file-access-from-files', '--disable-web-security'] });
+    browser = await puppeteer.launch({ 
+      headless: 'new', 
+      args:['--no-sandbox', '--disable-setuid-sandbox', '--allow-file-access-from-files', '--disable-web-security'] 
+    });
     const page = await browser.newPage();
     await page.setViewport({ width, height });
     await page.goto('file://' + toPosix(tempHtml), { waitUntil: 'domcontentloaded' });
+    
+    // 等待字体就绪标志
     await page.waitForFunction('window.__MARKMAP_READY__ === true', { timeout: 30000 });
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 600)); // 额外等待重绘
+    
     await page.screenshot({ path: outPngAbs, clip: { x: 0, y: 0, width, height } });
   } finally {
     if (browser) await browser.close();
@@ -165,7 +184,7 @@ export default async function handler(args = {}, options = {}) {
     const width = Math.min(8000, Number(args.width || 2400));
     const height = Math.min(6000, Number(args.height || 1600));
     const style = String(args.style || 'default');
-    const rawName = path.basename(String(args.filename || 'mindmap.png'));
+    const rawName = path.basename(String(args.filename || 'weather_map.png'));
     const outputFile = path.join('artifacts', rawName);
 
     const resp = await chatCompletion({
@@ -177,9 +196,10 @@ export default async function handler(args = {}, options = {}) {
     let content = resp.choices?.[0]?.message?.content?.trim() || '';
     content = content.replace(/^```(?:markdown)?\s*/i, '').replace(/```\s*$/i, '').trim();
 
-    // 清洗全角数字和空格，确保方正字体的倾斜数字生效
+    // 强力清洗全角数字和空格
     content = content.replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
     content = content.replace(/\u3000/g, ' ');
+    // 消除数字间的干扰空格
     content = content.replace(/(\d)\s+(?=\d|℃|C|:|%)/gi, '$1').replace(/(:)\s+(?=\d)/g, '$1');
 
     const image = await renderImage({ markdown: content, outputFile, width, height, style, penv });
