@@ -149,7 +149,7 @@ async function resolveScriptTags(penv = {}) {
   return buildTags(cdnD3, cdnLib, cdnView);
 }
 
-// 动态注入本地字体配置 - 深度优化数字间距版
+// 动态注入本地字体配置：中文/数字强制本地 zh 字体，emoji 强制本地 emoji 字体
 function defaultStyleCSS(style, fontPaths = {}) {
   let fontFaces = '';
   const fontFamilies =[];
@@ -161,12 +161,12 @@ function defaultStyleCSS(style, fontPaths = {}) {
   }
   if (fontPaths.zh) {
     const formatStr = fontPaths.zh.endsWith('.woff2') ? "format('woff2')" : "format('truetype')";
-    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}') ${formatStr}; font-display: block; }\n`;
+    fontFaces += `@font-face { font-family: 'LocalZh'; src: url('${fontPaths.zh}') ${formatStr}; font-display: block; unicode-range: U+0000-00FF, U+2000-206F, U+3000-303F, U+4E00-9FFF, U+FF00-FFEF; }\n`;
   }
 
-  // 2. 重新编排字体栈：让本地文楷 (LocalZh) 接管一切（最高优先级）
+  // 2. 重新编排字体栈：LocalZh 第一优先级，确保数字/中文都使用本地字体；emoji 由 LocalEmoji 兜底
+  if (fontPaths.zh) fontFamilies.push("'LocalZh'");
   if (fontPaths.emoji) fontFamilies.push("'LocalEmoji'");
-  if (fontPaths.zh) fontFamilies.push("'LocalZh'"); // 本地汉字直接排在第二位，接管英文和数字
 
   // 备用西文和系统兜底字体放后面
   fontFamilies.push("'Helvetica Neue'", "Arial", "'Segoe UI'", "Roboto", "'Segoe UI Emoji'", "'Microsoft YaHei'", "sans-serif");
@@ -175,15 +175,18 @@ function defaultStyleCSS(style, fontPaths = {}) {
 
   // 3. 强力优化数字排版：强制使用比例数字 (Proportional)
   const baseNodeStyle = `
-    .markmap-node { 
+    .markmap-node {
       font-family: ${fontFamilyStr} !important; 
+      line-height: 1.28;
     }
     /* 针对 Markmap 内部渲染的文本节点进行深度优化 */
     .markmap-node > div {
+      font-family: ${fontFamilyStr} !important;
       font-variant-numeric: proportional-nums !important; /* 强制数字不按等宽排列 */
       font-feature-settings: "pnum" 1, "kern" 1, "tnum" 0 !important; /* 开启比例数字，关闭等宽数字 */
-      letter-spacing: -0.3px !important; /* 稍微压缩字间距，视觉效果更紧凑 */
-      word-spacing: -1px !important;
+      letter-spacing: -0.22px !important; /* 数字与文本轻微收紧，保留可读性 */
+      word-spacing: -0.8px !important;
+      text-rendering: geometricPrecision;
     }
   `;
 
@@ -400,16 +403,22 @@ export default async function handler(args = {}, options = {}) {
     const style = ensureStyle(String((args.style ?? penv.MINDMAP_DEFAULT_STYLE ?? 'default')));
     const waitTime = Math.max(1000, Number(args.waitTime ?? penv.MINDMAP_WAIT_TIME ?? 8000));
     
-    // 强制过滤非法文件名与路径越界
-    let rawName = String(args.filename || '').trim();
-    rawName = path.basename(rawName);
-    if (!rawName || rawName === '.' || rawName === '..') {
+    const render = typeof args.render === 'string'
+      ? args.render.toLowerCase() !== 'false'
+      : args.render !== false;
+
+    let outputFile = null;
+    if (render) {
+      // 仅在需要渲染图片时校验文件名，兼容 render=false 的纯 Markdown 工作流
+      let rawName = String(args.filename || '').trim();
+      rawName = path.basename(rawName);
+      if (!rawName || rawName === '.' || rawName === '..') {
         return fail('filename is invalid (filename only, no paths)', 'INVALID', { advice: buildAdvice('INVALID', { tool: 'mindmap_gen' }) });
+      }
+
+      outputFile = path.join('artifacts', rawName);
+      if (!outputFile.toLowerCase().endsWith('.png')) outputFile += '.png';
     }
-    
-    let outputFile = path.join('artifacts', rawName);
-    if (!outputFile.toLowerCase().endsWith('.png')) outputFile += '.png';
-    const render = args.render !== false;
 
     const messages =[
       { role: 'system', content: generateSystemPrompt() },
@@ -473,4 +482,3 @@ export default async function handler(args = {}, options = {}) {
     return fail(e, isTimeout ? 'TIMEOUT' : 'ERR', { advice: buildAdvice(isTimeout ? 'TIMEOUT' : 'ERR', { tool: 'mindmap_gen', prompt }) });
   }
 }
-
